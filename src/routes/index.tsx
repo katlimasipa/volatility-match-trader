@@ -21,6 +21,7 @@ function SignIn() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [oauthLoading, setOauthLoading] = useState(false);
 
   // Deriv direct token access (guaranteed to work on iOS PWA without redirect issues)
   const [showTokenInput, setShowTokenInput] = useState(false);
@@ -29,20 +30,37 @@ function SignIn() {
   const [tokenError, setTokenError] = useState<string | null>(null);
 
   useEffect(() => {
-    // 1. Check for incoming Deriv OAuth 2.0 callback params
-    handleIncomingOAuth().then((res) => {
-      if (res.handled) {
-        if (res.success) {
-          session.set("deriv_trader");
-          navigate({ to: "/trade" });
-          return;
-        } else if (res.error) {
-          setMsg(`Deriv authentication note: ${res.error}. You can also use an API Token below.`);
-        }
-      }
-    });
+    // 1. Detect incoming OAuth callback immediately
+    const hasIncomingOAuth =
+      typeof window !== "undefined" &&
+      (window.location.search.includes("code=") ||
+        window.location.search.includes("token1=") ||
+        window.location.search.includes("error=") ||
+        window.location.hash.includes("code=") ||
+        window.location.hash.includes("token1="));
 
-    // 2. Check existing session
+    if (hasIncomingOAuth) {
+      setOauthLoading(true);
+      setBusy(true);
+      setMsg("Authorizing with Deriv Auth 2.0... Exchanging credentials...");
+
+      handleIncomingOAuth().then((res) => {
+        setOauthLoading(false);
+        setBusy(false);
+        if (res.handled) {
+          if (res.success) {
+            session.set("deriv_trader");
+            navigate({ to: "/trade" });
+            return;
+          } else if (res.error) {
+            setMsg(`Deriv authentication notice: ${res.error}. You can also use your API Token below.`);
+          }
+        }
+      });
+      return; // DO NOT check existing session or navigate away while OAuth exchange is in flight!
+    }
+
+    // 2. Check existing session only when NOT handling OAuth callback
     const existing = session.get();
     if (existing) {
       navigate({ to: "/trade" });
@@ -174,15 +192,28 @@ function SignIn() {
           </div>
 
           {/* Deriv Auth 2.0 & Direct Permission Access */}
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={onConnectDeriv}
-              disabled={busy}
-              className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-50 font-bold"
-            >
-              Sign In with Deriv Auth 2.0
-            </button>
+          {oauthLoading ? (
+            <div className="rounded-xl border border-teal-500/50 bg-zinc-950 p-6 text-center space-y-4 shadow-xl">
+              <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-teal-400 border-t-transparent" />
+              <div className="space-y-1">
+                <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-teal-400">
+                  Connecting Deriv Account...
+                </h3>
+                <p className="font-mono text-xs text-zinc-400">
+                  Exchanging authorization credentials and syncing trading accounts...
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={onConnectDeriv}
+                disabled={busy}
+                className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-50 font-bold"
+              >
+                Sign In with Deriv Auth 2.0
+              </button>
 
             <button
               type="button"
@@ -247,6 +278,7 @@ function SignIn() {
             </p>
             {msg && <p className="font-mono text-xs text-zinc-400 text-center">{msg}</p>}
           </div>
+          )}
 
           <div className="flex items-center gap-3">
             <div className="h-px flex-1 bg-zinc-900" />

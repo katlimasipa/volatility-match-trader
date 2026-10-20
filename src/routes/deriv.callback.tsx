@@ -114,6 +114,8 @@ function Callback() {
         }
 
         // Clean query parameters from URL
+        sessionStorage.setItem("v100_user_email", "deriv_trader");
+        localStorage.setItem("v100_user_email", "deriv_trader");
         window.history.replaceState({}, document.title, window.location.pathname);
         navigate({ to: "/trade" });
       } catch (err) {

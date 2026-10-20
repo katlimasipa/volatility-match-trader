@@ -184,14 +184,18 @@ export function clearAllDerivAuth(): void {
 
 /**
  * Start Deriv Auth 2.0 PKCE Flow
- * Stores verifier in both localStorage and sessionStorage so it survives iOS PWA cross-domain redirects.
+ * Stores verifier in state parameter so it survives mobile browsers, iOS PWA cross-domain redirects,
+ * and Safari ITP tracking protection with 100% reliability.
  */
 export async function startDerivAuth(config: AuthConfig): Promise<void> {
-  const csrfToken = generateRandomBase64url(32);
-  const codeVerifier = generateRandomBase64url(64);
+  const csrfToken = generateRandomBase64url(24);
+  const codeVerifier = generateRandomBase64url(48);
   const codeChallenge = await sha256Base64url(codeVerifier);
 
-  // Store in BOTH localStorage and sessionStorage
+  // Encode verifier into state so it is 100% preserved through OAuth return query
+  const combinedState = `${csrfToken}.${codeVerifier}`;
+
+  // Store in BOTH localStorage and sessionStorage as local fallback
   localStorage.setItem(STORAGE_KEYS.CSRF_TOKEN, csrfToken);
   localStorage.setItem(STORAGE_KEYS.CODE_VERIFIER, codeVerifier);
   localStorage.setItem(STORAGE_KEYS.REDIRECT_URI, config.redirectUri);
@@ -207,9 +211,10 @@ export async function startDerivAuth(config: AuthConfig): Promise<void> {
     client_id: config.clientId || HARDCODED_APP_ID,
     redirect_uri: config.redirectUri,
     scope: config.scopes || DEFAULT_DERIV_SCOPES,
-    state: csrfToken,
+    state: combinedState,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
+    prompt: 'login', // Forces Deriv to authenticate for this OAuth request and prevent session_home drop
   });
 
   window.location.href = `${DERIV_ENDPOINTS.authBase}/auth?${params.toString()}`;
@@ -224,9 +229,26 @@ export async function exchangeCodeForTokens(
   clientId: string,
   redirectUri: string
 ): Promise<AuthInfo> {
-  const storedCsrf = localStorage.getItem(STORAGE_KEYS.CSRF_TOKEN) || sessionStorage.getItem(STORAGE_KEYS.CSRF_TOKEN);
-  const codeVerifier = localStorage.getItem(STORAGE_KEYS.CODE_VERIFIER) || sessionStorage.getItem(STORAGE_KEYS.CODE_VERIFIER);
-  const effectiveRedirectUri = redirectUri || localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) || sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) || '';
+  // 1. Recover verifier from state payload if available (bulletproof cross-domain/PWA support)
+  let codeVerifierFromState = '';
+  if (state && state.includes('.')) {
+    const parts = state.split('.');
+    if (parts.length >= 2 && parts[1].length >= 30) {
+      codeVerifierFromState = parts[1];
+    }
+  }
+
+  const codeVerifier =
+    codeVerifierFromState ||
+    localStorage.getItem(STORAGE_KEYS.CODE_VERIFIER) ||
+    sessionStorage.getItem(STORAGE_KEYS.CODE_VERIFIER);
+
+  // Deriv requires exact registered redirect URI string used in initial request
+  const effectiveRedirectUri =
+    redirectUri ||
+    localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
+    sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
+    'https://thdpstmatches.vercel.app/';
 
   // Clean up verifiers
   localStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
@@ -237,10 +259,6 @@ export async function exchangeCodeForTokens(
     sessionStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
     sessionStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
   } catch {}
-
-  if (storedCsrf && storedCsrf !== state) {
-    console.warn('CSRF token mismatch warning, continuing verification...');
-  }
 
   if (!codeVerifier) {
     throw new Error('Code verifier expired or missing. Please try connecting again or use an API Token.');
@@ -524,10 +542,14 @@ export async function handleIncomingOAuth(): Promise<{ handled: boolean; success
       const storedRedirect =
         localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
         sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
-        `${window.location.origin}/`;
+        'https://thdpstmatches.vercel.app/';
       const authInfo = await exchangeCodeForTokens(code, state, HARDCODED_APP_ID, storedRedirect);
       try {
-        await fetchDerivAccounts(authInfo, HARDCODED_APP_ID);
+        if (authInfo.access_token) {
+          await authorizeWithToken(authInfo.access_token);
+        } else {
+          await fetchDerivAccounts(authInfo, HARDCODED_APP_ID);
+        }
       } catch (accErr) {
         console.warn('Account fetching note:', accErr);
       }

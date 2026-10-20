@@ -367,15 +367,30 @@ export function TradeTerminal() {
 
   // Check login session & accounts
   useEffect(() => {
-    handleIncomingOAuth().then((res) => {
-      if (res.handled && res.success) {
-        const saved = getStoredAccounts();
-        if (saved.length > 0) {
-          setAccounts(saved);
-          setIsConnectedToDeriv(true);
+    const hasIncomingOAuth =
+      typeof window !== "undefined" &&
+      (window.location.search.includes("code=") ||
+        window.location.search.includes("token1=") ||
+        window.location.hash.includes("code=") ||
+        window.location.hash.includes("token1="));
+
+    if (hasIncomingOAuth) {
+      handleIncomingOAuth().then((res) => {
+        if (res.handled && res.success) {
+          session.set("deriv_trader");
+          setEmail("deriv_trader");
+          const saved = getStoredAccounts();
+          if (saved.length > 0) {
+            setAccounts(saved);
+            const storedActive = getActiveAccountId();
+            const chosen = saved.find((a) => a.account_id === storedActive) || saved[0];
+            setActiveId(chosen.account_id);
+            setIsConnectedToDeriv(true);
+          }
         }
-      }
-    });
+      });
+      return;
+    }
 
     const userEmail = session.get();
     if (!userEmail) {
