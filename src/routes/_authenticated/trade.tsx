@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { DERIV_WS_URL, session } from "@/lib/deriv-config";
 import { analyze, lastDigit, shouldEnter, MAX_DIFF, MAX_RUNS, SYMBOL, WINDOW } from "@/lib/matches";
 
-export const Route = createFileRoute("/trade")({
+export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
       { title: "Matches — Volatility 100 Trader" },
