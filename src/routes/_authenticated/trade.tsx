@@ -1921,6 +1921,22 @@ export function TradeTerminal() {
             </section>
           </aside>
         </div>
+        {/* Footer */}
+        <footer className={`mt-10 pt-6 border-t text-center font-mono text-xs transition-colors ${
+          isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
+        }`}>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5">
+            <span>Built by</span>
+            <a
+              href="https://architeq.co.za"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold text-teal-500 hover:text-teal-400 hover:underline transition-colors"
+            >
+              Architeq Web Agency ↗
+            </a>
+          </div>
+        </footer>
       </main>
 
       {/* 3. Mobile Sticky Bottom Action Bar (Thumb-Friendly Single Row) */}
@@ -2207,6 +2223,21 @@ export function TradeTerminal() {
             >
               LOG OUT & EXIT
             </button>
+
+            {/* Mobile Drawer Attribution */}
+            <div className={`pt-2 border-t text-center font-mono text-[11px] ${
+              isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
+            }`}>
+              <span>Built by </span>
+              <a
+                href="https://architeq.co.za"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-teal-500 hover:text-teal-400 font-bold hover:underline"
+              >
+                Architeq Web Agency ↗
+              </a>
+            </div>
           </div>
         </div>
       )}

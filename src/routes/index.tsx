@@ -147,6 +147,14 @@ function SignIn() {
           <span>RULE: SPREAD ≤ 0.3%</span>
           <span>CYCLE: 3 RUNS</span>
           <span>IF LOSS: RE-ANALYZE</span>
+          <a
+            href="https://architeq.co.za"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-teal-400 hover:text-teal-300 hover:underline font-semibold"
+          >
+            Built by Architeq Web Agency ↗
+          </a>
         </div>
       </section>
 
@@ -303,6 +311,19 @@ function SignIn() {
               </button>
             </div>
           </form>
+
+          {/* Footer */}
+          <footer className="pt-4 border-t border-zinc-900 text-center font-mono text-xs text-zinc-500">
+            <span>Built by </span>
+            <a
+              href="https://architeq.co.za"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-teal-400 hover:text-teal-300 hover:underline font-bold"
+            >
+              Architeq Web Agency ↗
+            </a>
+          </footer>
         </div>
       </section>
     </main>
