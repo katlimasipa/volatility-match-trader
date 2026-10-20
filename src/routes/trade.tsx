@@ -60,7 +60,7 @@ function Trade() {
       if (data.msg_type === "history") {
         const prices: number[] = data.history.prices;
         setDigits(prices.map((p) => lastDigit(p)));
-        setPrice(prices[prices.length - 1]);
+        setPrice(prices[prices.length - 1] ?? null);
       } else if (data.msg_type === "tick") {
         const q: number = data.tick.quote;
         setPrice(q);
