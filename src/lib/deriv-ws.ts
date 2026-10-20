@@ -3,6 +3,8 @@
  * Handles tick streams, balance subscriptions, proposals, and contract execution.
  */
 
+import { getDerivClientId, getDerivWsUrl } from './deriv-config';
+
 type MessageHandler = (data: Record<string, unknown>) => void;
 
 interface PendingRequest {
@@ -10,8 +12,8 @@ interface PendingRequest {
   reject: (err: Error) => void;
 }
 
-export const DERIV_PUBLIC_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
-export const DERIV_FALLBACK_WS_URL = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+export const DERIV_PUBLIC_WS_URL = getDerivWsUrl();
+export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(getDerivClientId() || '1089')}`;
 
 export class DerivWS {
   private ws: WebSocket | null = null;
@@ -28,7 +30,7 @@ export class DerivWS {
   private openWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
 
   constructor(url?: string, onStatusChange?: (status: 'connecting' | 'live' | 'offline') => void) {
-    this.url = url || DERIV_PUBLIC_WS_URL;
+    this.url = url || getDerivWsUrl();
     this.onStatusChange = onStatusChange || null;
     this.connect();
   }
@@ -78,11 +80,12 @@ export class DerivWS {
         if (!this.isDisposed) {
           if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
           this.reconnectTimeout = setTimeout(() => {
-            // Try fallback if primary failed
-            if (this.url === DERIV_PUBLIC_WS_URL) {
-              this.url = DERIV_FALLBACK_WS_URL;
-            } else if (this.url === DERIV_FALLBACK_WS_URL) {
-              this.url = DERIV_PUBLIC_WS_URL;
+            const primary = getDerivWsUrl();
+            const fallback = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(getDerivClientId() || '1089')}`;
+            if (this.url.startsWith('wss://api.derivws.com')) {
+              this.url = fallback;
+            } else {
+              this.url = primary;
             }
             this.connect();
           }, 2500);

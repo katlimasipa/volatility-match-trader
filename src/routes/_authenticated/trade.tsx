@@ -1,6 +1,14 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { session, getDerivClientId, derivRedirectUri, DERIV_WS_URL } from "@/lib/deriv-config";
+import {
+  session,
+  getDerivClientId,
+  derivRedirectUri,
+  DERIV_WS_URL,
+  getDerivWsUrl,
+  getAppIdMarkup,
+  setAppIdMarkup,
+} from "@/lib/deriv-config";
 import {
   startDerivAuth,
   getStoredAccounts,
@@ -34,15 +42,17 @@ export const Route = createFileRoute("/_authenticated/trade")({
  * Base Gross Payout = Stake / 0.1120 = Stake * 8.9285714...
  *
  * Developer App Markup:
- * Deriv allows up to 3% markup commission on contract payouts.
- * Markup Fee = Gross Payout * 3%
- * Effective Client Payout = Gross Payout * (1 - 0.03) = Stake * 8.660714...
- * Net Win Profit (P/L) = Effective Client Payout - Stake = Stake * 7.660714...
+ * Configured dynamically by Deriv App ID (registered on Deriv Developer Portal).
+ * Markup Fee = Gross Payout * Markup%
+ * Effective Client Payout = Gross Payout * (1 - Markup%)
+ * Net Win Profit (P/L) = Effective Client Payout - Stake
  */
 export const DERIV_MATCH_BASE_PAYOUT_RATIO = 100 / 11.20; // 8.92857142857
-export const DEFAULT_APP_MARKUP_PERCENT = 3.0; // 3% markup as registered on Deriv Developer Portal
 
-export function calculateMatchesPayout(stake: number, markupPercent = DEFAULT_APP_MARKUP_PERCENT) {
+export function calculateMatchesPayout(
+  stake: number,
+  markupPercent: number = getAppIdMarkup()
+) {
   const baseGrossPayout = stake * DERIV_MATCH_BASE_PAYOUT_RATIO;
   const markupRate = markupPercent / 100;
   const clientGrossPayout = Math.round(baseGrossPayout * (1 - markupRate) * 100) / 100;
@@ -53,6 +63,7 @@ export function calculateMatchesPayout(stake: number, markupPercent = DEFAULT_AP
     clientGrossPayout,
     netWinProfit,
     markupFee,
+    markupPercent,
     payoutMultiplier: stake > 0 ? clientGrossPayout / stake : 0,
   };
 }
@@ -117,6 +128,10 @@ export function TradeTerminal() {
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isConnectedToDeriv, setIsConnectedToDeriv] = useState(false);
+
+  // App ID and configured markup dynamically resolved for this application
+  const activeAppId = getDerivClientId();
+  const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
 
   // Derive activeAccount and activeType safely (guaranteed 100% in sync)
   const activeAccount = accounts.find((a) => a.account_id === activeId) || accounts[0];
@@ -187,8 +202,21 @@ export function TradeTerminal() {
     reAnalyzeOnLoss,
     activeId,
     maxDiff,
+    configuredMarkup,
   });
-  stateRef.current = { running, stake, tp, sl, runCount, trades, botState, reAnalyzeOnLoss, activeId, maxDiff };
+  stateRef.current = {
+    running,
+    stake,
+    tp,
+    sl,
+    runCount,
+    trades,
+    botState,
+    reAnalyzeOnLoss,
+    activeId,
+    maxDiff,
+    configuredMarkup,
+  };
 
   // Refresh live balances from Deriv API if logged in
   const refreshDerivBalances = useCallback(async () => {
@@ -258,10 +286,28 @@ export function TradeTerminal() {
     refreshDerivBalances();
   }, [navigate, refreshDerivBalances]);
 
-  // Connect to Deriv WebSocket tick feed & balance stream
+  // Connect to Deriv WebSocket tick feed & balance stream using configured App ID
   useEffect(() => {
-    const ws = new DerivWS(DERIV_WS_URL, (s) => setStatus(s));
+    const wsUrl = getDerivWsUrl(activeAppId);
+    const ws = new DerivWS(wsUrl, (s) => setStatus(s));
     wsRef.current = ws;
+
+    // Listen for live proposal responses from Deriv to sync exact App ID server markup
+    ws.registerHandler("proposal", (data) => {
+      const pData = data.proposal as { payout?: number; ask_price?: number };
+      if (pData?.payout && pData?.ask_price) {
+        const ask = pData.ask_price;
+        const payout = pData.payout;
+        const baseGross = ask * DERIV_MATCH_BASE_PAYOUT_RATIO;
+        if (baseGross > 0) {
+          const liveMarkup = Math.max(0, Math.round(((baseGross - payout) / baseGross) * 1000) / 10);
+          if (liveMarkup >= 0 && liveMarkup <= 10) {
+            setConfiguredMarkup(liveMarkup);
+            setAppIdMarkup(activeAppId, liveMarkup);
+          }
+        }
+      }
+    });
 
     // Listen for balance updates from Deriv (applies to real accounts, preserves demo trading)
     ws.registerHandler("balance", (data) => {
@@ -375,6 +421,23 @@ export function TradeTerminal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Request live contract proposal from Deriv when connected and when stake changes
+  useEffect(() => {
+    if (status === "live" && wsRef.current) {
+      wsRef.current.send({
+        proposal: 1,
+        amount: stake,
+        basis: "stake",
+        contract_type: "DIGITMATCH",
+        currency: activeAccount?.currency || "USD",
+        duration: 1,
+        duration_unit: "t",
+        underlying_symbol: "R_100",
+        barrier: "5",
+      }).catch(() => {});
+    }
+  }, [status, stake, activeAccount?.currency]);
+
   function handleTickEvent(tickList: number[], _currentPrice: number, currentD: number) {
     const s = stateRef.current;
 
@@ -383,7 +446,7 @@ export function TradeTerminal() {
       const p = pending.current;
       pending.current = null;
       const won = currentD === p.target;
-      const { netWinProfit } = calculateMatchesPayout(p.stake);
+      const { netWinProfit } = calculateMatchesPayout(p.stake, s.configuredMarkup);
       const pnl = won ? netWinProfit : -p.stake;
 
       const newRow: TradeRow = {
@@ -541,7 +604,7 @@ export function TradeTerminal() {
         const nextDigit = windowDigits[i + 1];
         if (nextDigit === a.second) {
           wins++;
-          pnl += calculateMatchesPayout(stake).netWinProfit;
+          pnl += calculateMatchesPayout(stake, configuredMarkup).netWinProfit;
         } else {
           losses++;
           pnl -= stake;
@@ -841,6 +904,20 @@ export function TradeTerminal() {
                       : "Virtual trading environment with simulated balance."}
                   </p>
                 </div>
+
+                {/* App ID & Configured Markup Badge */}
+                <div className={`rounded-lg border px-3 py-2 flex items-center justify-between text-[11px] ${
+                  isDark ? "border-zinc-800/80 bg-zinc-900/40 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-600"
+                }`}>
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+                    <span className="text-zinc-500">App ID:</span>
+                    <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-800"}`} title={activeAppId}>
+                      {activeAppId.length > 12 ? `${activeAppId.slice(0, 10)}...` : activeAppId}
+                    </span>
+                  </span>
+                  <span className="text-teal-500 font-semibold num">{configuredMarkup.toFixed(1)}% Markup</span>
+                </div>
               </div>
 
               {isConnectedToDeriv ? (
@@ -1058,9 +1135,9 @@ export function TradeTerminal() {
                 ))}
               </div>
 
-              {/* Live Deriv Matches Payout Breakdown with 3% Developer Markup */}
+              {/* Live Deriv Matches Payout Breakdown with App ID Configured Markup */}
               {(() => {
-                const payoutInfo = calculateMatchesPayout(stake);
+                const payoutInfo = calculateMatchesPayout(stake, configuredMarkup);
                 return (
                   <div className={`mt-3 rounded-lg border p-3 space-y-2 ${
                     isDark ? "border-zinc-800/80 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
@@ -1083,7 +1160,9 @@ export function TradeTerminal() {
                     <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
                       isDark ? "border-zinc-800/60" : "border-slate-200"
                     }`}>
-                      <span>Deriv Markup (3%): -${payoutInfo.markupFee.toFixed(2)}</span>
+                      <span title={`Configured markup for App ID ${activeAppId}`}>
+                        App ID Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}
+                      </span>
                       <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
                     </div>
                   </div>

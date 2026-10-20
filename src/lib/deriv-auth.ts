@@ -34,6 +34,7 @@ export interface OTPResponse {
 
 const STORAGE_KEYS = {
   APP_ID: 'deriv_app_id',
+  APP_MARKUP: 'deriv_app_markup',
   CSRF_TOKEN: 'deriv_oauth_csrf',
   CODE_VERIFIER: 'deriv_oauth_code_verifier',
   REDIRECT_URI: 'deriv_oauth_redirect_uri',
@@ -85,7 +86,8 @@ export async function sha256Base64url(input: string): Promise<string> {
  * Storage helpers
  */
 export function getSavedAppId(): string {
-  return HARDCODED_APP_ID;
+  if (typeof window === 'undefined') return HARDCODED_APP_ID;
+  return localStorage.getItem(STORAGE_KEYS.APP_ID) || import.meta.env.VITE_DERIV_CLIENT_ID || HARDCODED_APP_ID;
 }
 
 export function setSavedAppId(appId: string): void {

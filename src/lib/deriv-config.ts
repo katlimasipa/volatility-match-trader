@@ -11,8 +11,49 @@ export const getDerivClientId = (): string => {
 export const DERIV_AUTH_URL = 'https://auth.deriv.com/oauth2/auth';
 export const DERIV_SCOPES = DEFAULT_DERIV_SCOPES;
 
-// Live market tick stream using Deriv public WebSocket endpoint
-export const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
+/**
+ * Deriv App Markup Configuration by App ID:
+ * When an App ID is registered on the Deriv Developer Portal, the developer specifies
+ * an app_markup_percentage (e.g. 3.0%).
+ * Deriv uses this App ID to automatically calculate contract payouts and deduct the developer's markup.
+ */
+export const REGISTERED_APP_MARKUPS: Record<string, number> = {
+  '34JeA7thqzN4l0B8LCC6A': 3.0,
+};
+
+export function getAppIdMarkup(appId?: string): number {
+  const id = appId || getDerivClientId();
+  if (typeof window !== 'undefined' && id) {
+    const custom = localStorage.getItem(`deriv_markup_${id}`);
+    if (custom !== null) {
+      const parsed = parseFloat(custom);
+      if (!isNaN(parsed) && parsed >= 0) return parsed;
+    }
+  }
+  if (import.meta.env.VITE_DERIV_APP_MARKUP) {
+    const envMarkup = parseFloat(import.meta.env.VITE_DERIV_APP_MARKUP);
+    if (!isNaN(envMarkup) && envMarkup >= 0) return envMarkup;
+  }
+  if (id && REGISTERED_APP_MARKUPS[id] !== undefined) {
+    return REGISTERED_APP_MARKUPS[id];
+  }
+  return 3.0;
+}
+
+export function setAppIdMarkup(appId: string, markup: number): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(`deriv_markup_${appId}`, String(markup));
+}
+
+// Live market tick stream using Deriv WebSocket endpoint with configured App ID
+export const getDerivWsUrl = (appId?: string): string => {
+  const id = appId || getDerivClientId();
+  return id
+    ? `wss://api.derivws.com/trading/v1/options/ws/public?app_id=${encodeURIComponent(id)}`
+    : 'wss://api.derivws.com/trading/v1/options/ws/public';
+};
+
+export const DERIV_WS_URL = getDerivWsUrl();
 
 /**
  * Deriv OAuth 2.0 Redirect URI
