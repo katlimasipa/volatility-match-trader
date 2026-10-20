@@ -10,43 +10,64 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as TradeRouteImport } from './routes/trade'
+import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
+import { Route as AuthenticatedTradeRouteImport } from './routes/_authenticated/trade'
+import { Route as DerivCallbackRouteImport } from './routes/deriv.callback'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TradeRoute = TradeRouteImport.update({
+const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
+  id: '/_authenticated',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedTradeRoute = AuthenticatedTradeRouteImport.update({
   id: '/trade',
   path: '/trade',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const DerivCallbackRoute = DerivCallbackRouteImport.update({
+  id: '/deriv/callback',
+  path: '/deriv/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/trade': typeof TradeRoute
+  '/trade': typeof AuthenticatedTradeRoute
+  '/deriv/callback': typeof DerivCallbackRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/trade': typeof TradeRoute
+  '/trade': typeof AuthenticatedTradeRoute
+  '/deriv/callback': typeof DerivCallbackRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/trade': typeof TradeRoute
+  '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
+  '/_authenticated/trade': typeof AuthenticatedTradeRoute
+  '/deriv/callback': typeof DerivCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/trade'
+  fullPaths: '/' | '/trade' | '/deriv/callback'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/trade'
-  id: '__root__' | '/' | '/trade'
+  to: '/' | '/trade' | '/deriv/callback'
+  id:
+    | '__root__'
+    | '/'
+    | '/_authenticated'
+    | '/_authenticated/trade'
+    | '/deriv/callback'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  TradeRoute: typeof TradeRoute
+  AuthenticatedRouteRoute: typeof AuthenticatedRouteRouteWithChildren
+  DerivCallbackRoute: typeof DerivCallbackRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -58,19 +79,45 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/trade': {
-      id: '/trade'
+    '/_authenticated': {
+      id: '/_authenticated'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthenticatedRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authenticated/trade': {
+      id: '/_authenticated/trade'
       path: '/trade'
       fullPath: '/trade'
-      preLoaderRoute: typeof TradeRouteImport
+      preLoaderRoute: typeof AuthenticatedTradeRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/deriv/callback': {
+      id: '/deriv/callback'
+      path: '/deriv/callback'
+      fullPath: '/deriv/callback'
+      preLoaderRoute: typeof DerivCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
 }
 
+interface AuthenticatedRouteRouteChildren {
+  AuthenticatedTradeRoute: typeof AuthenticatedTradeRoute
+}
+
+const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedTradeRoute: AuthenticatedTradeRoute,
+}
+
+const AuthenticatedRouteRouteWithChildren =
+  AuthenticatedRouteRoute._addFileChildren(AuthenticatedRouteRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  TradeRoute: TradeRoute,
+  AuthenticatedRouteRoute: AuthenticatedRouteRouteWithChildren,
+  DerivCallbackRoute: DerivCallbackRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
