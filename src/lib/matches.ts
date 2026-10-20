@@ -1,7 +1,7 @@
 // Matches strategy analysis for Volatility 100 (R_100).
 export const SYMBOL = "R_100";
 export const PIP_DECIMALS = 2;
-export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3%
+export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
 export const MAX_RUNS = 3;   // exactly 3 runs per cycle
 export const WINDOW = 1000;
 
@@ -23,15 +23,15 @@ export interface Analysis {
   secondPct: number;
   diff: number;       // mostPct - secondPct
   ready: boolean;     // strictly total >= WINDOW (1,000 ticks)
-  ok: boolean;        // ready && diff <= MAX_DIFF
+  ok: boolean;        // ready && diff <= maxDiff
 }
 
 /**
  * Compute frequency and percentage distribution of digits 0-9 across the last 1,000 ticks.
- * Determines most and second most appearing digits and verifies if spread <= 0.3%.
+ * Determines most and second most appearing digits and verifies if spread <= maxDiff (defaults to 0.3%).
  * Strictly requires at least 1,000 ticks buffered before condition (ok) can be met.
  */
-export function analyze(digits: number[]): Analysis {
+export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis {
   // Always evaluate against the rolling last 1,000 ticks
   const windowDigits = digits.length > WINDOW ? digits.slice(-WINDOW) : digits;
   const counts = new Array(10).fill(0);
@@ -63,7 +63,7 @@ export function analyze(digits: number[]): Analysis {
     secondPct: runner.p,
     diff,
     ready,
-    ok: ready && diff <= MAX_DIFF,
+    ok: ready && diff <= maxDiff,
   };
 }
 

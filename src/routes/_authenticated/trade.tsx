@@ -89,8 +89,11 @@ export function TradeTerminal() {
   // Accounts state
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [activeType, setActiveType] = useState<"demo" | "real">("real");
   const [isConnectedToDeriv, setIsConnectedToDeriv] = useState(false);
+
+  // Derive activeAccount and activeType safely (guaranteed 100% in sync)
+  const activeAccount = accounts.find((a) => a.account_id === activeId) || accounts[0];
+  const activeType: "demo" | "real" = activeAccount?.account_type || "demo";
 
   // Market stream state: strictly chronological ticks and digits
   const [digits, setDigits] = useState<number[]>([]);
@@ -99,6 +102,7 @@ export function TradeTerminal() {
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("connecting");
 
   // Strategy & Bot configuration (Strictly Matches strategy parameters)
+  const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [stake, setStake] = useState(1);
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
@@ -131,8 +135,9 @@ export function TradeTerminal() {
     botState,
     reAnalyzeOnLoss,
     activeId,
+    maxDiff,
   });
-  stateRef.current = { running, stake, tp, sl, runCount, trades, botState, reAnalyzeOnLoss, activeId };
+  stateRef.current = { running, stake, tp, sl, runCount, trades, botState, reAnalyzeOnLoss, activeId, maxDiff };
 
   // Refresh live balances from Deriv API if logged in
   const refreshDerivBalances = useCallback(async () => {
@@ -170,23 +175,21 @@ export function TradeTerminal() {
 
     const savedAccounts = getStoredAccounts();
     const storedActive = getActiveAccountId();
-    const storedType = getActiveAccountType();
     const authInfo = getStoredAuthInfo();
 
     if (savedAccounts.length > 0) {
       setAccounts(savedAccounts);
-      setActiveId(storedActive || savedAccounts[0].account_id);
-      setActiveType(storedType);
+      const chosen = savedAccounts.find((a) => a.account_id === storedActive) || savedAccounts[0];
+      setActiveId(chosen.account_id);
       setIsConnectedToDeriv(Boolean(authInfo));
     } else {
       const initialMock: DerivAccount[] = [
-        { account_id: "ROT91945350", account_type: "real", currency: "USD", balance: "0.00" },
         { account_id: "VRTC1029384", account_type: "demo", currency: "USD", balance: "10000.00" },
+        { account_id: "CR91945350", account_type: "real", currency: "USD", balance: "0.00" },
       ];
       storeAccounts(initialMock);
       setAccounts(initialMock);
-      setActiveId("ROT91945350");
-      setActiveType("real");
+      setActiveId("VRTC1029384");
       setIsConnectedToDeriv(false);
     }
 
@@ -282,12 +285,21 @@ export function TradeTerminal() {
         setRecentTicks((prev) => [{ time: timeStr, price: q, digit: nextDigit }, ...prev.slice(0, 14)]);
 
         // Digits stream: append in strict incoming chronological sequence
+        let updatedDigits: number[] = [];
         setDigits((prev) => {
           const next = [...prev, nextDigit];
           if (next.length > WINDOW) next.shift();
-          handleTickEvent(next, q, nextDigit);
+          updatedDigits = next;
           return next;
         });
+
+        // Process trade logic OUTSIDE of setDigits to ensure state updates (balance, trades) are not batched/deferred
+        // Use setTimeout(0) to run after React has committed the digits state update
+        setTimeout(() => {
+          if (updatedDigits.length > 0) {
+            handleTickEvent(updatedDigits, q, nextDigit);
+          }
+        }, 0);
       }
     });
 
@@ -333,7 +345,7 @@ export function TradeTerminal() {
       // Auto-update amounts for active Demo or Real account
       setAccounts((prev) => {
         const updated = prev.map((acc) => {
-          if (acc.account_id === s.activeId) {
+          if (acc.account_id === s.activeId || (!s.activeId && acc === prev[0])) {
             const currentBal = parseFloat(acc.balance) || 0;
             const nextBal = Math.max(0, currentBal + pnl);
             return { ...acc, balance: nextBal.toFixed(2) };
@@ -343,9 +355,6 @@ export function TradeTerminal() {
         storeAccounts(updated);
         return updated;
       });
-
-      // Background sync with Deriv if connected
-      refreshDerivBalances();
 
       const totalPnl = updatedTrades.reduce((acc, t) => acc + t.pnl, 0);
       const nextRunCount = s.runCount + 1;
@@ -392,7 +401,7 @@ export function TradeTerminal() {
       }
     }
 
-    const a = analyze(tickList);
+    const a = analyze(tickList, s.maxDiff);
 
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
@@ -406,10 +415,10 @@ export function TradeTerminal() {
       setNote(`Run ${targetRun}/${MAX_RUNS}: Entered on digit ${currentD}. Matching target ${a.second}...`);
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
-      setNote(`Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${MAX_DIFF}%). Waiting for entry digit ${a.most}...`);
+      setNote(`Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`);
     } else {
       setBotState("ANALYZING");
-      setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${MAX_DIFF}%. Analyzing last 1,000 ticks...`);
+      setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${s.maxDiff}%. Analyzing last 1,000 ticks...`);
     }
   }
 
@@ -497,9 +506,7 @@ export function TradeTerminal() {
     const acc = accounts.find((a) => a.account_id === id);
     if (acc) {
       setActiveId(acc.account_id);
-      setActiveType(acc.account_type);
-      setActiveAccountId(acc.account_id);
-      refreshDerivBalances();
+      setActiveAccountId(acc.account_id, acc.account_type);
     }
   }
 
@@ -508,7 +515,38 @@ export function TradeTerminal() {
     const targetAcc = accounts.find((a) => a.account_type === targetType);
     if (targetAcc) {
       switchAccount(targetAcc.account_id);
+    } else {
+      const newAcc: DerivAccount = {
+        account_id: targetType === "demo" ? "VRTC1029384" : "CR91945350",
+        account_type: targetType,
+        currency: "USD",
+        balance: targetType === "demo" ? "10000.00" : "0.00",
+        status: "active",
+      };
+      setAccounts((prev) => {
+        const updated = [...prev, newAcc];
+        storeAccounts(updated);
+        return updated;
+      });
+      switchAccount(newAcc.account_id);
     }
+  }
+
+  function triggerManualTestTrade() {
+    if (digits.length < WINDOW) {
+      alert(`Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks required.`);
+      return;
+    }
+    const a = analyze(digits, maxDiff);
+    const targetRun = (runCount % MAX_RUNS) + 1;
+    pending.current = {
+      runIndex: targetRun,
+      entry: a.most,
+      target: a.second,
+      stake,
+    };
+    setBotState("IN TRADE");
+    setNote(`Test run ${targetRun}/${MAX_RUNS}: Entered on digit ${a.most}. Matching second most digit ${a.second} on next tick...`);
   }
 
   async function handleDirectOAuth() {
@@ -522,14 +560,12 @@ export function TradeTerminal() {
     }
   }
 
-  const analysis = analyze(digits);
+  const analysis = analyze(digits, maxDiff);
   const currentDigit = digits[digits.length - 1];
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.filter((t) => t.pnl < 0).length;
   const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0;
-
-  const activeAccount = accounts.find((a) => a.account_id === activeId) || accounts[0];
 
   // Strictly chronological sequence of the latest 33 digits (incoming order from left to right)
   const recentDigits33 = digits.slice(-33);
@@ -667,6 +703,19 @@ export function TradeTerminal() {
               </button>
 
               <button
+                onClick={triggerManualTestTrade}
+                disabled={digits.length < WINDOW || pending.current !== null}
+                title="Immediately execute 1 test run matching second most digit on next tick"
+                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isDark
+                    ? "border-teal-900 bg-teal-950/40 text-teal-300 hover:border-teal-700 hover:text-white"
+                    : "border-teal-300 bg-teal-50 text-teal-800 hover:border-teal-400"
+                }`}
+              >
+                TEST 1 RUN
+              </button>
+
+              <button
                 onClick={runBacktest1000Ticks}
                 title="Test strategy performance on last 1,000 ticks"
                 className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
@@ -786,7 +835,42 @@ export function TradeTerminal() {
                   <span className="text-zinc-500 text-[10px]">R_100</span>
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Enter on most appearing digit, match second most digit when spread ≤ 0.3%.
+                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}%.
+                </p>
+              </div>
+
+              {/* Spread Threshold Δ Selector */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-500">Max Spread Δ Threshold</span>
+                  <span className={`font-bold num ${analysis.diff <= maxDiff ? "text-teal-400" : "text-zinc-400"}`}>
+                    Δ ≤ {maxDiff}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-1">
+                  {[0.3, 0.5, 1.0, 1.5].map((val) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => setMaxDiff(val)}
+                      className={`rounded border py-1 text-[10px] font-semibold transition-colors ${
+                        maxDiff === val
+                          ? isDark
+                            ? "border-teal-500 bg-teal-500/20 text-teal-300 font-bold"
+                            : "border-teal-600 bg-teal-50 text-teal-800 font-bold"
+                          : isDark
+                            ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
+                            : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      {val === 0.3 ? "0.3% (SPEC)" : `${val}%`}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-zinc-500 leading-tight">
+                  {maxDiff === 0.3
+                    ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
+                    : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
                 </p>
               </div>
 
@@ -837,9 +921,14 @@ export function TradeTerminal() {
                     type="number"
                     min={0.35}
                     step={0.5}
-                    disabled={running}
                     value={stake}
-                    onChange={(e) => setStake(Math.max(0.35, Number(e.target.value)))}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setStake(isNaN(val) ? 0 : val);
+                    }}
+                    onBlur={() => {
+                      if (stake < 0.35) setStake(0.35);
+                    }}
                     className={`w-full rounded border px-3 py-2 text-sm font-semibold num outline-none ${
                       isDark
                         ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
@@ -855,7 +944,6 @@ export function TradeTerminal() {
                   <button
                     key={pct}
                     type="button"
-                    disabled={running}
                     onClick={() => {
                       const bal = activeAccount ? Number(activeAccount.balance) || 100 : 100;
                       const calculated = Math.max(0.35, Math.round((bal * (pct / 100)) * 100) / 100);
@@ -974,8 +1062,8 @@ export function TradeTerminal() {
                     <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                       {price !== null ? price.toFixed(2) : "—"}
                     </div>
-                    <div className="text-[11px] font-semibold text-zinc-400 num">
-                      SPREAD Δ {analysis.diff.toFixed(2)}% <span className="text-zinc-600">/ {MAX_DIFF}%</span>
+                    <div className={`text-[11px] font-semibold num ${analysis.diff <= maxDiff ? (isDark ? "text-teal-400" : "text-teal-600") : "text-zinc-400"}`}>
+                      SPREAD Δ {analysis.diff.toFixed(2)}% <span className="text-zinc-600">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
                     </div>
                   </div>
                 </div>
@@ -1294,7 +1382,7 @@ export function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Spread Threshold</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>Δ ≤ {MAX_DIFF}%</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>Δ ≤ {maxDiff}%</div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Symbol</div>
@@ -1342,7 +1430,7 @@ export function TradeTerminal() {
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Calculated across the latest {backtest.totalTicks} real market ticks of Volatility 100 Index using the Deriv Matches strategy (spread ≤ 0.3%, enter on most appearing digit, target second most appearing digit):
+              Calculated across the latest {backtest.totalTicks} real market ticks of Volatility 100 Index using the Deriv Matches strategy (spread ≤ {maxDiff}%, enter on most appearing digit, target second most appearing digit):
             </p>
 
             <div className={`grid grid-cols-2 gap-4 rounded border p-4 num ${

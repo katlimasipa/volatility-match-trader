@@ -130,11 +130,24 @@ export function getActiveAccountId(): string | null {
   return localStorage.getItem(STORAGE_KEYS.ACTIVE_ACCOUNT_ID);
 }
 
-export function setActiveAccountId(accountId: string): void {
+export function setActiveAccountId(accountId: string, explicitType?: 'demo' | 'real'): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(STORAGE_KEYS.ACTIVE_ACCOUNT_ID, accountId);
-  const isDemo = accountId.toUpperCase().startsWith('VRTC') || accountId.toUpperCase().startsWith('V');
-  localStorage.setItem(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE, isDemo ? 'demo' : 'real');
+  let type = explicitType;
+  if (!type) {
+    const stored = getStoredAccounts();
+    const found = stored.find((a) => a.account_id === accountId);
+    if (found) {
+      type = found.account_type;
+    } else {
+      const isDemo =
+        accountId.toUpperCase().startsWith('VRTC') ||
+        accountId.toUpperCase().startsWith('V') ||
+        accountId.toUpperCase().startsWith('DOT');
+      type = isDemo ? 'demo' : 'real';
+    }
+  }
+  localStorage.setItem(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE, type);
 }
 
 export function getActiveAccountType(): 'demo' | 'real' {

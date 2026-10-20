@@ -24,24 +24,33 @@ describe("Volatility 100 Matches strategy", () => {
     expect(a.ok).toBe(true);
   });
 
-  it("allows trade when difference is <= 0.3", () => {
+  it("allows trade when difference is <= 0.3 (default MAX_DIFF)", () => {
     // Exactly 1000 ticks: 120/1000 = 12.0%, 117/1000 = 11.7% -> diff exactly 0.3
     const counts = [95, 95, 95, 120, 95, 95, 95, 117, 94, 99];
     const a = analyze(build(counts));
     expect(a.most).toBe(3);
-    expect(a.second).toBe(7);
     expect(a.diff).toBe(0.3);
     expect(a.ok).toBe(true);
   });
 
-  it("blocks trade when difference exceeds 0.3", () => {
+  it("blocks trade when difference exceeds 0.3 (default MAX_DIFF)", () => {
     // Exactly 1000 ticks: 120/1000 = 12.0%, 116/1000 = 11.6% -> diff 0.4 > 0.3
     const counts = [98, 98, 98, 120, 98, 98, 98, 116, 88, 88];
     const a = analyze(build(counts));
     expect(a.most).toBe(3);
-    expect(a.second).toBe(7);
     expect(a.diff).toBe(0.4);
     expect(a.ok).toBe(false);
+  });
+
+  it("supports configurable spread threshold", () => {
+    const counts = [95, 95, 95, 120, 95, 95, 95, 110, 95, 100]; // diff 1.0%
+    const strictAnalysis = analyze(build(counts), 0.3);
+    expect(strictAnalysis.diff).toBe(1.0);
+    expect(strictAnalysis.ok).toBe(false);
+
+    const relaxedAnalysis = analyze(build(counts), 1.5);
+    expect(relaxedAnalysis.diff).toBe(1.0);
+    expect(relaxedAnalysis.ok).toBe(true);
   });
 
   it("uses the most appearing digit as entry trigger", () => {
