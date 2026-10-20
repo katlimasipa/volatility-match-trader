@@ -904,20 +904,6 @@ export function TradeTerminal() {
                       : "Virtual trading environment with simulated balance."}
                   </p>
                 </div>
-
-                {/* App ID & Configured Markup Badge */}
-                <div className={`rounded-lg border px-3 py-2 flex items-center justify-between text-[11px] ${
-                  isDark ? "border-zinc-800/80 bg-zinc-900/40 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-600"
-                }`}>
-                  <span className="flex items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
-                    <span className="text-zinc-500">App ID:</span>
-                    <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-800"}`} title={activeAppId}>
-                      {activeAppId.length > 12 ? `${activeAppId.slice(0, 10)}...` : activeAppId}
-                    </span>
-                  </span>
-                  <span className="text-teal-500 font-semibold num">{configuredMarkup.toFixed(1)}% Markup</span>
-                </div>
               </div>
 
               {isConnectedToDeriv ? (
@@ -1160,9 +1146,7 @@ export function TradeTerminal() {
                     <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
                       isDark ? "border-zinc-800/60" : "border-slate-200"
                     }`}>
-                      <span title={`Configured markup for App ID ${activeAppId}`}>
-                        App ID Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}
-                      </span>
+                      <span>Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}</span>
                       <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
                     </div>
                   </div>
