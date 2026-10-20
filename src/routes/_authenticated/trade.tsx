@@ -21,7 +21,7 @@ import { analyze, lastDigit, shouldEnter, MAX_DIFF, MAX_RUNS, SYMBOL, WINDOW } f
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
-      { title: "ThDpstSmrtTrdr - Matches Strategy" },
+      { title: "ThDpst Matches // Volatility 100" },
       { name: "description", content: "Deriv Matches smart trader bot for Volatility 100." },
     ],
   }),
@@ -67,7 +67,7 @@ export function TradeTerminal() {
   const navigate = useNavigate();
   const [, setEmail] = useState<string | null>(null);
 
-  // Theme option: toggleable between Dark (default) and Light mode, persisted in localStorage
+  // Minimalist theme state (Dark by default, toggles to clean Light)
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("thdpst_theme");
@@ -86,7 +86,7 @@ export function TradeTerminal() {
 
   const isDark = theme === "dark";
 
-  // Deriv connection & account state
+  // Accounts state
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<"demo" | "real">("real");
@@ -98,7 +98,7 @@ export function TradeTerminal() {
   const [recentTicks, setRecentTicks] = useState<TickItem[]>([]);
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("connecting");
 
-  // Strategy & Bot configuration (No "reps" - strictly Matches strategy parameters)
+  // Strategy & Bot configuration (Strictly Matches strategy parameters)
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [stake, setStake] = useState(1);
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
@@ -110,8 +110,8 @@ export function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
-  const [botState, setBotState] = useState<"Idle" | "Analyzing" | "Waiting Entry" | "In Trade" | "Loss Re-analysis" | "Completed">("Idle");
-  const [note, setNote] = useState("System idle. Configure stake and click Start Bot.");
+  const [botState, setBotState] = useState<"IDLE" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED">("IDLE");
+  const [note, setNote] = useState("System idle. Configure stake and start bot.");
 
   // Backtest / Inspection Modal
   const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
@@ -364,11 +364,11 @@ export function TradeTerminal() {
       // Re-analysis rule on loss
       if (!won && s.reAnalyzeOnLoss) {
         lossCooldownTicks.current = 5;
-        setBotState("Loss Re-analysis");
+        setBotState("LOSS RE-ANALYSIS");
         setNote(`Run ${p.runIndex}/${MAX_RUNS} Lost (${currentD} ≠ ${p.target}). Re-analyzing market distribution...`);
         return;
       } else {
-        setBotState("Analyzing");
+        setBotState("ANALYZING");
         setNote(`Run ${p.runIndex}/${MAX_RUNS} Won (+${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`);
         return;
       }
@@ -376,7 +376,7 @@ export function TradeTerminal() {
 
     if (!s.running) return;
 
-    if (s.botState === "Loss Re-analysis") {
+    if (s.botState === "LOSS RE-ANALYSIS") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
         setNote(`Loss re-analysis: streaming fresh ticks (${lossCooldownTicks.current} remaining)...`);
@@ -394,13 +394,13 @@ export function TradeTerminal() {
         target: a.second,
         stake: s.stake,
       };
-      setBotState("In Trade");
+      setBotState("IN TRADE");
       setNote(`Run ${targetRun}/${MAX_RUNS}: Entered on digit ${currentD}. Matching target ${a.second}...`);
     } else if (a.ok) {
-      setBotState("Waiting Entry");
+      setBotState("WAITING ENTRY");
       setNote(`Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${MAX_DIFF}%). Waiting for entry digit ${a.most}...`);
     } else {
-      setBotState("Analyzing");
+      setBotState("ANALYZING");
       setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${MAX_DIFF}%. Analyzing market ticks...`);
     }
   }
@@ -415,13 +415,13 @@ export function TradeTerminal() {
     pending.current = null;
     lossCooldownTicks.current = 0;
     setRunning(true);
-    setBotState("Analyzing");
+    setBotState("ANALYZING");
     setNote("Bot active. Evaluating Volatility 100 digit distribution for Run 1...");
   }
 
   function stopBot(message: string) {
     setRunning(false);
-    setBotState("Idle");
+    setBotState("IDLE");
     setNote(message);
     pending.current = null;
   }
@@ -533,7 +533,7 @@ export function TradeTerminal() {
     <div className={`min-h-screen font-mono antialiased transition-colors ${
       isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
     }`}>
-      {/* 1. Header Bar */}
+      {/* 1. Header Bar: Minimalist */}
       <header className={`border-b px-6 py-3.5 ${
         isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
       }`}>
@@ -541,11 +541,9 @@ export function TradeTerminal() {
           {/* Logo & Sub-status */}
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2.5">
-              <span className="flex h-3 w-3 items-center justify-center rounded-full bg-teal-500 ring-4 ring-teal-500/20">
-                <span className="h-1.5 w-1.5 rounded-full bg-white" />
-              </span>
-              <span className={`text-base font-bold tracking-tight ${isDark ? "text-white" : "text-slate-900"}`}>
-                ThDpstSmrtTrdr <span className="font-normal text-zinc-500">- Matches Strategy</span>
+              <span className="h-2 w-2 rounded-full bg-teal-500" />
+              <span className={`text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
+                ThDpst Matches <span className="font-normal text-zinc-500">// Volatility 100</span>
               </span>
             </div>
 
@@ -553,8 +551,8 @@ export function TradeTerminal() {
               isDark ? "border-zinc-800" : "border-slate-200"
             }`}>
               <div className="flex items-center gap-1.5">
-                <span className={`h-2 w-2 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-amber-400"}`} />
-                <span className="font-medium text-zinc-400 uppercase">{botState}</span>
+                <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+                <span className="font-medium text-zinc-400">{botState}</span>
               </div>
               <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
               <div className="flex items-center gap-1">
@@ -576,21 +574,21 @@ export function TradeTerminal() {
           </div>
 
           {/* Right Header Controls */}
-          <div className="flex items-center gap-3.5">
+          <div className="flex items-center gap-3">
             {/* Live Auto-updating Balance */}
             <div className="flex items-center gap-2 text-xs font-medium">
-              <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
               <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                 {activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
               </span>
             </div>
 
-            {/* Account Switcher Dropdown with Auto-updating Balances */}
+            {/* Account Switcher Dropdown */}
             <select
               value={activeId || ""}
               onChange={(e) => switchAccount(e.target.value)}
-              className={`rounded border px-3 py-1.5 text-xs font-medium outline-none transition-colors ${
+              className={`rounded border px-2.5 py-1.5 text-xs font-medium outline-none transition-colors ${
                 isDark
                   ? "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700"
                   : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"
@@ -603,37 +601,33 @@ export function TradeTerminal() {
               ))}
             </select>
 
-            {/* Light / Dark Mode Toggle Option */}
+            {/* Light / Dark Mode Toggle (Clean Text, No Emojis) */}
             <button
               onClick={toggleTheme}
-              title={`Switch to ${isDark ? "Light" : "Dark"} Mode`}
-              className={`flex items-center gap-1.5 rounded border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              title="Toggle theme"
+              className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
                 isDark
                   ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
                   : "border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-900"
               }`}
             >
-              <span>{isDark ? "☀️" : "🌙"}</span>
-              <span className="hidden md:inline">{isDark ? "Light" : "Dark"}</span>
+              {isDark ? "LIGHT" : "DARK"}
             </button>
 
-            {/* Log Out Button */}
+            {/* Log Out Button (Clean Text, No SVG) */}
             <button
               onClick={() => {
                 session.clear();
                 clearAllDerivAuth();
                 navigate({ to: "/" });
               }}
-              className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs transition-colors ${
+              className={`rounded border px-2.5 py-1.5 text-xs uppercase tracking-wider transition-colors ${
                 isDark
                   ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
                   : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900"
               }`}
             >
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-              <span>Log out</span>
+              EXIT
             </button>
 
             {/* Action Buttons: Teal Start Bot button */}
@@ -643,7 +637,7 @@ export function TradeTerminal() {
                   onClick={() => stopBot("User stopped bot.")}
                   className="rounded bg-rose-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 transition-colors shadow-sm"
                 >
-                  Stop Bot
+                  STOP BOT
                 </button>
               ) : (
                 <button
@@ -651,31 +645,31 @@ export function TradeTerminal() {
                   disabled={digits.length === 0}
                   className="rounded bg-teal-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40"
                 >
-                  Start Bot
+                  START BOT
                 </button>
               )}
 
               <button
                 onClick={resetSession}
-                className={`rounded border px-3.5 py-2 text-xs font-semibold transition-colors ${
+                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
                     : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
                 }`}
               >
-                Reset
+                RESET
               </button>
 
               <button
                 onClick={runBacktest1000Ticks}
-                title="Test and calculate performance on last 1,000 ticks"
-                className={`rounded border px-3.5 py-2 text-xs font-semibold transition-colors ${
+                title="Test strategy performance on last 1,000 ticks"
+                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
                     : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
                 }`}
               >
-                End & Save
+                TEST 1K
               </button>
             </div>
           </div>
@@ -699,10 +693,10 @@ export function TradeTerminal() {
                 {activeType === "demo" && (
                   <button
                     onClick={resetDemoBalance}
-                    title="Reset demo virtual funds back to $10,000"
-                    className="text-[10px] text-teal-500 hover:underline"
+                    title="Reset demo virtual balance to $10,000"
+                    className="text-[10px] text-teal-500 hover:underline uppercase"
                   >
-                    Reset $10k
+                    RESET $10K
                   </button>
                 )}
               </div>
@@ -721,7 +715,7 @@ export function TradeTerminal() {
                 >
                   <div className="flex items-center justify-between text-xs font-semibold">
                     <span className={isDark ? "text-white" : "text-slate-900"}>
-                      {activeAccount?.account_id} — {activeType === "real" ? "Real" : "Demo"}
+                      {activeAccount?.account_id} ({activeType === "real" ? "Real" : "Demo"})
                     </span>
                     <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                       ${Number(activeAccount?.balance || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
@@ -739,37 +733,37 @@ export function TradeTerminal() {
                 <div className="flex gap-2">
                   <button
                     disabled
-                    className={`flex-1 rounded border py-2 text-xs font-medium ${
+                    className={`flex-1 rounded border py-2 text-xs font-medium uppercase tracking-wider ${
                       isDark
                         ? "border-zinc-800 bg-zinc-900 text-zinc-400"
                         : "border-slate-200 bg-slate-100 text-slate-600"
                     }`}
                   >
-                    ✓ Connected
+                    CONNECTED
                   </button>
                   <button
                     onClick={refreshDerivBalances}
                     title="Sync latest balances from Deriv"
-                    className={`rounded border px-3 py-2 text-xs transition-colors ${
+                    className={`rounded border px-3 py-2 text-xs uppercase tracking-wider transition-colors ${
                       isDark
                         ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
                         : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900"
                     }`}
                   >
-                    🔄
+                    SYNC
                   </button>
                 </div>
               ) : (
                 <button
                   onClick={handleDirectOAuth}
-                  className="w-full rounded bg-teal-600 py-2 text-xs font-semibold text-white hover:bg-teal-500 transition-colors"
+                  className="w-full rounded bg-teal-600 py-2 text-xs font-semibold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors"
                 >
-                  Connect Deriv Auth 2.0
+                  CONNECT DERIV AUTH 2.0
                 </button>
               )}
             </section>
 
-            {/* STRATEGY (Clean Matches Strategy - No Reps) */}
+            {/* STRATEGY (Strict Matches Strategy) */}
             <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
             }`}>
@@ -790,7 +784,7 @@ export function TradeTerminal() {
                 </p>
               </div>
 
-              {/* Loss Re-analysis Toggle */}
+              {/* Loss Protection Toggle */}
               <div className={`rounded-lg border p-3 space-y-2 ${
                 isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
               }`}>
@@ -816,11 +810,11 @@ export function TradeTerminal() {
                   </span>
                 </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Skips immediate trade on a loss; buffers fresh ticks and re-analyzes market distribution before next trade.
+                  Pauses and re-analyzes market distribution before next trade if a loss occurs.
                 </p>
               </div>
 
-              {/* Cycle Runs (3 runs only per user spec) & Stake */}
+              {/* Cycle Limit & Stake */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-xs text-zinc-500">Cycle Limit</label>
@@ -999,7 +993,7 @@ export function TradeTerminal() {
                 <div className="space-y-1.5 pt-2">
                   <div className="flex items-center justify-between text-[10px] uppercase text-zinc-500 pb-1">
                     <span>Live Sequence (Chronological)</span>
-                    <span className="text-zinc-400 font-semibold">Latest &rarr;</span>
+                    <span className="text-zinc-400 font-semibold uppercase">LATEST</span>
                   </div>
 
                   <div className="grid grid-cols-11 gap-1.5 text-center text-xs num">
@@ -1135,12 +1129,7 @@ export function TradeTerminal() {
 
               <div className="p-6">
                 {trades.length === 0 ? (
-                  <div className="py-16 text-center space-y-3">
-                    <div className={`flex justify-center ${isDark ? "text-zinc-700" : "text-slate-300"}`}>
-                      <svg className="h-10 w-10 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                    </div>
+                  <div className="py-16 text-center">
                     <p className={`text-xs ${isDark ? "text-zinc-600" : "text-slate-400"}`}>
                       Trades will appear here once the bot fires.
                     </p>
@@ -1334,9 +1323,9 @@ export function TradeTerminal() {
               </span>
               <button
                 onClick={() => setShowBacktestModal(false)}
-                className="text-zinc-500 hover:text-white"
+                className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
               >
-                ✕
+                [X]
               </button>
             </div>
 
@@ -1371,7 +1360,7 @@ export function TradeTerminal() {
               onClick={() => setShowBacktestModal(false)}
               className="w-full rounded border border-white bg-white py-2.5 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
             >
-              Close Test Results
+              CLOSE TEST RESULTS
             </button>
           </div>
         </div>
