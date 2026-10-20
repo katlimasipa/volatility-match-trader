@@ -1,17 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { session, getDerivClientId, setDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
+import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
 import {
   startDerivAuth,
   getStoredAccounts,
-  storeAccounts,
   getActiveAccountId,
   setActiveAccountId,
   getActiveAccountType,
   getStoredAuthInfo,
-  getManualToken,
-  setManualToken,
   clearAllDerivAuth,
+  handleIncomingOAuth,
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
@@ -55,9 +53,7 @@ function TradeTerminal() {
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<"demo" | "real">("demo");
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [appIdInput, setAppIdInput] = useState("");
-  const [manualTokenInput, setManualTokenInput] = useState("");
+  const [isConnectedToDeriv, setIsConnectedToDeriv] = useState(false);
 
   // Market stream state
   const [digits, setDigits] = useState<number[]>([]);
@@ -93,6 +89,17 @@ function TradeTerminal() {
 
   // Check login session & initialize account states
   useEffect(() => {
+    // 1. Process any incoming OAuth callback on mount
+    handleIncomingOAuth().then((res) => {
+      if (res.handled && res.success) {
+        const saved = getStoredAccounts();
+        if (saved.length > 0) {
+          setAccounts(saved);
+          setIsConnectedToDeriv(true);
+        }
+      }
+    });
+
     const userEmail = session.get();
     if (!userEmail) {
       navigate({ to: "/" });
@@ -103,11 +110,13 @@ function TradeTerminal() {
     const savedAccounts = getStoredAccounts();
     const storedActive = getActiveAccountId();
     const storedType = getActiveAccountType();
+    const authInfo = getStoredAuthInfo();
 
-    if (savedAccounts.length > 0) {
+    if (authInfo && savedAccounts.length > 0) {
       setAccounts(savedAccounts);
       setActiveId(storedActive || savedAccounts[0].account_id);
       setActiveType(storedType);
+      setIsConnectedToDeriv(true);
     } else {
       // Mock initial demo & real view if not connected yet
       const initialMock: DerivAccount[] = [
@@ -117,15 +126,13 @@ function TradeTerminal() {
       setAccounts(initialMock);
       setActiveId("VRTC_DEMO");
       setActiveType("demo");
+      setIsConnectedToDeriv(false);
     }
-
-    setAppIdInput(getDerivClientId());
-    setManualTokenInput(getManualToken());
   }, [navigate]);
 
   // Connect to Deriv WebSocket tick feed
   useEffect(() => {
-    const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${getDerivClientId() || "1089"}`;
+    const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${getDerivClientId()}`;
     const ws = new DerivWS(wsUrl, (s) => setStatus(s));
     wsRef.current = ws;
 
@@ -213,9 +220,9 @@ function TradeTerminal() {
         return stopBot(`Cycle finished: ${MAX_RUNS} runs completed (Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)})`);
       }
 
-      // If Loss: Require re-analysis of the market before allowing the next trade
+      // If Loss: Require re-analysis of the market before allowing next run
       if (!won) {
-        lossCooldownTicks.current = 5; // require at least 5 fresh ticks of re-analysis
+        lossCooldownTicks.current = 5;
         setBotState("loss_reanalysis");
         setNote(`Run ${p.runIndex}/${MAX_RUNS} Lost (${currentD} ≠ ${p.target}). Re-analyzing market distribution...`);
         return;
@@ -286,24 +293,10 @@ function TradeTerminal() {
     }
   }
 
-  function handleSaveAppId() {
-    setDerivClientId(appIdInput.trim());
-    if (manualTokenInput.trim()) {
-      setManualToken(manualTokenInput.trim());
-    }
-    setShowAuthModal(false);
-  }
-
-  async function handleTriggerOAuth() {
-    const id = appIdInput.trim() || getDerivClientId();
-    if (!id) {
-      alert("Please enter your Deriv App ID first.");
-      return;
-    }
-    setDerivClientId(id);
+  async function handleDirectOAuth() {
     try {
       await startDerivAuth({
-        clientId: id,
+        clientId: getDerivClientId(),
         redirectUri: derivRedirectUri(),
       });
     } catch (e) {
@@ -368,13 +361,19 @@ function TradeTerminal() {
               </button>
             </div>
 
-            {/* Deriv Auth Button */}
-            <button
-              onClick={() => setShowAuthModal(true)}
-              className="border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300 hover:border-zinc-600 hover:text-white transition-colors"
-            >
-              DERIV AUTH 2.0
-            </button>
+            {/* Deriv Auth 2.0 Action Button */}
+            {isConnectedToDeriv ? (
+              <span className="border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-300">
+                DERIV CONNECTED
+              </span>
+            ) : (
+              <button
+                onClick={handleDirectOAuth}
+                className="border border-white bg-white px-3 py-1.5 text-xs font-semibold text-black hover:bg-zinc-200 transition-colors"
+              >
+                CONNECT DERIV AUTH 2.0
+              </button>
+            )}
 
             {/* Sign Out */}
             <button
@@ -720,101 +719,6 @@ function TradeTerminal() {
           </div>
         </section>
       </div>
-
-      {/* Deriv Auth 2.0 Settings & Permissions Modal */}
-      {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 backdrop-blur-xs">
-          <div className="w-full max-w-lg border border-zinc-800 bg-zinc-950 p-6 space-y-6">
-            <div className="flex items-center justify-between border-b border-zinc-900 pb-3">
-              <div>
-                <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
-                  DERIV API SETTINGS
-                </span>
-                <h3 className="text-lg font-semibold text-white">Deriv Auth 2.0 Integration</h3>
-              </div>
-              <button
-                onClick={() => setShowAuthModal(false)}
-                className="text-zinc-500 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              <label className="block space-y-1">
-                <span className="text-zinc-400 uppercase tracking-wider">Deriv App ID</span>
-                <input
-                  type="text"
-                  placeholder="e.g. 1089 or your registered App ID"
-                  value={appIdInput}
-                  onChange={(e) => setAppIdInput(e.target.value)}
-                  className="w-full border border-zinc-800 bg-black px-3 py-2 text-white outline-none focus:border-white"
-                />
-              </label>
-
-              <label className="block space-y-1">
-                <span className="text-zinc-400 uppercase tracking-wider">Manual API Token (Optional Fallback)</span>
-                <input
-                  type="password"
-                  placeholder="Paste Deriv API token for direct connection"
-                  value={manualTokenInput}
-                  onChange={(e) => setManualTokenInput(e.target.value)}
-                  className="w-full border border-zinc-800 bg-black px-3 py-2 text-white outline-none focus:border-white"
-                />
-              </label>
-
-              <div className="border border-zinc-900 bg-black p-3 space-y-2">
-                <span className="font-semibold text-white uppercase tracking-wider text-[11px]">
-                  Registered Redirect URI:
-                </span>
-                <div className="text-zinc-400 select-all font-mono break-all">
-                  {derivRedirectUri()}
-                </div>
-              </div>
-
-              {/* Required Permissions Guide */}
-              <div className="border border-zinc-900 bg-black p-3 space-y-2">
-                <span className="font-semibold text-white uppercase tracking-wider text-[11px]">
-                  Authorisation Scopes (Deriv Portal):
-                </span>
-                <ul className="space-y-1.5 text-zinc-400">
-                  <li className="flex items-center gap-2">
-                    <span className="text-white font-bold">☑</span>
-                    <span><strong className="text-white">Trade</strong> &mdash; Provides access to buying and selling contracts.</span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <span className="text-white font-bold">☑</span>
-                    <span><strong className="text-white">Account management</strong> &mdash; Provides access to manage and switch user accounts.</span>
-                  </li>
-                  <li className="flex items-center gap-2 text-zinc-600">
-                    <span>☐</span>
-                    <span><strong>Application insights</strong> &mdash; Not needed (leave unchecked).</span>
-                  </li>
-                  <li className="flex items-center gap-2 text-zinc-600">
-                    <span>☐</span>
-                    <span><strong>Payments</strong> &mdash; Not needed (leave unchecked).</span>
-                  </li>
-                </ul>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-3 pt-2">
-              <button
-                onClick={handleTriggerOAuth}
-                className="flex-1 border border-white bg-white py-2.5 font-mono text-xs uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors"
-              >
-                Sign in with Deriv Auth 2.0
-              </button>
-              <button
-                onClick={handleSaveAppId}
-                className="border border-zinc-700 bg-zinc-900 px-5 py-2.5 font-mono text-xs uppercase tracking-wider text-white hover:border-white transition-colors"
-              >
-                Save Settings
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
   );
 }

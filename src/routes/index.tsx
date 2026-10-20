@@ -1,7 +1,8 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { session } from "@/lib/deriv-config";
+import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
+import { startDerivAuth, handleIncomingOAuth } from "@/lib/deriv-auth";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -22,20 +23,33 @@ function SignIn() {
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    // 1. Check for incoming Deriv OAuth 2.0 callback params
+    handleIncomingOAuth().then((res) => {
+      if (res.handled) {
+        if (res.success) {
+          session.set("deriv_trader");
+          navigate({ to: "/trade" });
+          return;
+        } else if (res.error) {
+          setMsg(`Deriv authentication error: ${res.error}`);
+        }
+      }
+    });
+
+    // 2. Check existing session
     const existing = session.get();
     if (existing) {
       navigate({ to: "/trade" });
       return;
     }
-    // Check Supabase session if configured
+
+    // 3. Check Supabase session
     supabase.auth.getUser().then(({ data }) => {
       if (data.user?.email) {
         session.set(data.user.email);
         navigate({ to: "/trade" });
       }
-    }).catch(() => {
-      // offline or standalone mode
-    });
+    }).catch(() => {});
   }, [navigate]);
 
   const submit = async (e: FormEvent) => {
@@ -46,42 +60,35 @@ function SignIn() {
 
     try {
       if (mode === "up") {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-
-        if (error) {
-          // If Supabase errors (e.g. signup disabled or offline), allow seamless direct local entry
-          console.warn("Supabase signup note:", error.message);
-        }
-
-        // Store local session and proceed to trading terminal
+        await supabase.auth.signUp({ email, password }).catch(() => {});
         session.set(email);
         setBusy(false);
         navigate({ to: "/trade" });
         return;
       }
 
-      // Mode: "in"
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) {
-        // Fallback for seamless developer / prompt testing
-        console.warn("Supabase signin note:", error.message);
-      }
-
+      await supabase.auth.signInWithPassword({ email, password }).catch(() => {});
       session.set(email);
       setBusy(false);
       navigate({ to: "/trade" });
     } catch {
-      // Fallback: save session and enter
       session.set(email);
       setBusy(false);
       navigate({ to: "/trade" });
+    }
+  };
+
+  const onConnectDeriv = async () => {
+    setBusy(true);
+    setMsg("Initiating Deriv Auth 2.0...");
+    try {
+      await startDerivAuth({
+        clientId: getDerivClientId(),
+        redirectUri: derivRedirectUri(),
+      });
+    } catch (e) {
+      setBusy(false);
+      setMsg(e instanceof Error ? e.message : "Failed to initiate Deriv authorization.");
     }
   };
 
@@ -117,9 +124,9 @@ function SignIn() {
         </div>
       </section>
 
-      {/* Auth Form */}
+      {/* Auth Form & Deriv Direct Connect */}
       <section className="flex items-center justify-center bg-black px-6 py-16">
-        <form onSubmit={submit} className="w-full max-w-sm space-y-8">
+        <div className="w-full max-w-sm space-y-8">
           <div className="space-y-2 border-b border-zinc-900 pb-4">
             <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
               {mode === "in" ? "Authentication" : "Register"}
@@ -129,7 +136,30 @@ function SignIn() {
             </h2>
           </div>
 
-          <div className="space-y-5">
+          {/* Deriv Auth 2.0 Direct Access */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={onConnectDeriv}
+              disabled={busy}
+              className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-50"
+            >
+              Sign In with Deriv Auth 2.0
+            </button>
+            <p className="text-center font-mono text-[10px] text-zinc-500">
+              One-click access with your Deriv Demo & Real accounts
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="h-px flex-1 bg-zinc-900" />
+            <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-600">
+              OR EMAIL
+            </span>
+            <div className="h-px flex-1 bg-zinc-900" />
+          </div>
+
+          <form onSubmit={submit} className="space-y-5">
             <label className="block space-y-1.5">
               <span className="font-mono text-[11px] uppercase tracking-wider text-zinc-400">
                 Email Address
@@ -160,32 +190,32 @@ function SignIn() {
                 required
               />
             </label>
-          </div>
 
-          <div className="space-y-3">
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black transition-all hover:bg-zinc-200 disabled:opacity-50"
-            >
-              {busy ? "Authenticating..." : mode === "in" ? "Enter Terminal" : "Create Account"}
-            </button>
-            {msg && <p className="font-mono text-xs text-zinc-400">{msg}</p>}
-          </div>
+            <div className="space-y-3 pt-2">
+              <button
+                type="submit"
+                disabled={busy}
+                className="w-full border border-zinc-800 bg-zinc-900 py-3 font-mono text-xs uppercase tracking-[0.2em] text-zinc-200 hover:border-zinc-600 hover:text-white transition-all disabled:opacity-50"
+              >
+                {busy ? "Authenticating..." : mode === "in" ? "Enter with Email" : "Create Account"}
+              </button>
+              {msg && <p className="font-mono text-xs text-zinc-400">{msg}</p>}
+            </div>
 
-          <div className="flex items-center justify-between border-t border-zinc-900 pt-4 font-mono text-xs text-zinc-500">
-            <button
-              type="button"
-              onClick={() => {
-                setMode(mode === "in" ? "up" : "in");
-                setMsg(null);
-              }}
-              className="underline-offset-4 hover:text-white hover:underline transition-colors"
-            >
-              {mode === "in" ? "Need an account? Register" : "Already registered? Sign in"}
-            </button>
-          </div>
-        </form>
+            <div className="flex items-center justify-between border-t border-zinc-900 pt-4 font-mono text-xs text-zinc-500">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode(mode === "in" ? "up" : "in");
+                  setMsg(null);
+                }}
+                className="underline-offset-4 hover:text-white hover:underline transition-colors"
+              >
+                {mode === "in" ? "Need an account? Register" : "Already registered? Sign in"}
+              </button>
+            </div>
+          </form>
+        </div>
       </section>
     </main>
   );
