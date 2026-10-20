@@ -893,24 +893,37 @@ export function TradeTerminal() {
         isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
       }`}>
         <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-2 sm:gap-4">
-          {/* Logo & Status Indicator */}
-          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-            <div className="flex items-center gap-2 shrink-0">
-              <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
-              <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase truncate ${isDark ? "text-white" : "text-slate-900"}`}>
-                ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
-              </span>
-            </div>
+          {/* Logo */}
+          <div className="flex items-center gap-2 shrink-0">
+            <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
+            <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
+              ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
+            </span>
+          </div>
 
-            {/* Compact Bot Telemetry Pill */}
-            <div className={`flex items-center gap-1.5 border-l pl-2 sm:pl-3 text-[11px] ${
-              isDark ? "border-zinc-800" : "border-slate-200"
-            }`}>
+          {/* Desktop Bot Telemetry Pill (lg screens only) */}
+          <div className={`hidden lg:flex items-center gap-2 border-l pl-3 text-xs ${
+            isDark ? "border-zinc-800" : "border-slate-200"
+          }`}>
+            <div className="flex items-center gap-1.5">
               <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
-              <span className="font-semibold text-zinc-400 uppercase text-[10px] sm:text-[11px]">{botState}</span>
-              <span className={`font-semibold num ml-1.5 ${totalPnl >= 0 ? "text-teal-400" : "text-zinc-400"}`}>
+              <span className="font-semibold text-zinc-400 uppercase text-[11px]">{botState}</span>
+            </div>
+            <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
+            <div className="flex items-center gap-1">
+              <span className="text-zinc-500 text-[11px]">P/L</span>
+              <span className={`font-semibold num ${
+                totalPnl > 0
+                  ? isDark ? "text-white font-bold" : "text-teal-700 font-bold"
+                  : totalPnl < 0 ? "text-zinc-400" : isDark ? "text-white" : "text-slate-700"
+              }`}>
                 {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
               </span>
+            </div>
+            <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
+            <div className="flex items-center gap-1">
+              <span className="text-zinc-500 text-[11px]">TRADES</span>
+              <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-700"}`}>{trades.length}</span>
             </div>
           </div>
 
@@ -1054,11 +1067,15 @@ export function TradeTerminal() {
             </div>
           </div>
 
-          {/* Mobile Right Controls: Compact Balance & Menu Button (< lg screens) */}
-          <div className="flex lg:hidden items-center gap-2">
-            <div className="flex items-center gap-1 text-xs font-bold">
-              <span className="text-[10px] text-zinc-500">{activeAccount?.account_type === "real" ? "REAL" : "DEMO"}</span>
-              <span className={`num ${isDark ? "text-white" : "text-slate-900"}`}>
+          {/* Mobile Right Controls: Compact Balance & Menu Button (< lg screens, Guaranteed Zero Overlap) */}
+          <div className="flex lg:hidden items-center gap-2 shrink-0">
+            <div className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
+              isDark ? "border-zinc-800 bg-zinc-900/90 text-white" : "border-slate-200 bg-slate-100 text-slate-900"
+            }`}>
+              <span className={`text-[9px] font-bold uppercase ${activeAccount?.account_type === "real" ? "text-teal-500" : "text-zinc-500"}`}>
+                {activeAccount?.account_type === "real" ? "Real" : "Demo"}
+              </span>
+              <span className="num">
                 ${activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
               </span>
             </div>
@@ -1066,18 +1083,65 @@ export function TradeTerminal() {
             <button
               type="button"
               onClick={() => setShowMobileMenu(true)}
-              className={`rounded border px-2.5 py-1 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-white text-slate-700 shadow-sm"
+              className={`rounded border px-2.5 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
+                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-white text-slate-800 shadow-sm"
               }`}
             >
               MENU
             </button>
           </div>
         </div>
+
+        {/* Mobile Telemetry Sub-bar (< lg screens, Dedicated Strip, Guaranteed Zero Overlap) */}
+        <div className={`lg:hidden border-t mt-2 pt-1.5 flex items-center justify-between text-[11px] ${
+          isDark ? "border-zinc-900 text-zinc-400" : "border-slate-100 text-slate-600"
+        }`}>
+          <div className="flex items-center gap-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-500"}`} />
+            <span className="font-semibold uppercase text-[10px] text-zinc-400">{botState}</span>
+            <span className="text-zinc-400 text-[10px]">({runCount}/{MAX_RUNS})</span>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-zinc-500 uppercase">P/L:</span>
+            <span className={`font-bold num ${totalPnl > 0 ? "text-teal-600 font-bold" : totalPnl < 0 ? "text-zinc-500" : isDark ? "text-white" : "text-slate-800"}`}>
+              {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1 text-[10px]">
+            <span className="text-zinc-500">SPREAD:</span>
+            <span className={`font-semibold num ${analysis.diff <= maxDiff ? "text-teal-600 font-bold" : "text-zinc-500"}`}>
+              {analysis.diff.toFixed(2)}%
+            </span>
+          </div>
+        </div>
       </header>
 
       {/* 2. Main Content Container (Padded bottom on mobile for sticky bottom bar) */}
-      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-36 lg:pb-6">
+      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-28 lg:pb-6">
+        {/* Mobile Segmented Control Tab Switcher (< lg screens) */}
+        <div className={`lg:hidden mb-4 grid grid-cols-4 gap-1 p-1 rounded-xl border text-[11px] font-bold uppercase tracking-wider ${
+          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
+        }`}>
+          {(["market", "controls", "session", "all"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => setMobileTab(tab)}
+              className={`py-2 text-center rounded-lg transition-all ${
+                mobileTab === tab
+                  ? isDark
+                    ? "bg-zinc-800 text-teal-400 font-bold shadow-sm"
+                    : "bg-slate-900 text-white font-bold shadow-sm"
+                  : isDark ? "text-zinc-500 hover:text-zinc-300" : "text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              {tab === "market" ? "Market" : tab === "controls" ? "Controls" : tab === "session" ? "Session" : "All"}
+            </button>
+          ))}
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr_290px] gap-5 lg:gap-6 items-start">
 
           {/* LEFT COLUMN: Controls & Settings */}
@@ -1859,79 +1923,54 @@ export function TradeTerminal() {
         </div>
       </main>
 
-      {/* 3. Mobile Sticky Bottom Action & Navigation Bar (Thumb-Friendly for iOS / Android) */}
+      {/* 3. Mobile Sticky Bottom Action Bar (Thumb-Friendly Single Row) */}
       <div className={`lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t safe-bottom backdrop-blur-md transition-colors ${
-        isDark ? "border-zinc-800 bg-black/95 text-white" : "border-slate-200 bg-white/95 text-slate-900 shadow-xl"
+        isDark ? "border-zinc-900 bg-black/95 text-white" : "border-slate-200 bg-white/95 text-slate-900 shadow-2xl"
       }`}>
-        <div className="px-3 pt-2 pb-1.5 space-y-2">
-          {/* Top Row: Primary Thumb Action Buttons */}
-          <div className="flex items-center gap-2">
-            {running ? (
-              <button
-                type="button"
-                onClick={() => stopBot("User stopped bot.")}
-                className="flex-1 h-11 rounded-lg bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-              >
-                <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-                STOP BOT ({runCount}/{MAX_RUNS})
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={startBot}
-                disabled={digits.length < WINDOW}
-                className="flex-1 h-11 rounded-lg bg-teal-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? "bg-white" : "bg-amber-300"}`} />
-                {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
-              </button>
-            )}
-
+        <div className="px-3 py-2 flex items-center gap-2">
+          {running ? (
             <button
               type="button"
-              onClick={resetSession}
-              title="Reset session"
-              className={`h-11 px-3.5 rounded-lg border text-xs font-semibold uppercase tracking-wider transition-colors ${
-                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-slate-100 text-slate-700"
-              }`}
+              onClick={() => stopBot("User stopped bot.")}
+              className="flex-1 h-12 rounded-xl bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
             >
-              RESET
+              <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+              STOP BOT ({runCount}/{MAX_RUNS})
             </button>
-
+          ) : (
             <button
               type="button"
-              onClick={triggerManualTestTrade}
-              disabled={digits.length < WINDOW || pending.current !== null}
-              title="Run 1 test trade"
-              className={`h-11 px-3.5 rounded-lg border text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
-                isDark ? "border-teal-900 bg-teal-950/50 text-teal-300" : "border-teal-300 bg-teal-50 text-teal-800"
-              }`}
+              onClick={startBot}
+              disabled={digits.length < WINDOW}
+              className="flex-1 h-12 rounded-xl bg-teal-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
-              TEST 1
+              <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? "bg-white" : "bg-amber-300"}`} />
+              {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
             </button>
-          </div>
+          )}
 
-          {/* Bottom Row: 4-Tab Navigation */}
-          <div className={`grid grid-cols-4 gap-1 p-0.5 rounded-lg border text-[11px] font-bold uppercase tracking-wider ${
-            isDark ? "border-zinc-800/80 bg-zinc-950" : "border-slate-200 bg-slate-100"
-          }`}>
-            {(["market", "controls", "session", "all"] as const).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setMobileTab(tab)}
-                className={`py-2 text-center rounded-md transition-all ${
-                  mobileTab === tab
-                    ? isDark
-                      ? "bg-zinc-800 text-teal-400 font-bold shadow-sm"
-                      : "bg-white text-teal-700 font-bold shadow-sm"
-                    : "text-zinc-500 hover:text-zinc-300"
-                }`}
-              >
-                {tab === "market" ? "Market" : tab === "controls" ? "Controls" : tab === "session" ? "Session" : "All"}
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={resetSession}
+            title="Reset session"
+            className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors ${
+              isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
+          >
+            RESET
+          </button>
+
+          <button
+            type="button"
+            onClick={triggerManualTestTrade}
+            disabled={digits.length < WINDOW || pending.current !== null}
+            title="Run 1 test trade"
+            className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-40 ${
+              isDark ? "border-teal-900 bg-teal-950/50 text-teal-300" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
+            }`}
+          >
+            TEST 1
+          </button>
         </div>
       </div>
 
