@@ -11,8 +11,8 @@ export const getDerivClientId = (): string => {
 export const DERIV_AUTH_URL = 'https://auth.deriv.com/oauth2/auth';
 export const DERIV_SCOPES = DEFAULT_DERIV_SCOPES;
 
-// Live tick stream using user's App ID
-export const DERIV_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${DEFAULT_APP_ID}`;
+// Live market tick stream using Deriv public WebSocket endpoint
+export const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 
 /**
  * Deriv OAuth 2.0 Redirect URI

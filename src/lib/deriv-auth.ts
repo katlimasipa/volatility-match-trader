@@ -47,7 +47,7 @@ const STORAGE_KEYS = {
 export const DERIV_ENDPOINTS = {
   authBase: 'https://auth.deriv.com/oauth2',
   apiBase: 'https://api.derivws.com/trading/v1/options',
-  publicWs: 'wss://ws.derivws.com/websockets/v3',
+  publicWs: 'wss://api.derivws.com/trading/v1/options/ws/public',
 };
 
 // Scopes matching Deriv Auth 2.0 portal for App ID

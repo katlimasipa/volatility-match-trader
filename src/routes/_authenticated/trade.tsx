@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
+import { session, getDerivClientId, derivRedirectUri, DERIV_WS_URL } from "@/lib/deriv-config";
 import {
   startDerivAuth,
   getStoredAccounts,
@@ -45,6 +45,15 @@ interface PendingTrade {
   stake: number;
 }
 
+interface BacktestSummary {
+  totalTicks: number;
+  signals: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  netPnl: number;
+}
+
 function TradeTerminal() {
   const navigate = useNavigate();
   const [email, setEmail] = useState<string | null>(null);
@@ -69,7 +78,11 @@ function TradeTerminal() {
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [botState, setBotState] = useState<"idle" | "analyzing" | "waiting_entry" | "in_trade" | "loss_reanalysis" | "completed">("idle");
-  const [note, setNote] = useState("System idle. Configure stake and start bot.");
+  const [note, setNote] = useState("Connecting to Volatility 100 tick feed and buffering last 1,000 ticks...");
+
+  // Backtest / Test calculation modal
+  const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
+  const [showBacktestModal, setShowBacktestModal] = useState(false);
 
   const pending = useRef<PendingTrade | null>(null);
   const lossCooldownTicks = useRef(0);
@@ -118,7 +131,7 @@ function TradeTerminal() {
       setActiveType(storedType);
       setIsConnectedToDeriv(true);
     } else {
-      // Mock initial demo & real view if not connected yet
+      // Initial demo & real view if not connected yet
       const initialMock: DerivAccount[] = [
         { account_id: "VRTC_DEMO", account_type: "demo", currency: "USD", balance: "10000.00" },
         { account_id: "CR_REAL", account_type: "real", currency: "USD", balance: "0.00" },
@@ -132,17 +145,22 @@ function TradeTerminal() {
 
   // Connect to Deriv WebSocket tick feed
   useEffect(() => {
-    const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${getDerivClientId()}`;
-    const ws = new DerivWS(wsUrl, (s) => setStatus(s));
+    const ws = new DerivWS(DERIV_WS_URL, (s) => setStatus(s));
     wsRef.current = ws;
 
     // Listen for tick history and live ticks
     ws.registerHandler("history", (data) => {
       const history = data.history as { prices?: number[] };
-      if (history?.prices) {
+      if (history?.prices && history.prices.length > 0) {
         const pList = history.prices;
-        setDigits(pList.map((p) => lastDigit(p)));
+        const dList = pList.map((p) => lastDigit(p));
+        setDigits(dList);
         setPrice(pList[pList.length - 1] ?? null);
+
+        const a = analyze(dList);
+        setNote(
+          `1,000 ticks calculated: Most [${a.most}] (${a.mostPct.toFixed(1)}%), Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread Δ ${a.diff.toFixed(2)}%. Bot ready.`
+        );
       }
     });
 
@@ -268,13 +286,17 @@ function TradeTerminal() {
   }
 
   function startBot() {
+    if (digits.length === 0) {
+      setNote("Buffering market ticks. Please wait a moment before starting...");
+      return;
+    }
     setTrades([]);
     setRunCount(0);
     pending.current = null;
     lossCooldownTicks.current = 0;
     setRunning(true);
     setBotState("analyzing");
-    setNote("Bot active. Evaluating Volatility 100 digit distribution...");
+    setNote("Bot active. Evaluating Volatility 100 digit distribution for Run 1...");
   }
 
   function stopBot(message: string) {
@@ -282,6 +304,48 @@ function TradeTerminal() {
     setBotState("idle");
     setNote(message);
     pending.current = null;
+  }
+
+  function runBacktest1000Ticks() {
+    if (digits.length < 100) {
+      alert("Need at least 100 ticks to calculate backtest. Ticks are buffering...");
+      return;
+    }
+
+    let signals = 0;
+    let wins = 0;
+    let losses = 0;
+    let pnl = 0;
+    const windowSize = Math.min(200, Math.floor(digits.length / 2));
+
+    for (let i = windowSize; i < digits.length - 1; i++) {
+      const slice = digits.slice(i - windowSize, i);
+      const a = analyze(slice);
+      const entryDigit = digits[i];
+
+      if (shouldEnter(a, entryDigit)) {
+        signals++;
+        const nextDigit = digits[i + 1];
+        if (nextDigit === a.second) {
+          wins++;
+          pnl += stake * WIN_MULTIPLIER;
+        } else {
+          losses++;
+          pnl -= stake;
+        }
+      }
+    }
+
+    const winRate = signals > 0 ? (wins / signals) * 100 : 0;
+    setBacktest({
+      totalTicks: digits.length,
+      signals,
+      wins,
+      losses,
+      winRate,
+      netPnl: pnl,
+    });
+    setShowBacktestModal(true);
   }
 
   function switchAccount(type: "demo" | "real") {
@@ -327,6 +391,8 @@ function TradeTerminal() {
             <div className="hidden items-center gap-2 border-l border-zinc-800 pl-4 text-xs text-zinc-400 md:flex">
               <span className={`h-1.5 w-1.5 rounded-full ${status === "live" ? "bg-white" : "bg-zinc-700 animate-pulse"}`} />
               <span className="uppercase">{status}</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-zinc-400 num">{digits.length} / {WINDOW} TICKS</span>
             </div>
           </div>
 
@@ -393,6 +459,55 @@ function TradeTerminal() {
 
       {/* Main Terminal Workspace */}
       <div className="mx-auto max-w-7xl space-y-8 px-6 py-8">
+        {/* Prominent Bot Quick Launch Bar */}
+        <section className="border-2 border-zinc-700 bg-zinc-950 p-5 shadow-2xl">
+          <div className="flex flex-col md:flex-row items-center justify-between gap-5">
+            <div className="flex-1 space-y-2">
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] uppercase tracking-[0.2em] font-semibold text-zinc-400">
+                  DERIV MATCHES BOT // VOLATILITY 100
+                </span>
+                <span className={`px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider ${
+                  running ? "bg-white text-black" : "bg-zinc-800 text-zinc-400"
+                }`}>
+                  {running ? `RUNNING (RUN ${runCount + 1}/${MAX_RUNS})` : "READY TO RUN"}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed font-mono">
+                {note}
+              </p>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+              <button
+                onClick={runBacktest1000Ticks}
+                disabled={digits.length < 50}
+                className="flex-1 md:flex-none border border-zinc-700 bg-black px-4 py-3 text-xs uppercase tracking-[0.15em] text-zinc-300 hover:border-white hover:text-white transition-colors disabled:opacity-30"
+              >
+                TEST 1,000 TICKS
+              </button>
+
+              {running ? (
+                <button
+                  onClick={() => stopBot("User manually halted bot.")}
+                  className="flex-1 md:flex-none border-2 border-zinc-400 bg-zinc-900 px-8 py-3 text-xs font-bold uppercase tracking-[0.2em] text-white hover:bg-black transition-colors"
+                >
+                  HALT BOT
+                </button>
+              ) : (
+                <button
+                  onClick={startBot}
+                  disabled={digits.length === 0}
+                  className="flex-1 md:flex-none border-2 border-white bg-white px-8 py-3 text-xs font-bold uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
+                >
+                  START BOT (3 RUNS)
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+
         {/* Spot & Last Digit Hero */}
         <section className="grid gap-6 border border-zinc-900 bg-zinc-950 p-6 sm:grid-cols-3">
           <div className="space-y-1 sm:col-span-2">
@@ -478,23 +593,37 @@ function TradeTerminal() {
                           ? "bg-zinc-400"
                           : "bg-zinc-800"
                       }`}
-                      style={{ height: `${Math.max(barHeight, 4)}%` }}
+                      style={{ height: `${barHeight}%` }}
                     />
-                    {isMost && (
-                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[9px] font-bold text-black bg-white px-1">
-                        ENTRY
-                      </div>
-                    )}
-                    {isSecond && (
-                      <div className="absolute top-1 left-1/2 -translate-x-1/2 text-[9px] font-bold text-white bg-zinc-800 px-1">
-                        MATCH
+                    {isCurrent && (
+                      <div className="absolute top-1 left-1/2 -translate-x-1/2">
+                        <span className="h-1.5 w-1.5 rounded-full bg-white block" />
                       </div>
                     )}
                   </div>
 
+                  {/* Badge */}
+                  <div className="h-5 flex items-center">
+                    {isMost && (
+                      <span className="bg-white px-1 py-0.5 text-[8px] font-bold text-black uppercase tracking-wider">
+                        ENTRY
+                      </span>
+                    )}
+                    {isSecond && (
+                      <span className="border border-zinc-600 bg-zinc-900 px-1 py-0.5 text-[8px] font-semibold text-zinc-300 uppercase tracking-wider">
+                        TARGET
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Digit Label */}
                   <span
-                    className={`text-base font-semibold num ${
-                      isCurrent ? "text-white underline underline-offset-4" : "text-zinc-400"
+                    className={`num text-sm ${
+                      isCurrent
+                        ? "font-bold text-white underline underline-offset-4"
+                        : isMost
+                        ? "font-semibold text-white"
+                        : "text-zinc-400"
                     }`}
                   >
                     {d}
@@ -598,23 +727,21 @@ function TradeTerminal() {
                   <tbody className="divide-y divide-zinc-900">
                     {trades.map((t) => (
                       <tr key={t.id} className="text-zinc-300">
-                        <td className="py-2.5 text-zinc-500">#{t.runIndex}</td>
+                        <td className="py-2.5 font-semibold text-white">#{t.runIndex}</td>
                         <td className="text-zinc-500">{t.time}</td>
                         <td>{t.entry}</td>
-                        <td>{t.target}</td>
-                        <td className={t.result === t.target ? "text-white font-bold" : "text-zinc-400"}>
-                          {t.result}
-                        </td>
+                        <td className="font-semibold text-white">{t.target}</td>
+                        <td className="font-semibold text-white">{t.result}</td>
                         <td>${t.stake.toFixed(2)}</td>
                         <td>
                           <span
                             className={`px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
                               t.pnl > 0
                                 ? "bg-white text-black"
-                                : "border border-zinc-800 text-zinc-500"
+                                : "border border-zinc-800 text-zinc-400"
                             }`}
                           >
-                            {t.pnl > 0 ? "WIN" : "LOSS"}
+                            {t.pnl > 0 ? "WON" : "LOST"}
                           </span>
                         </td>
                         <td className={`text-right font-semibold ${t.pnl > 0 ? "text-white" : "text-zinc-500"}`}>
@@ -687,7 +814,7 @@ function TradeTerminal() {
             <div className="space-y-3 pt-2">
               {running ? (
                 <button
-                  onClick={() => stopBot("User manually stopped bot.")}
+                  onClick={() => stopBot("User manually halted bot.")}
                   className="w-full border border-zinc-600 bg-black py-3 font-mono text-xs uppercase tracking-[0.2em] text-white hover:border-white transition-colors"
                 >
                   HALT BOT
@@ -695,7 +822,7 @@ function TradeTerminal() {
               ) : (
                 <button
                   onClick={startBot}
-                  disabled={status !== "live" || stake <= 0}
+                  disabled={digits.length === 0}
                   className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
                 >
                   START BOT (3 RUNS)
@@ -720,6 +847,57 @@ function TradeTerminal() {
           </div>
         </section>
       </div>
+
+      {/* Backtest Modal */}
+      {showBacktestModal && backtest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg border border-zinc-800 bg-zinc-950 p-6 space-y-5">
+            <div className="flex items-center justify-between border-b border-zinc-900 pb-3">
+              <span className="text-xs uppercase tracking-[0.2em] font-semibold text-white">
+                HISTORICAL 1,000 TICKS BACKTEST
+              </span>
+              <button
+                onClick={() => setShowBacktestModal(false)}
+                className="text-xs text-zinc-500 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              Calculated across the latest {backtest.totalTicks} real market ticks of Volatility 100 Index using the Deriv Matches strategy (spread ≤ 0.3%, enter on most appearing digit, target second most appearing digit):
+            </p>
+
+            <div className="grid grid-cols-2 gap-4 border border-zinc-900 bg-black p-4 num">
+              <div>
+                <span className="text-[10px] uppercase text-zinc-500">Signals Found</span>
+                <div className="text-xl font-light text-white">{backtest.signals}</div>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase text-zinc-500">Win Rate</span>
+                <div className="text-xl font-light text-white">{backtest.winRate.toFixed(1)}%</div>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase text-zinc-500">Wins / Losses</span>
+                <div className="text-xl font-light text-white">{backtest.wins}W · {backtest.losses}L</div>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase text-zinc-500">Simulated Net P/L</span>
+                <div className={`text-xl font-light ${backtest.netPnl >= 0 ? "text-white" : "text-zinc-400"}`}>
+                  {backtest.netPnl >= 0 ? "+" : ""}${backtest.netPnl.toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowBacktestModal(false)}
+              className="w-full border border-white bg-white py-2.5 text-xs uppercase tracking-wider text-black font-semibold hover:bg-zinc-200 transition-colors"
+            >
+              CLOSE TEST RESULTS
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
