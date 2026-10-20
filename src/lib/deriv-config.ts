@@ -1,8 +1,10 @@
 import { getSavedAppId, setSavedAppId, DEFAULT_DERIV_SCOPES } from './deriv-auth';
 
+export const DEFAULT_APP_ID = '34JeA7thqzN4l0B8LCC6A';
+
 // Deriv Auth 2.0 (OAuth 2.0 + PKCE).
 export const getDerivClientId = (): string => {
-  return getSavedAppId() || import.meta.env.VITE_DERIV_CLIENT_ID || '';
+  return getSavedAppId() || import.meta.env.VITE_DERIV_CLIENT_ID || DEFAULT_APP_ID;
 };
 
 export const setDerivClientId = (id: string): void => {
@@ -12,8 +14,8 @@ export const setDerivClientId = (id: string): void => {
 export const DERIV_AUTH_URL = 'https://auth.deriv.com/oauth2/auth';
 export const DERIV_SCOPES = DEFAULT_DERIV_SCOPES;
 
-// Public tick stream (no account needed). 1089 is Deriv's public test app ID.
-export const DERIV_WS_URL = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+// Live tick stream using user's App ID
+export const DERIV_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${DEFAULT_APP_ID}`;
 
 export const derivRedirectUri = (): string => {
   if (typeof window === 'undefined') return '';

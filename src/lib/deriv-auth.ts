@@ -81,8 +81,8 @@ export async function sha256Base64url(input: string): Promise<string> {
  * Storage helpers
  */
 export function getSavedAppId(): string {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem(STORAGE_KEYS.APP_ID) || import.meta.env.VITE_DERIV_CLIENT_ID || '';
+  if (typeof window === 'undefined') return '34JeA7thqzN4l0B8LCC6A';
+  return localStorage.getItem(STORAGE_KEYS.APP_ID) || import.meta.env.VITE_DERIV_CLIENT_ID || '34JeA7thqzN4l0B8LCC6A';
 }
 
 export function setSavedAppId(appId: string): void {
