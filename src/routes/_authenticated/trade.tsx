@@ -319,11 +319,12 @@ function TradeTerminal() {
       <header className="border-b border-zinc-900 bg-zinc-950 px-6 py-3.5">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 bg-white" />
-              <span className="text-sm font-semibold tracking-wider text-white">MATCHES // V100</span>
+            <div className="flex items-center gap-2.5">
+              <img src="/app-icon.png" alt="ThDpst Icon" className="h-7 w-7 rounded-full border border-zinc-800" />
+              <img src="/logo.png" alt="ThDpst Matches" className="h-6 w-auto object-contain hidden sm:inline-block" />
+              <span className="text-xs font-semibold tracking-wider text-white sm:hidden">THDPST MATCHES</span>
             </div>
-            <div className="hidden items-center gap-2 border-l border-zinc-800 pl-4 text-xs text-zinc-400 sm:flex">
+            <div className="hidden items-center gap-2 border-l border-zinc-800 pl-4 text-xs text-zinc-400 md:flex">
               <span className={`h-1.5 w-1.5 rounded-full ${status === "live" ? "bg-white" : "bg-zinc-700 animate-pulse"}`} />
               <span className="uppercase">{status}</span>
             </div>

@@ -97,16 +97,14 @@ function SignIn() {
       {/* Brand & Strategy Overview */}
       <section className="hidden flex-col justify-between border-r border-zinc-900 bg-zinc-950 p-12 md:flex">
         <div className="flex items-center gap-3">
-          <span className="h-2 w-2 bg-white" />
+          <img src="/app-icon.png" alt="Icon" className="h-8 w-8 rounded-full border border-zinc-800" />
           <span className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
             DERIV // VOLATILITY 100
           </span>
         </div>
 
         <div className="space-y-6">
-          <div className="font-mono text-xs uppercase tracking-widest text-zinc-500">
-            DIGIT MATCH TERMINAL
-          </div>
+          <img src="/logo.png" alt="ThDpst Matches" className="h-16 w-auto max-w-[280px] object-contain" />
           <h1 className="font-mono text-4xl font-light tracking-tight text-white lg:text-5xl">
             Precision Match.
             <br />
@@ -127,13 +125,16 @@ function SignIn() {
       {/* Auth Form & Deriv Direct Connect */}
       <section className="flex items-center justify-center bg-black px-6 py-16">
         <div className="w-full max-w-sm space-y-8">
-          <div className="space-y-2 border-b border-zinc-900 pb-4">
-            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
-              {mode === "in" ? "Authentication" : "Register"}
-            </span>
-            <h2 className="font-mono text-2xl tracking-tight text-white">
-              {mode === "in" ? "Sign In" : "Create Account"}
-            </h2>
+          <div className="flex items-center gap-4 border-b border-zinc-900 pb-4">
+            <img src="/app-icon.png" alt="Icon" className="h-12 w-12 rounded-full border border-zinc-800" />
+            <div className="space-y-1">
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+                {mode === "in" ? "Authentication" : "Register"}
+              </span>
+              <h2 className="font-mono text-2xl tracking-tight text-white">
+                {mode === "in" ? "Sign In" : "Create Account"}
+              </h2>
+            </div>
           </div>
 
           {/* Deriv Auth 2.0 Direct Access */}
