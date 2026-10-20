@@ -78,7 +78,7 @@ function Trade() {
 
   function onTick(list: number[]) {
     const c = cfg.current;
-    const d = list[list.length - 1];
+    const d = list[list.length - 1] ?? 0;
 
     // Settle open contract on the next tick
     if (pending.current) {

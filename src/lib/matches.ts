@@ -29,16 +29,18 @@ export function analyze(digits: number[]): Analysis {
   const order = percents
     .map((p, d) => ({ p, d }))
     .sort((a, b) => b.p - a.p || a.d - b.d);
-  const most = order[0].d;
-  const second = order[1].d;
-  const diff = Math.round((order[0].p - order[1].p) * 1000) / 1000;
+  const first = order[0]!;
+  const runner = order[1]!;
+  const most = first.d;
+  const second = runner.d;
+  const diff = Math.round((first.p - runner.p) * 1000) / 1000;
   return {
     total,
     percents,
     most,
     second,
-    mostPct: order[0].p,
-    secondPct: order[1].p,
+    mostPct: first.p,
+    secondPct: runner.p,
     diff,
     ok: total > 0 && diff <= MAX_DIFF,
   };
