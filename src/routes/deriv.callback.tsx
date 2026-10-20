@@ -1,19 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import { consumePkce, DERIV_CLIENT_ID, derivRedirectUri } from "@/lib/deriv-config";
-import { exchangeDerivCode } from "@/lib/deriv.functions";
+import { exchangeCodeForTokens, fetchDerivAccounts, setManualToken, setActiveAccountId, storeAccounts, type DerivAccount } from "@/lib/deriv-auth";
+import { getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
 
 export const Route = createFileRoute("/deriv/callback")({
   ssr: false,
   head: () => ({
     meta: [
       { title: "Connecting Deriv — Matches" },
-      { name: "description", content: "Finishing your Deriv sign-in." },
-      { property: "og:title", content: "Connecting Deriv — Matches" },
-      { property: "og:description", content: "Finishing your Deriv sign-in." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
+      { name: "description", content: "Authenticating with Deriv Auth 2.0." },
     ],
   }),
   component: Callback,
@@ -22,35 +17,113 @@ export const Route = createFileRoute("/deriv/callback")({
 function Callback() {
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<string>("Verifying authorization...");
   const ran = useRef(false);
 
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
+
     (async () => {
-      const q = new URLSearchParams(window.location.search);
-      if (q.get("error")) return setError(q.get("error_description") ?? "Deriv sign-in was cancelled.");
-      const verifier = consumePkce(q.get("state"));
-      const code = q.get("code");
-      if (!verifier || !code) return setError("This sign-in link is invalid or expired. Please try again.");
-      const { data } = await supabase.auth.getUser();
-      if (!data.user) return setError("Sign in with your email first, then connect Deriv.");
-      try {
-        await exchangeDerivCode({ data: { code, verifier, redirectUri: derivRedirectUri(), clientId: DERIV_CLIENT_ID } });
+      const url = new URL(window.location.href);
+      const searchParams = url.searchParams;
+      const hash = url.hash.startsWith("#") ? url.hash.substring(1) : "";
+      const hashParams = new URLSearchParams(hash);
+
+      // Check for error in query or hash
+      const oauthError = searchParams.get("error") || hashParams.get("error");
+      if (oauthError) {
+        const desc = searchParams.get("error_description") || hashParams.get("error_description") || oauthError;
+        setError(`Deriv authorization error: ${desc}`);
+        return;
+      }
+
+      // Check for legacy OAuth token params (e.g. acct1=CR123&token1=xyz&acct2=VRTC456&token2=abc)
+      const accountsFromParams: DerivAccount[] = [];
+      let i = 1;
+      while (searchParams.get(`acct${i}`) || hashParams.get(`acct${i}`)) {
+        const accId = searchParams.get(`acct${i}`) || hashParams.get(`acct${i}`) || "";
+        const token = searchParams.get(`token${i}`) || hashParams.get(`token${i}`) || "";
+        const cur = searchParams.get(`cur${i}`) || hashParams.get(`cur${i}`) || "USD";
+        if (accId) {
+          const isDemo = accId.toUpperCase().startsWith("VRTC") || accId.toUpperCase().startsWith("V");
+          accountsFromParams.push({
+            account_id: accId,
+            account_type: isDemo ? "demo" : "real",
+            currency: cur,
+            balance: "0.00",
+          });
+          if (token && (i === 1 || isDemo)) {
+            setManualToken(token);
+          }
+        }
+        i++;
+      }
+
+      if (accountsFromParams.length > 0) {
+        storeAccounts(accountsFromParams);
+        const demoAcc = accountsFromParams.find((a) => a.account_type === "demo") || accountsFromParams[0];
+        if (demoAcc) setActiveAccountId(demoAcc.account_id);
         navigate({ to: "/trade" });
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not connect Deriv.");
+        return;
+      }
+
+      // Deriv Auth 2.0 PKCE Code Exchange
+      const code = searchParams.get("code");
+      const state = searchParams.get("state");
+
+      if (!code || !state) {
+        setError("Missing authorization code or state parameter. Please try connecting again.");
+        return;
+      }
+
+      const clientId = getDerivClientId();
+      if (!clientId) {
+        setError("Deriv App ID is not configured. Please enter your App ID in the settings.");
+        return;
+      }
+
+      try {
+        setStep("Exchanging authorization code...");
+        const redirectUri = derivRedirectUri();
+        const authInfo = await exchangeCodeForTokens(code, state, clientId, redirectUri);
+
+        setStep("Fetching trading accounts (Demo & Real)...");
+        try {
+          await fetchDerivAccounts(authInfo, clientId);
+        } catch (accErr) {
+          console.warn("Account list retrieval note:", accErr);
+        }
+
+        // Clean query parameters from URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+        navigate({ to: "/trade" });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to complete Deriv sign-in.");
       }
     })();
   }, [navigate]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-6">
-      <div className="max-w-sm space-y-4 text-center rise">
-        <span className="label-caps">Deriv</span>
-        <h1 className="font-display text-3xl">{error ? "Connection failed" : "Connecting your account"}</h1>
-        <p className="text-sm text-muted-foreground">{error ?? "One moment."}</p>
-        {error && <Link to="/trade" className="btn-line">Back</Link>}
+    <main className="flex min-h-screen items-center justify-center bg-black px-6 text-white">
+      <div className="max-w-md space-y-6 border border-zinc-800 bg-zinc-950 p-8 text-center">
+        <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-mono">Deriv Auth 2.0</span>
+        <h1 className="font-mono text-2xl tracking-tight">
+          {error ? "Connection Failed" : "Authenticating Account"}
+        </h1>
+        <p className="font-mono text-xs text-zinc-400">
+          {error ?? step}
+        </p>
+        {error && (
+          <div className="pt-4">
+            <Link
+              to="/trade"
+              className="inline-flex h-10 items-center justify-center border border-zinc-700 px-6 font-mono text-xs uppercase tracking-wider text-white hover:bg-white hover:text-black transition-colors"
+            >
+              Return to Terminal
+            </Link>
+          </div>
+        )}
       </div>
     </main>
   );

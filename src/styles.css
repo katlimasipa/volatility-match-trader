@@ -32,41 +32,41 @@
   --color-faint: var(--faint);
 }
 
-/* Strict monochrome */
+/* Strict monochrome black and white */
 :root {
   --radius: 2px;
-  --background: oklch(0.985 0 0);
-  --foreground: oklch(0.16 0 0);
-  --card: oklch(0.985 0 0);
-  --card-foreground: oklch(0.16 0 0);
-  --popover: oklch(0.985 0 0);
-  --popover-foreground: oklch(0.16 0 0);
-  --primary: oklch(0.16 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.94 0 0);
-  --secondary-foreground: oklch(0.16 0 0);
-  --muted: oklch(0.95 0 0);
-  --muted-foreground: oklch(0.48 0 0);
-  --faint: oklch(0.7 0 0);
-  --accent: oklch(0.94 0 0);
-  --accent-foreground: oklch(0.16 0 0);
-  --destructive: oklch(0.16 0 0);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.88 0 0);
-  --input: oklch(0.82 0 0);
-  --ring: oklch(0.16 0 0);
+  --background: oklch(0.08 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.12 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.12 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.08 0 0);
+  --secondary: oklch(0.18 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.16 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --faint: oklch(0.3 0 0);
+  --accent: oklch(0.18 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.985 0 0);
+  --destructive-foreground: oklch(0.08 0 0);
+  --border: oklch(0.2 0 0);
+  --input: oklch(0.24 0 0);
+  --ring: oklch(0.985 0 0);
 }
 
 @layer base {
   * { border-color: var(--color-border); }
-  html { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+  html { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; background-color: var(--color-background); color: var(--color-foreground); }
   body { background-color: var(--color-background); color: var(--color-foreground); }
   input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
   input[type="number"] { -moz-appearance: textfield; }
 }
 
 @utility font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
-@utility num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+@utility num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 @utility label-caps { font-size: 0.6875rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-muted-foreground); }
 @utility field {
   width: 100%;
