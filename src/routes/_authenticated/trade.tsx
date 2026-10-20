@@ -775,13 +775,25 @@ function TradeTerminal() {
               {/* Required Permissions Guide */}
               <div className="border border-zinc-900 bg-black p-3 space-y-2">
                 <span className="font-semibold text-white uppercase tracking-wider text-[11px]">
-                  App ID Permissions (Scopes Required):
+                  Authorisation Scopes (Deriv Portal):
                 </span>
-                <ul className="space-y-1 text-zinc-400">
-                  <li>• <strong className="text-white">Read (read):</strong> Access account IDs and live balances.</li>
-                  <li>• <strong className="text-white">Trade (trade):</strong> Open Volatility 100 Matches contracts.</li>
-                  <li>• <strong className="text-white">Trading Information (trading_information):</strong> Track trade results.</li>
-                  <li className="text-zinc-600">• Do NOT select Payments or Admin.</li>
+                <ul className="space-y-1.5 text-zinc-400">
+                  <li className="flex items-center gap-2">
+                    <span className="text-white font-bold">☑</span>
+                    <span><strong className="text-white">Trade</strong> &mdash; Provides access to buying and selling contracts.</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <span className="text-white font-bold">☑</span>
+                    <span><strong className="text-white">Account management</strong> &mdash; Provides access to manage and switch user accounts.</span>
+                  </li>
+                  <li className="flex items-center gap-2 text-zinc-600">
+                    <span>☐</span>
+                    <span><strong>Application insights</strong> &mdash; Not needed (leave unchecked).</span>
+                  </li>
+                  <li className="flex items-center gap-2 text-zinc-600">
+                    <span>☐</span>
+                    <span><strong>Payments</strong> &mdash; Not needed (leave unchecked).</span>
+                  </li>
                 </ul>
               </div>
             </div>

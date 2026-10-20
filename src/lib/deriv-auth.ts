@@ -49,8 +49,8 @@ export const DERIV_ENDPOINTS = {
   publicWs: 'wss://ws.derivws.com/websockets/v3',
 };
 
-// Default scopes required for account info and trading contracts
-export const DEFAULT_DERIV_SCOPES = 'read trade trading_information';
+// Scopes matching Deriv Auth 2.0 app registration portal
+export const DEFAULT_DERIV_SCOPES = 'trade account_manage';
 
 /**
  * Generate cryptographically secure base64url string
