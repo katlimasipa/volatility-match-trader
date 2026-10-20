@@ -1,6 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { exchangeCodeForTokens, fetchDerivAccounts, setManualToken, setActiveAccountId, storeAccounts, type DerivAccount } from "@/lib/deriv-auth";
+import {
+  exchangeCodeForTokens,
+  fetchDerivAccounts,
+  setManualToken,
+  setActiveAccountId,
+  storeAccounts,
+  authorizeWithToken,
+  type DerivAccount,
+} from "@/lib/deriv-auth";
 import { getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
 
 export const Route = createFileRoute("/deriv/callback")({
@@ -41,6 +49,7 @@ function Callback() {
       // Check for legacy OAuth token params (e.g. acct1=CR123&token1=xyz&acct2=VRTC456&token2=abc)
       const accountsFromParams: DerivAccount[] = [];
       let i = 1;
+      let primaryToken = "";
       while (searchParams.get(`acct${i}`) || hashParams.get(`acct${i}`)) {
         const accId = searchParams.get(`acct${i}`) || hashParams.get(`acct${i}`) || "";
         const token = searchParams.get(`token${i}`) || hashParams.get(`token${i}`) || "";
@@ -53,7 +62,8 @@ function Callback() {
             currency: cur,
             balance: "0.00",
           });
-          if (token && (i === 1 || isDemo)) {
+          if (token && (!primaryToken || isDemo)) {
+            primaryToken = token;
             setManualToken(token);
           }
         }
@@ -64,16 +74,24 @@ function Callback() {
         storeAccounts(accountsFromParams);
         const demoAcc = accountsFromParams.find((a) => a.account_type === "demo") || accountsFromParams[0];
         if (demoAcc) setActiveAccountId(demoAcc.account_id);
+
+        if (primaryToken) {
+          try {
+            await authorizeWithToken(primaryToken);
+          } catch {}
+        }
+
+        window.history.replaceState({}, document.title, window.location.pathname);
         navigate({ to: "/trade" });
         return;
       }
 
       // Deriv Auth 2.0 PKCE Code Exchange
-      const code = searchParams.get("code");
-      const state = searchParams.get("state");
+      const code = searchParams.get("code") || hashParams.get("code");
+      const state = searchParams.get("state") || hashParams.get("state");
 
       if (!code || !state) {
-        setError("Missing authorization code or state parameter. Please try connecting again.");
+        setError("Missing authorization code or state parameter. Please try connecting again or use an API Token.");
         return;
       }
 
@@ -105,22 +123,28 @@ function Callback() {
   }, [navigate]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-black px-6 text-white">
-      <div className="max-w-md space-y-6 border border-zinc-800 bg-zinc-950 p-8 text-center">
-        <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-mono">Deriv Auth 2.0</span>
-        <h1 className="font-mono text-2xl tracking-tight">
+    <main className="flex min-h-screen items-center justify-center bg-black px-6 text-white font-mono">
+      <div className="max-w-md w-full space-y-6 border border-zinc-800 bg-zinc-950 p-6 sm:p-8 text-center rounded-xl">
+        <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Deriv Auth 2.0</span>
+        <h1 className="text-xl sm:text-2xl tracking-tight">
           {error ? "Connection Failed" : "Authenticating Account"}
         </h1>
-        <p className="font-mono text-xs text-zinc-400">
+        <p className="text-xs text-zinc-400 leading-relaxed">
           {error ?? step}
         </p>
         {error && (
-          <div className="pt-4">
+          <div className="pt-4 space-y-3">
             <Link
               to="/trade"
-              className="inline-flex h-10 items-center justify-center border border-zinc-700 px-6 font-mono text-xs uppercase tracking-wider text-white hover:bg-white hover:text-black transition-colors"
+              className="inline-flex h-11 w-full items-center justify-center bg-teal-600 px-6 text-xs uppercase tracking-wider text-white font-bold hover:bg-teal-500 transition-colors rounded-lg shadow-sm"
             >
-              Return to Terminal
+              Enter Terminal &amp; Use API Token
+            </Link>
+            <Link
+              to="/"
+              className="inline-flex h-10 w-full items-center justify-center border border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 hover:text-white transition-colors rounded-lg"
+            >
+              Back to Sign In
             </Link>
           </div>
         )}
@@ -128,3 +152,4 @@ function Callback() {
     </main>
   );
 }
+export default Callback;

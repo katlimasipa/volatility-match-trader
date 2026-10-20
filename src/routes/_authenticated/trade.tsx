@@ -4,7 +4,6 @@ import {
   session,
   getDerivClientId,
   derivRedirectUri,
-  DERIV_WS_URL,
   getDerivWsUrl,
   getAppIdMarkup,
   setAppIdMarkup,
@@ -21,6 +20,8 @@ import {
   HARDCODED_APP_ID,
   clearAllDerivAuth,
   handleIncomingOAuth,
+  authorizeWithToken,
+  getManualToken,
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
@@ -39,11 +40,13 @@ import {
   setSoundEnabled,
   playAlertSound,
   dispatchNotification,
+  onInAppAlert,
+  initAudioContext,
+  isIOSSafariNotPWA,
 } from "@/lib/notifications";
 import {
   isRunningStandalone,
   isIOS,
-  canInstallPWA,
   onInstallableChange,
   triggerInstallPrompt,
 } from "@/lib/pwa";
@@ -151,6 +154,19 @@ export function TradeTerminal() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isConnectedToDeriv, setIsConnectedToDeriv] = useState(false);
 
+  // Deriv connection modal (OAuth + Direct API Token authorization)
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [apiTokenInput, setApiTokenInput] = useState("");
+  const [tokenBusy, setTokenBusy] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [tokenSuccess, setTokenSuccess] = useState<string | null>(null);
+
+  // In-app alert banner
+  const [inAppAlert, setInAppAlert] = useState<{ id: number; title: string; body: string; type: string } | null>(null);
+
+  // Mobile settings drawer/modal
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+
   // App ID and configured markup dynamically resolved for this application
   const activeAppId = getDerivClientId();
   const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
@@ -217,6 +233,31 @@ export function TradeTerminal() {
   const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
   const [mobileTab, setMobileTab] = useState<"controls" | "market" | "session" | "all">("market");
 
+  // In-app alert listener
+  useEffect(() => {
+    const unsub = onInAppAlert((alert) => {
+      setInAppAlert(alert);
+      const timer = setTimeout(() => {
+        setInAppAlert((cur) => (cur?.id === alert.id ? null : cur));
+      }, 5000);
+      return () => clearTimeout(timer);
+    });
+    return () => unsub();
+  }, []);
+
+  // Web Audio Context initialization on first interaction
+  useEffect(() => {
+    const handleGesture = () => {
+      initAudioContext();
+    };
+    window.addEventListener("touchstart", handleGesture, { once: true, passive: true });
+    window.addEventListener("click", handleGesture, { once: true });
+    return () => {
+      window.removeEventListener("touchstart", handleGesture);
+      window.removeEventListener("click", handleGesture);
+    };
+  }, []);
+
   useEffect(() => {
     setIsStandalone(isRunningStandalone());
     const unsub = onInstallableChange((canInstall) => setInstallable(canInstall));
@@ -224,7 +265,12 @@ export function TradeTerminal() {
   }, []);
 
   async function toggleNotifications() {
+    initAudioContext();
     if (!notifsEnabled) {
+      if (isIOSSafariNotPWA()) {
+        setShowIOSInstallGuide(true);
+        return;
+      }
       const perm = await requestNotificationPermission();
       if (perm === "granted") {
         setNotifsEnabled(true);
@@ -233,6 +279,8 @@ export function TradeTerminal() {
         });
       } else if (perm === "denied") {
         alert("Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.");
+      } else if (perm === "unsupported") {
+        setShowIOSInstallGuide(true);
       }
     } else {
       setNotificationEnabled(false);
@@ -241,6 +289,7 @@ export function TradeTerminal() {
   }
 
   function toggleSound() {
+    initAudioContext();
     const next = !soundEnabled;
     setSoundEnabled(next);
     setSoundEnabledState(next);
@@ -289,23 +338,24 @@ export function TradeTerminal() {
     configuredMarkup,
   };
 
-  // Refresh live balances from Deriv API if logged in
+  // Refresh live balances from Deriv API / WebSocket
   const refreshDerivBalances = useCallback(async () => {
+    const manualToken = getManualToken();
     const authInfo = getStoredAuthInfo();
-    if (authInfo?.access_token) {
+    const token = authInfo?.access_token || manualToken;
+    if (token) {
       try {
-        const fresh = await fetchDerivAccounts(authInfo, HARDCODED_APP_ID);
-        if (fresh && fresh.length > 0) {
+        const res = await authorizeWithToken(token);
+        if (res.success && res.accounts.length > 0) {
           setAccounts((prev) => {
-            // Keep active demo session balance intact so simulated trading amounts don't get reset
-            return fresh.map((f) => {
-              if (f.account_type === "demo") {
-                const existing = prev.find((p) => p.account_id === f.account_id);
+            return res.accounts.map((fresh) => {
+              if (fresh.account_type === "demo") {
+                const existing = prev.find((p) => p.account_id === fresh.account_id);
                 if (existing && existing.balance !== undefined) {
-                  return { ...f, balance: existing.balance };
+                  return { ...fresh, balance: existing.balance };
                 }
               }
-              return f;
+              return fresh;
             });
           });
         }
@@ -337,12 +387,13 @@ export function TradeTerminal() {
     const savedAccounts = getStoredAccounts();
     const storedActive = getActiveAccountId();
     const authInfo = getStoredAuthInfo();
+    const manualToken = getManualToken();
 
     if (savedAccounts.length > 0) {
       setAccounts(savedAccounts);
       const chosen = savedAccounts.find((a) => a.account_id === storedActive) || savedAccounts[0];
       setActiveId(chosen.account_id);
-      setIsConnectedToDeriv(Boolean(authInfo));
+      setIsConnectedToDeriv(Boolean(authInfo || manualToken));
     } else {
       const initialMock: DerivAccount[] = [
         { account_id: "VRTC1029384", account_type: "demo", currency: "USD", balance: "10000.00" },
@@ -351,7 +402,7 @@ export function TradeTerminal() {
       storeAccounts(initialMock);
       setAccounts(initialMock);
       setActiveId("VRTC1029384");
-      setIsConnectedToDeriv(false);
+      setIsConnectedToDeriv(Boolean(manualToken));
     }
 
     refreshDerivBalances();
@@ -468,7 +519,6 @@ export function TradeTerminal() {
         });
 
         // Process trade logic OUTSIDE of setDigits to ensure state updates (balance, trades) are not batched/deferred
-        // Use setTimeout(0) to run after React has committed the digits state update
         setTimeout(() => {
           if (updatedDigits.length > 0) {
             handleTickEvent(updatedDigits, q, nextDigit);
@@ -625,6 +675,7 @@ export function TradeTerminal() {
   }
 
   function startBot() {
+    initAudioContext();
     if (digits.length < WINDOW) {
       setNote(`Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks must be analyzed before entering a trade.`);
       return;
@@ -735,6 +786,7 @@ export function TradeTerminal() {
   }
 
   function triggerManualTestTrade() {
+    initAudioContext();
     if (digits.length < WINDOW) {
       alert(`Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks required.`);
       return;
@@ -762,6 +814,38 @@ export function TradeTerminal() {
     }
   }
 
+  async function handleAuthorizeWithTokenSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!apiTokenInput.trim()) return;
+
+    setTokenBusy(true);
+    setTokenError(null);
+    setTokenSuccess(null);
+
+    try {
+      const res = await authorizeWithToken(apiTokenInput.trim());
+      if (res.success) {
+        setIsConnectedToDeriv(true);
+        setAccounts(res.accounts);
+        if (res.activeAccount) {
+          setActiveId(res.activeAccount.account_id);
+        }
+        setTokenSuccess("Successfully authorized and connected Deriv account!");
+        setTimeout(() => {
+          setShowConnectModal(false);
+          setTokenSuccess(null);
+          setApiTokenInput("");
+        }, 1200);
+      } else {
+        setTokenError(res.error || "Failed to authorize token.");
+      }
+    } catch (err) {
+      setTokenError(err instanceof Error ? err.message : "Authorization error.");
+    } finally {
+      setTokenBusy(false);
+    }
+  }
+
   const analysis = analyze(digits, maxDiff);
   const currentDigit = digits[digits.length - 1];
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
@@ -773,52 +857,66 @@ export function TradeTerminal() {
   const recentDigits33 = digits.slice(-33);
 
   return (
-    <div className={`min-h-screen font-mono antialiased transition-colors ${
+    <div className={`min-h-screen font-mono antialiased transition-colors overflow-x-hidden ${
       isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
     }`}>
-      {/* 1. Header Bar: Minimalist & Mobile-Optimized */}
-      <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3.5 transition-colors ${
-        isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+      {/* Floating In-App Alert Toast (Cross-device feedback) */}
+      {inAppAlert && (
+        <aside
+          role="status"
+          aria-live="polite"
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-md animate-in fade-in slide-in-from-top-4 duration-200"
+        >
+          <div className={`rounded-lg border px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
+            inAppAlert.type === "win"
+              ? isDark ? "border-teal-700 bg-zinc-950 text-teal-300" : "border-teal-500 bg-teal-50 text-teal-900"
+              : inAppAlert.type === "loss"
+              ? isDark ? "border-zinc-800 bg-zinc-950 text-zinc-300" : "border-slate-300 bg-white text-slate-800"
+              : isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+          }`}>
+            <div className="space-y-0.5">
+              <div className="text-xs font-bold uppercase tracking-wider">{inAppAlert.title}</div>
+              <div className="text-[11px] opacity-80 leading-snug">{inAppAlert.body}</div>
+            </div>
+            <button
+              onClick={() => setInAppAlert(null)}
+              className="text-xs font-bold opacity-60 hover:opacity-100 p-1"
+            >
+              [X]
+            </button>
+          </div>
+        </aside>
+      )}
+
+      {/* 1. Header Bar: Responsive for Mobile, Tablet & Desktop */}
+      <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3 transition-colors sticky top-0 z-30 ${
+        isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
       }`}>
-        <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-3 sm:gap-4">
-          {/* Logo & Sub-status */}
-          <div className="flex items-center gap-3 sm:gap-6">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-teal-500" />
-              <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
-                ThDpst Matches <span className="hidden sm:inline font-normal text-zinc-500">// Volatility 100</span>
+        <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-2 sm:gap-4">
+          {/* Logo & Status Indicator */}
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
+              <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase truncate ${isDark ? "text-white" : "text-slate-900"}`}>
+                ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
               </span>
             </div>
 
-            <div className={`flex items-center gap-2 sm:gap-3 border-l pl-3 sm:pl-6 text-[11px] sm:text-xs ${
+            {/* Compact Bot Telemetry Pill */}
+            <div className={`flex items-center gap-1.5 border-l pl-2 sm:pl-3 text-[11px] ${
               isDark ? "border-zinc-800" : "border-slate-200"
             }`}>
-              <div className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
-                <span className="font-medium text-zinc-400">{botState}</span>
-              </div>
-              <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
-              <div className="flex items-center gap-1">
-                <span className="text-zinc-500">P/L</span>
-                <span className={`font-semibold num ${
-                  totalPnl > 0
-                    ? isDark ? "text-white font-bold" : "text-teal-700 font-bold"
-                    : totalPnl < 0 ? "text-zinc-400" : isDark ? "text-white" : "text-slate-700"
-                }`}>
-                  {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
-                </span>
-              </div>
-              <span className={`hidden md:inline ${isDark ? "text-zinc-800" : "text-slate-300"}`}>|</span>
-              <div className="hidden md:flex items-center gap-1">
-                <span className="text-zinc-500">TRADES</span>
-                <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-700"}`}>{trades.length}</span>
-              </div>
+              <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+              <span className="font-semibold text-zinc-400 uppercase text-[10px] sm:text-[11px]">{botState}</span>
+              <span className={`font-semibold num ml-1.5 ${totalPnl >= 0 ? "text-teal-400" : "text-zinc-400"}`}>
+                {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
+              </span>
             </div>
           </div>
 
-          {/* Right Header Controls */}
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            {/* Live Auto-updating Balance */}
+          {/* Desktop Right Header Controls (lg screens) */}
+          <div className="hidden lg:flex items-center gap-2.5">
+            {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
@@ -844,69 +942,56 @@ export function TradeTerminal() {
               ))}
             </select>
 
-            {/* Cross-Device Notification Toggle Button */}
+            {/* Notification Toggle */}
             <button
               type="button"
               onClick={toggleNotifications}
-              title={notifsEnabled ? "Notifications enabled (click to disable)" : "Enable cross-device trade notifications"}
+              title={notifsEnabled ? "Notifications enabled" : "Enable cross-device notifications"}
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
                 notifsEnabled
-                  ? isDark
-                    ? "border-teal-700 bg-teal-950/40 text-teal-300 font-bold"
-                    : "border-teal-500 bg-teal-50 text-teal-800 font-bold"
-                  : isDark
-                    ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white"
-                    : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900"
+                  ? isDark ? "border-teal-700 bg-teal-950/40 text-teal-300 font-bold" : "border-teal-500 bg-teal-50 text-teal-800 font-bold"
+                  : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
               }`}
             >
               <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
               <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
             </button>
 
-            {/* Audio Alert Toggle Button */}
+            {/* Audio Alert Toggle */}
             <button
               type="button"
               onClick={toggleSound}
-              title="Toggle trade sound effects"
-              className={`hidden sm:inline-flex rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+              className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
                 soundEnabled
-                  ? isDark
-                    ? "border-zinc-700 bg-zinc-900 text-zinc-200"
-                    : "border-slate-300 bg-slate-100 text-slate-800"
-                  : isDark
-                    ? "border-zinc-800 text-zinc-500"
-                    : "border-slate-200 text-slate-400"
+                  ? isDark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                  : isDark ? "border-zinc-800 text-zinc-500" : "border-slate-200 text-slate-400"
               }`}
             >
               SOUND: {soundEnabled ? "ON" : "OFF"}
             </button>
 
-            {/* PWA Install Button for iOS / Android / Desktop */}
+            {/* PWA Install Button */}
             {!isStandalone && (installable || isIOS()) && (
               <button
                 type="button"
                 onClick={handleInstallApp}
-                title="Install PWA application"
                 className="rounded bg-teal-600 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
               >
                 INSTALL
               </button>
             )}
 
-            {/* Light / Dark Mode Toggle */}
+            {/* Theme Toggle */}
             <button
               onClick={toggleTheme}
-              title="Toggle theme"
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                isDark
-                  ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
-                  : "border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-900"
+                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700 hover:text-slate-900"
               }`}
             >
               {isDark ? "LIGHT" : "DARK"}
             </button>
 
-            {/* Log Out Button */}
+            {/* Exit */}
             <button
               onClick={() => {
                 session.clear();
@@ -914,20 +999,18 @@ export function TradeTerminal() {
                 navigate({ to: "/" });
               }}
               className={`rounded border px-2 py-1.5 text-xs uppercase tracking-wider transition-colors ${
-                isDark
-                  ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
-                  : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900"
+                isDark ? "border-zinc-800 text-zinc-400 hover:text-white" : "border-slate-300 text-slate-600 hover:text-slate-900"
               }`}
             >
               EXIT
             </button>
 
-            {/* Action Buttons: Teal Start Bot, Reset, Test 1, Test 1K */}
-            <div className={`flex items-center gap-1.5 sm:gap-2 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+            {/* Desktop Action Buttons */}
+            <div className={`flex items-center gap-1.5 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
               {running ? (
                 <button
                   onClick={() => stopBot("User stopped bot.")}
-                  className="rounded bg-rose-600 px-3.5 sm:px-5 py-1.5 sm:py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 transition-colors shadow-sm"
+                  className="rounded bg-rose-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 transition-colors shadow-sm"
                 >
                   STOP BOT
                 </button>
@@ -935,8 +1018,7 @@ export function TradeTerminal() {
                 <button
                   onClick={startBot}
                   disabled={digits.length < WINDOW}
-                  title={digits.length < WINDOW ? `Buffering last 1,000 ticks (${digits.length}/${WINDOW}) before evaluating trade entry` : "Start automated Matches bot"}
-                  className="rounded bg-teal-600 px-3.5 sm:px-5 py-1.5 sm:py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded bg-teal-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
                 </button>
@@ -944,10 +1026,8 @@ export function TradeTerminal() {
 
               <button
                 onClick={resetSession}
-                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                  isDark
-                    ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700"
                 }`}
               >
                 RESET
@@ -956,11 +1036,8 @@ export function TradeTerminal() {
               <button
                 onClick={triggerManualTestTrade}
                 disabled={digits.length < WINDOW || pending.current !== null}
-                title="Immediately execute 1 test run matching second most digit on next tick"
-                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  isDark
-                    ? "border-teal-900 bg-teal-950/40 text-teal-300 hover:border-teal-700 hover:text-white"
-                    : "border-teal-300 bg-teal-50 text-teal-800 hover:border-teal-400"
+                className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
+                  isDark ? "border-teal-900 bg-teal-950/40 text-teal-300 hover:border-teal-700" : "border-teal-300 bg-teal-50 text-teal-800"
                 }`}
               >
                 TEST 1
@@ -968,76 +1045,43 @@ export function TradeTerminal() {
 
               <button
                 onClick={runBacktest1000Ticks}
-                title="Test strategy performance on last 1,000 ticks"
-                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                  isDark
-                    ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
-                    : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
+                className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700"
                 }`}
               >
                 TEST 1K
               </button>
             </div>
           </div>
+
+          {/* Mobile Right Controls: Compact Balance & Menu Button (< lg screens) */}
+          <div className="flex lg:hidden items-center gap-2">
+            <div className="flex items-center gap-1 text-xs font-bold">
+              <span className="text-[10px] text-zinc-500">{activeAccount?.account_type === "real" ? "REAL" : "DEMO"}</span>
+              <span className={`num ${isDark ? "text-white" : "text-slate-900"}`}>
+                ${activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowMobileMenu(true)}
+              className={`rounded border px-2.5 py-1 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-white text-slate-700 shadow-sm"
+              }`}
+            >
+              MENU
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* 2. Main 3-Column Layout Matching User Spec */}
-      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 safe-bottom">
-        {/* Mobile & Tablet Tab Switcher (Visible on < lg screens) */}
-        <div className={`lg:hidden mb-4 grid grid-cols-4 gap-1 rounded-lg border p-1 text-[11px] font-bold uppercase tracking-wider ${
-          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
-        }`}>
-          <button
-            type="button"
-            onClick={() => setMobileTab("market")}
-            className={`py-2 text-center rounded transition-colors ${
-              mobileTab === "market"
-                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            Market
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileTab("controls")}
-            className={`py-2 text-center rounded transition-colors ${
-              mobileTab === "controls"
-                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            Controls
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileTab("session")}
-            className={`py-2 text-center rounded transition-colors ${
-              mobileTab === "session"
-                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            Session
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileTab("all")}
-            className={`py-2 text-center rounded transition-colors ${
-              mobileTab === "all"
-                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            All
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr_290px] gap-6 items-start">
+      {/* 2. Main Content Container (Padded bottom on mobile for sticky bottom bar) */}
+      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-36 lg:pb-6">
+        <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr_290px] gap-5 lg:gap-6 items-start">
 
           {/* LEFT COLUMN: Controls & Settings */}
-          <aside className={`space-y-6 ${mobileTab === "controls" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <aside className={`space-y-5 lg:space-y-6 ${mobileTab === "controls" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* CONNECTION */}
             <section className={`rounded-xl border p-4 space-y-3 shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
@@ -1050,7 +1094,7 @@ export function TradeTerminal() {
                   <button
                     onClick={resetDemoBalance}
                     title="Reset demo virtual balance to $10,000"
-                    className="text-[10px] text-teal-500 hover:underline uppercase"
+                    className="text-[10px] text-teal-500 hover:underline uppercase font-bold"
                   >
                     RESET $10K
                   </button>
@@ -1058,7 +1102,7 @@ export function TradeTerminal() {
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Active Account</label>
+                <label className="text-xs text-zinc-500">Active Account (Tap to Switch)</label>
                 {/* Clickable Card to switch Demo / Real */}
                 <div
                   onClick={toggleDemoReal}
@@ -1086,35 +1130,39 @@ export function TradeTerminal() {
               </div>
 
               {isConnectedToDeriv ? (
-                <div className="flex gap-2">
+                <div className="space-y-2">
+                  <div className="flex gap-2">
+                    <button
+                      disabled
+                      className={`flex-1 rounded border py-2 text-xs font-medium uppercase tracking-wider ${
+                        isDark ? "border-teal-900/60 bg-teal-950/30 text-teal-400" : "border-teal-200 bg-teal-50 text-teal-700"
+                      }`}
+                    >
+                      CONNECTED
+                    </button>
+                    <button
+                      onClick={refreshDerivBalances}
+                      title="Sync latest balances from Deriv"
+                      className={`rounded border px-3 py-2 text-xs uppercase tracking-wider transition-colors ${
+                        isDark ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 text-slate-600 hover:border-slate-400"
+                      }`}
+                    >
+                      SYNC
+                    </button>
+                  </div>
                   <button
-                    disabled
-                    className={`flex-1 rounded border py-2 text-xs font-medium uppercase tracking-wider ${
-                      isDark
-                        ? "border-zinc-800 bg-zinc-900 text-zinc-400"
-                        : "border-slate-200 bg-slate-100 text-slate-600"
-                    }`}
+                    onClick={() => setShowConnectModal(true)}
+                    className="w-full text-center text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider"
                   >
-                    CONNECTED
-                  </button>
-                  <button
-                    onClick={refreshDerivBalances}
-                    title="Sync latest balances from Deriv"
-                    className={`rounded border px-3 py-2 text-xs uppercase tracking-wider transition-colors ${
-                      isDark
-                        ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
-                        : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900"
-                    }`}
-                  >
-                    SYNC
+                    Change Account / API Token
                   </button>
                 </div>
               ) : (
                 <button
-                  onClick={handleDirectOAuth}
-                  className="w-full rounded bg-teal-600 py-2 text-xs font-semibold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors"
+                  onClick={() => setShowConnectModal(true)}
+                  className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
                 >
-                  CONNECT DERIV AUTH 2.0
+                  CONNECT DERIV ACCOUNT
                 </button>
               )}
             </section>
@@ -1183,7 +1231,7 @@ export function TradeTerminal() {
                       key={val}
                       type="button"
                       onClick={() => updateMaxDiff(val)}
-                      className={`rounded border py-1 text-[10px] font-semibold transition-colors ${
+                      className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
                         maxDiff === val
                           ? isDark
                             ? "border-teal-500 bg-teal-500/20 text-teal-300 font-bold"
@@ -1289,7 +1337,7 @@ export function TradeTerminal() {
                       const calculated = Math.max(0.35, Math.round((bal * (pct / 100)) * 100) / 100);
                       updateStake(calculated);
                     }}
-                    className={`rounded border py-1 text-[10px] font-semibold transition-colors ${
+                    className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
                       isDark
                         ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white"
                         : "border-slate-200 bg-slate-100 text-slate-600 hover:border-slate-300 hover:text-slate-900"
@@ -1445,12 +1493,12 @@ export function TradeTerminal() {
           </aside>
 
           {/* CENTER COLUMN: Last Digit, Tick Stream & Trade Log */}
-          <div className={`space-y-6 min-w-0 ${mobileTab === "market" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <div className={`space-y-5 lg:space-y-6 min-w-0 ${mobileTab === "market" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* Top Row: Last Digit & Tick Stream Side by Side */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 lg:gap-6">
 
               {/* CARD 1: LAST DIGIT */}
-              <section className={`rounded-xl border p-5 shadow-sm space-y-4 ${
+              <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
                 isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
               }`}>
                 {/* Header */}
@@ -1476,7 +1524,7 @@ export function TradeTerminal() {
 
                 {/* Giant Digit Display */}
                 <div className="flex items-baseline gap-4">
-                  <span className={`text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <span className={`text-6xl sm:text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}>
                     {currentDigit !== undefined ? currentDigit : "—"}
                   </span>
                   <div className="space-y-0.5 text-xs">
@@ -1496,14 +1544,12 @@ export function TradeTerminal() {
                     <span className="text-zinc-400 font-semibold uppercase">LATEST</span>
                   </div>
 
-                  <div className="grid grid-cols-11 gap-1.5 text-center text-xs num">
+                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
                     {recentDigits33.slice(0, 11).map((d, i) => (
                       <span
                         key={i}
-                        className={`rounded border py-1.5 font-semibold ${
-                          isDark
-                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                            : "border-slate-200 bg-slate-100 text-slate-700"
+                        className={`rounded border py-1 font-semibold ${
+                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-700"
                         }`}
                       >
                         {d}
@@ -1511,14 +1557,12 @@ export function TradeTerminal() {
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-11 gap-1.5 text-center text-xs num">
+                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
                     {recentDigits33.slice(11, 22).map((d, i) => (
                       <span
                         key={i + 11}
-                        className={`rounded border py-1.5 font-semibold ${
-                          isDark
-                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                            : "border-slate-200 bg-slate-100 text-slate-700"
+                        className={`rounded border py-1 font-semibold ${
+                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-700"
                         }`}
                       >
                         {d}
@@ -1526,13 +1570,13 @@ export function TradeTerminal() {
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-11 gap-1.5 text-center text-xs num">
+                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
                     {recentDigits33.slice(22, 33).map((d, i) => {
                       const isLatest = i + 22 === recentDigits33.length - 1;
                       return (
                         <span
                           key={i + 22}
-                          className={`rounded border py-1.5 font-semibold transition-all ${
+                          className={`rounded border py-1 font-semibold transition-all ${
                             isLatest
                               ? isDark
                                 ? "border-white bg-white text-black font-bold ring-2 ring-zinc-700"
@@ -1551,7 +1595,7 @@ export function TradeTerminal() {
               </section>
 
               {/* CARD 2: TICK STREAM */}
-              <section className={`rounded-xl border p-5 shadow-sm space-y-3 ${
+              <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-3 ${
                 isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
               }`}>
                 <div className={`flex items-center justify-between border-b pb-2 ${
@@ -1561,7 +1605,7 @@ export function TradeTerminal() {
                     TICK STREAM
                   </span>
                   <span className="text-[10px] text-zinc-500 num">
-                    {digits.length >= WINDOW ? "1,000 / 1,000 TICKS (READY)" : `${digits.length} / ${WINDOW} TICKS (BUFFERING)`}
+                    {digits.length >= WINDOW ? "1,000 / 1,000 (READY)" : `${digits.length} / ${WINDOW} (BUFFERING)`}
                   </span>
                 </div>
 
@@ -1597,7 +1641,7 @@ export function TradeTerminal() {
             <section className={`rounded-xl border shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
             }`}>
-              <div className={`flex items-center justify-between border-b px-5 py-3 ${
+              <div className={`flex items-center justify-between border-b px-4 sm:px-5 py-3 ${
                 isDark ? "border-zinc-900" : "border-slate-200"
               }`}>
                 <div className="flex items-center gap-2">
@@ -1619,7 +1663,7 @@ export function TradeTerminal() {
                         : "text-zinc-500 hover:text-white"
                     }`}
                   >
-                    SESSION HISTORY
+                    HISTORY
                   </button>
                 </div>
                 <span className="text-xs text-zinc-500 num">
@@ -1627,9 +1671,9 @@ export function TradeTerminal() {
                 </span>
               </div>
 
-              <div className="p-6">
+              <div className="p-4 sm:p-6">
                 {trades.length === 0 ? (
-                  <div className="py-16 text-center">
+                  <div className="py-12 sm:py-16 text-center">
                     <p className={`text-xs ${isDark ? "text-zinc-600" : "text-slate-400"}`}>
                       Trades will appear here once the bot fires.
                     </p>
@@ -1644,8 +1688,8 @@ export function TradeTerminal() {
                           <th className="py-2">Run</th>
                           <th>Time</th>
                           <th>Entry</th>
-                          <th>Match Target</th>
-                          <th>Exit Digit</th>
+                          <th>Target</th>
+                          <th>Exit</th>
                           <th>Stake</th>
                           <th>Status</th>
                           <th className="text-right">P/L</th>
@@ -1687,7 +1731,7 @@ export function TradeTerminal() {
           </div>
 
           {/* RIGHT COLUMN: Session & Bot Overview */}
-          <aside className={`space-y-6 ${mobileTab === "session" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <aside className={`space-y-5 lg:space-y-6 ${mobileTab === "session" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* SESSION */}
             <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
@@ -1752,7 +1796,7 @@ export function TradeTerminal() {
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
             }`}>
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
-                BOT
+                BOT TELEMETRY
               </span>
 
               <div className="grid grid-cols-2 gap-y-3 gap-x-2">
@@ -1815,10 +1859,323 @@ export function TradeTerminal() {
         </div>
       </main>
 
-      {/* Backtest / Test Results Modal */}
+      {/* 3. Mobile Sticky Bottom Action & Navigation Bar (Thumb-Friendly for iOS / Android) */}
+      <div className={`lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t safe-bottom backdrop-blur-md transition-colors ${
+        isDark ? "border-zinc-800 bg-black/95 text-white" : "border-slate-200 bg-white/95 text-slate-900 shadow-xl"
+      }`}>
+        <div className="px-3 pt-2 pb-1.5 space-y-2">
+          {/* Top Row: Primary Thumb Action Buttons */}
+          <div className="flex items-center gap-2">
+            {running ? (
+              <button
+                type="button"
+                onClick={() => stopBot("User stopped bot.")}
+                className="flex-1 h-11 rounded-lg bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
+                STOP BOT ({runCount}/{MAX_RUNS})
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startBot}
+                disabled={digits.length < WINDOW}
+                className="flex-1 h-11 rounded-lg bg-teal-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? "bg-white" : "bg-amber-300"}`} />
+                {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={resetSession}
+              title="Reset session"
+              className={`h-11 px-3.5 rounded-lg border text-xs font-semibold uppercase tracking-wider transition-colors ${
+                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-slate-100 text-slate-700"
+              }`}
+            >
+              RESET
+            </button>
+
+            <button
+              type="button"
+              onClick={triggerManualTestTrade}
+              disabled={digits.length < WINDOW || pending.current !== null}
+              title="Run 1 test trade"
+              className={`h-11 px-3.5 rounded-lg border text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
+                isDark ? "border-teal-900 bg-teal-950/50 text-teal-300" : "border-teal-300 bg-teal-50 text-teal-800"
+              }`}
+            >
+              TEST 1
+            </button>
+          </div>
+
+          {/* Bottom Row: 4-Tab Navigation */}
+          <div className={`grid grid-cols-4 gap-1 p-0.5 rounded-lg border text-[11px] font-bold uppercase tracking-wider ${
+            isDark ? "border-zinc-800/80 bg-zinc-950" : "border-slate-200 bg-slate-100"
+          }`}>
+            {(["market", "controls", "session", "all"] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setMobileTab(tab)}
+                className={`py-2 text-center rounded-md transition-all ${
+                  mobileTab === tab
+                    ? isDark
+                      ? "bg-zinc-800 text-teal-400 font-bold shadow-sm"
+                      : "bg-white text-teal-700 font-bold shadow-sm"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {tab === "market" ? "Market" : tab === "controls" ? "Controls" : tab === "session" ? "Session" : "All"}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Connect Deriv Account & API Token Modal (Guaranteed Permission on iOS PWA) */}
+      {showConnectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className={`w-full max-w-md rounded-xl border p-5 sm:p-6 space-y-5 shadow-2xl ${
+            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+          }`}>
+            <div className={`flex items-center justify-between border-b pb-3 ${
+              isDark ? "border-zinc-900" : "border-slate-200"
+            }`}>
+              <div className="space-y-0.5">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Account Permission</span>
+                <h3 className="text-sm font-bold uppercase tracking-wider">Connect Deriv Account</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setShowConnectModal(false);
+                  setTokenError(null);
+                  setTokenSuccess(null);
+                }}
+                className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
+              >
+                [X]
+              </button>
+            </div>
+
+            {/* Option A: Direct API Token (Instant Permission, Guaranteed on iOS PWA) */}
+            <form onSubmit={handleAuthorizeWithTokenSubmit} className="space-y-3">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-teal-400">
+                    Method 1: Deriv API Token (Recommended)
+                  </span>
+                  <a
+                    href="https://app.deriv.com/account/api-token"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-teal-400 hover:underline"
+                  >
+                    Get Token ↗
+                  </a>
+                </div>
+                <p className="text-[11px] text-zinc-400 leading-relaxed">
+                  Best for iOS PWA, mobile & desktop: In Deriv, go to <strong>Account Settings &gt; API Token</strong>, check <strong>Read</strong> and <strong>Trade</strong>, create a token, and paste it below:
+                </p>
+              </div>
+
+              <input
+                type="text"
+                value={apiTokenInput}
+                onChange={(e) => setApiTokenInput(e.target.value)}
+                placeholder="Paste your Deriv API Token"
+                className={`w-full rounded border px-3 py-2 text-xs font-mono outline-none ${
+                  isDark ? "border-zinc-800 bg-black text-white focus:border-zinc-600" : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
+                }`}
+                required
+              />
+
+              {tokenError && (
+                <p className="text-[11px] text-rose-400 leading-tight">
+                  {tokenError}
+                </p>
+              )}
+
+              {tokenSuccess && (
+                <p className="text-[11px] text-teal-400 font-bold leading-tight">
+                  {tokenSuccess}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={tokenBusy || !apiTokenInput.trim()}
+                className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors disabled:opacity-40 shadow-sm"
+              >
+                {tokenBusy ? "Authorizing Token with Deriv..." : "Authorize Account"}
+              </button>
+            </form>
+
+            <div className="flex items-center gap-3">
+              <div className={`h-px flex-1 ${isDark ? "bg-zinc-800" : "bg-slate-200"}`} />
+              <span className="text-[10px] uppercase tracking-widest text-zinc-500">OR</span>
+              <div className={`h-px flex-1 ${isDark ? "bg-zinc-800" : "bg-slate-200"}`} />
+            </div>
+
+            {/* Option B: Deriv Auth 2.0 PKCE */}
+            <div className="space-y-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                Method 2: Deriv Auth 2.0 (Browser OAuth)
+              </span>
+              <button
+                type="button"
+                onClick={handleDirectOAuth}
+                className={`w-full rounded border py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
+                  isDark ? "border-zinc-700 bg-zinc-900 text-white hover:bg-zinc-800" : "border-slate-300 bg-slate-100 text-slate-900 hover:bg-slate-200"
+                }`}
+              >
+                Sign In with Deriv Auth 2.0
+              </button>
+              <p className="text-[10px] text-zinc-500 text-center leading-tight">
+                Redirects to Deriv login. If using an installed iOS PWA, API Token (Method 1) is recommended.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Mobile Menu & Settings Drawer (< lg screens) */}
+      {showMobileMenu && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 backdrop-blur-sm lg:hidden">
+          <div className={`w-full max-w-lg rounded-t-2xl border-t p-5 space-y-4 shadow-2xl safe-bottom animate-in slide-in-from-bottom duration-200 ${
+            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+          }`}>
+            <div className={`flex items-center justify-between border-b pb-3 ${
+              isDark ? "border-zinc-900" : "border-slate-200"
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-teal-400" />
+                <span className="text-xs font-bold uppercase tracking-wider">Terminal Settings</span>
+              </div>
+              <button
+                onClick={() => setShowMobileMenu(false)}
+                className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
+              >
+                [CLOSE]
+              </button>
+            </div>
+
+            {/* Switch Account */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-zinc-500">Switch Account</label>
+              <select
+                value={activeId || ""}
+                onChange={(e) => switchAccount(e.target.value)}
+                className={`w-full rounded border p-2.5 text-xs font-semibold outline-none ${
+                  isDark ? "border-zinc-800 bg-zinc-900 text-white" : "border-slate-300 bg-white text-slate-900"
+                }`}
+              >
+                {accounts.map((acc) => (
+                  <option key={acc.account_id} value={acc.account_id}>
+                    {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — ${Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Quick Actions Grid */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={toggleNotifications}
+                className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
+                  notifsEnabled
+                    ? isDark ? "border-teal-700 bg-teal-950/50 text-teal-300" : "border-teal-500 bg-teal-50 text-teal-800"
+                    : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+                NOTIF: {notifsEnabled ? "ON" : "OFF"}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleSound}
+                className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
+                  soundEnabled
+                    ? isDark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                    : isDark ? "border-zinc-800 text-zinc-500" : "border-slate-200 text-slate-400"
+                }`}
+              >
+                SOUND: {soundEnabled ? "ON" : "OFF"}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider ${
+                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                }`}
+              >
+                THEME: {isDark ? "DARK" : "LIGHT"}
+              </button>
+
+              <button
+                type="button"
+                onClick={runBacktest1000Ticks}
+                className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider ${
+                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                }`}
+              >
+                TEST 1K TICKS
+              </button>
+            </div>
+
+            {/* Install PWA Button (if available) */}
+            {!isStandalone && (installable || isIOS()) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  handleInstallApp();
+                }}
+                className="w-full rounded bg-teal-600 py-3 text-xs font-bold uppercase tracking-wider text-white shadow-sm"
+              >
+                INSTALL APP ON HOME SCREEN
+              </button>
+            )}
+
+            {/* Connect Account Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowMobileMenu(false);
+                setShowConnectModal(true);
+              }}
+              className={`w-full rounded border py-2.5 text-xs font-bold uppercase tracking-wider ${
+                isDark ? "border-teal-900 text-teal-400 bg-teal-950/20" : "border-teal-300 text-teal-800 bg-teal-50"
+              }`}
+            >
+              CONNECT DERIV ACCOUNT / TOKEN
+            </button>
+
+            {/* Exit Button */}
+            <button
+              type="button"
+              onClick={() => {
+                session.clear();
+                clearAllDerivAuth();
+                navigate({ to: "/" });
+              }}
+              className="w-full rounded border border-zinc-800 text-zinc-400 py-2.5 text-xs font-bold uppercase tracking-wider hover:text-white"
+            >
+              LOG OUT & EXIT
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Backtest / Test Results Modal */}
       {showBacktestModal && backtest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-lg rounded-xl border p-6 space-y-5 shadow-2xl ${
+          <div className={`w-full max-w-lg rounded-xl border p-5 sm:p-6 space-y-5 shadow-2xl ${
             isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-200 bg-white text-slate-900"
           }`}>
             <div className={`flex items-center justify-between border-b pb-3 ${
@@ -1872,10 +2229,10 @@ export function TradeTerminal() {
         </div>
       )}
 
-      {/* iOS PWA Install Guide Modal */}
+      {/* 7. iOS PWA Install Guide Modal */}
       {showIOSInstallGuide && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-sm rounded-xl border p-6 space-y-4 shadow-2xl ${
+          <div className={`w-full max-w-sm rounded-xl border p-5 sm:p-6 space-y-4 shadow-2xl ${
             isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
           }`}>
             <div className={`flex items-center justify-between border-b pb-3 ${
@@ -1911,4 +2268,5 @@ export function TradeTerminal() {
     </div>
   );
 }
+
 export default TradeTerminal;

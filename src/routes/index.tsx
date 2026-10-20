@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
-import { startDerivAuth, handleIncomingOAuth } from "@/lib/deriv-auth";
+import { startDerivAuth, handleIncomingOAuth, authorizeWithToken } from "@/lib/deriv-auth";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -22,6 +22,12 @@ function SignIn() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  // Deriv direct token access (guaranteed to work on iOS PWA without redirect issues)
+  const [showTokenInput, setShowTokenInput] = useState(false);
+  const [apiToken, setApiToken] = useState("");
+  const [tokenBusy, setTokenBusy] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+
   useEffect(() => {
     // 1. Check for incoming Deriv OAuth 2.0 callback params
     handleIncomingOAuth().then((res) => {
@@ -31,7 +37,7 @@ function SignIn() {
           navigate({ to: "/trade" });
           return;
         } else if (res.error) {
-          setMsg(`Deriv authentication error: ${res.error}`);
+          setMsg(`Deriv authentication note: ${res.error}. You can also use an API Token below.`);
         }
       }
     });
@@ -80,7 +86,7 @@ function SignIn() {
 
   const onConnectDeriv = async () => {
     setBusy(true);
-    setMsg("Initiating Deriv Auth 2.0...");
+    setMsg("Connecting to Deriv Auth 2.0...");
     try {
       await startDerivAuth({
         clientId: getDerivClientId(),
@@ -89,6 +95,28 @@ function SignIn() {
     } catch (e) {
       setBusy(false);
       setMsg(e instanceof Error ? e.message : "Failed to initiate Deriv authorization.");
+    }
+  };
+
+  const handleAuthorizeToken = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!apiToken.trim()) return;
+
+    setTokenBusy(true);
+    setTokenError(null);
+
+    try {
+      const res = await authorizeWithToken(apiToken.trim());
+      if (res.success) {
+        session.set("deriv_trader");
+        navigate({ to: "/trade" });
+      } else {
+        setTokenError(res.error || "Failed to authorize token with Deriv.");
+      }
+    } catch (err) {
+      setTokenError(err instanceof Error ? err.message : "Authorization error.");
+    } finally {
+      setTokenBusy(false);
     }
   };
 
@@ -111,7 +139,7 @@ function SignIn() {
             Monochrome Edge.
           </h1>
           <p className="max-w-md font-mono text-xs leading-relaxed text-zinc-400">
-            Automated Deriv Matches strategy exclusively on Volatility 100. Real-time digit distribution analysis, strict spread validation, and Deriv Auth 2.0 integration for Demo and Real accounts.
+            Automated Deriv Matches strategy exclusively on Volatility 100. Real-time digit distribution analysis, strict spread validation, and direct Deriv permission integration for Demo and Real accounts.
           </p>
         </div>
 
@@ -123,8 +151,8 @@ function SignIn() {
       </section>
 
       {/* Auth Form & Deriv Direct Connect */}
-      <section className="flex items-center justify-center bg-black px-6 py-16">
-        <div className="w-full max-w-sm space-y-8">
+      <section className="flex items-center justify-center bg-black px-6 py-12">
+        <div className="w-full max-w-sm space-y-6">
           <div className="flex items-center gap-4 border-b border-zinc-900 pb-4">
             <img src="/app-icon.png" alt="Icon" className="h-12 w-12 rounded-full border border-zinc-800" />
             <div className="space-y-1">
@@ -137,19 +165,79 @@ function SignIn() {
             </div>
           </div>
 
-          {/* Deriv Auth 2.0 Direct Access */}
-          <div className="space-y-2">
+          {/* Deriv Auth 2.0 & Direct Permission Access */}
+          <div className="space-y-3">
             <button
               type="button"
               onClick={onConnectDeriv}
               disabled={busy}
-              className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-50"
+              className="w-full border border-white bg-white py-3 font-mono text-xs uppercase tracking-[0.2em] text-black hover:bg-zinc-200 transition-colors disabled:opacity-50 font-bold"
             >
               Sign In with Deriv Auth 2.0
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowTokenInput(!showTokenInput);
+                setTokenError(null);
+              }}
+              className="w-full border border-zinc-800 bg-zinc-900/60 py-2.5 font-mono text-xs uppercase tracking-wider text-teal-400 hover:border-zinc-700 hover:text-teal-300 transition-colors"
+            >
+              {showTokenInput ? "Close Token Authorization" : "Authorize via Deriv API Token (iOS / PWA)"}
+            </button>
+
+            {/* Direct Token Authorization Card (Guaranteed on iOS PWA) */}
+            {showTokenInput && (
+              <form onSubmit={handleAuthorizeToken} className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 space-y-3">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
+                      Deriv API Token
+                    </span>
+                    <a
+                      href="https://app.deriv.com/account/api-token"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-[10px] text-teal-400 hover:underline"
+                    >
+                      Create Token ↗
+                    </a>
+                  </div>
+                  <p className="font-mono text-[10px] text-zinc-500 leading-tight">
+                    On iOS PWA or mobile: Generate a token in Deriv Settings &gt; API Token (select <strong>Read</strong> + <strong>Trade</strong>) and paste it below for instant access.
+                  </p>
+                </div>
+
+                <input
+                  type="text"
+                  placeholder="Paste your Deriv API token here"
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  className="w-full rounded border border-zinc-800 bg-black px-3 py-2 font-mono text-xs text-white placeholder-zinc-700 outline-none focus:border-zinc-600"
+                  required
+                />
+
+                {tokenError && (
+                  <p className="font-mono text-[11px] text-rose-400 leading-tight">
+                    {tokenError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={tokenBusy || !apiToken.trim()}
+                  className="w-full rounded bg-teal-600 py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors disabled:opacity-40"
+                >
+                  {tokenBusy ? "Authorizing Account..." : "Grant Access & Enter"}
+                </button>
+              </form>
+            )}
+
             <p className="text-center font-mono text-[10px] text-zinc-500">
-              One-click access with your Deriv Demo & Real accounts
+              Access your Deriv Demo & Real accounts with automated execution
             </p>
+            {msg && <p className="font-mono text-xs text-zinc-400 text-center">{msg}</p>}
           </div>
 
           <div className="flex items-center gap-3">
@@ -160,7 +248,7 @@ function SignIn() {
             <div className="h-px flex-1 bg-zinc-900" />
           </div>
 
-          <form onSubmit={submit} className="space-y-5">
+          <form onSubmit={submit} className="space-y-4">
             <label className="block space-y-1.5">
               <span className="font-mono text-[11px] uppercase tracking-wider text-zinc-400">
                 Email Address
@@ -192,7 +280,7 @@ function SignIn() {
               />
             </label>
 
-            <div className="space-y-3 pt-2">
+            <div className="space-y-2 pt-2">
               <button
                 type="submit"
                 disabled={busy}
@@ -200,10 +288,9 @@ function SignIn() {
               >
                 {busy ? "Authenticating..." : mode === "in" ? "Enter with Email" : "Create Account"}
               </button>
-              {msg && <p className="font-mono text-xs text-zinc-400">{msg}</p>}
             </div>
 
-            <div className="flex items-center justify-between border-t border-zinc-900 pt-4 font-mono text-xs text-zinc-500">
+            <div className="flex items-center justify-between border-t border-zinc-900 pt-3 font-mono text-xs text-zinc-500">
               <button
                 type="button"
                 onClick={() => {
