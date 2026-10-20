@@ -103,12 +103,36 @@ export function TradeTerminal() {
 
   // Strategy & Bot configuration (Strictly Matches strategy parameters)
   const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
+  const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
-  const [stake, setStake] = useState(1);
+  const [stake, setStake] = useState<number>(1);
+  const [stakeInput, setStakeInput] = useState<string>("1");
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
-  const [tp, setTp] = useState(15);
-  const [sl, setSl] = useState(5);
+  const [tp, setTp] = useState<number>(15);
+  const [tpInput, setTpInput] = useState<string>("15");
+  const [sl, setSl] = useState<number>(5);
+  const [slInput, setSlInput] = useState<string>("5");
   const [centerTab, setCenterTab] = useState<"trade_log" | "session_history">("trade_log");
+
+  function updateStake(val: number, strVal?: string) {
+    setStake(val);
+    setStakeInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateTp(val: number, strVal?: string) {
+    setTp(val);
+    setTpInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateSl(val: number, strVal?: string) {
+    setSl(val);
+    setSlInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateMaxDiff(val: number, strVal?: string) {
+    setMaxDiff(val);
+    setMaxDiffInput(strVal !== undefined ? strVal : String(val));
+  }
 
   // Execution state
   const [running, setRunning] = useState(false);
@@ -843,16 +867,45 @@ export function TradeTerminal() {
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-zinc-500">Max Spread Δ Threshold</span>
-                  <span className={`font-bold num ${analysis.diff <= maxDiff ? "text-teal-400" : "text-zinc-400"}`}>
-                    Δ ≤ {maxDiff}%
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-zinc-500 text-[10px]">Δ ≤</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={maxDiffInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                          setMaxDiffInput(val);
+                          const num = parseFloat(val);
+                          if (!isNaN(num) && num >= 0) {
+                            setMaxDiff(num);
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        const num = parseFloat(maxDiffInput);
+                        if (isNaN(num) || num < 0.1) {
+                          updateMaxDiff(0.3);
+                        } else {
+                          updateMaxDiff(num);
+                        }
+                      }}
+                      className={`w-14 rounded border px-1.5 py-0.5 text-right text-xs font-bold num outline-none ${
+                        isDark
+                          ? "border-zinc-800 bg-black text-teal-400 focus:border-zinc-600"
+                          : "border-slate-300 bg-white text-teal-700 focus:border-slate-500"
+                      }`}
+                    />
+                    <span className="text-zinc-500 text-[10px]">%</span>
+                  </div>
                 </div>
                 <div className="grid grid-cols-4 gap-1">
                   {[0.3, 0.5, 1.0, 1.5].map((val) => (
                     <button
                       key={val}
                       type="button"
-                      onClick={() => setMaxDiff(val)}
+                      onClick={() => updateMaxDiff(val)}
                       className={`rounded border py-1 text-[10px] font-semibold transition-colors ${
                         maxDiff === val
                           ? isDark
@@ -918,16 +971,26 @@ export function TradeTerminal() {
                 <div className="space-y-1.5">
                   <label className="text-xs text-zinc-500">Stake (USD)</label>
                   <input
-                    type="number"
-                    min={0.35}
-                    step={0.5}
-                    value={stake}
+                    type="text"
+                    inputMode="decimal"
+                    value={stakeInput}
                     onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      setStake(isNaN(val) ? 0 : val);
+                      const val = e.target.value;
+                      if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                        setStakeInput(val);
+                        const num = parseFloat(val);
+                        if (!isNaN(num) && num > 0) {
+                          setStake(num);
+                        }
+                      }
                     }}
                     onBlur={() => {
-                      if (stake < 0.35) setStake(0.35);
+                      const num = parseFloat(stakeInput);
+                      if (isNaN(num) || num < 0.35) {
+                        updateStake(0.35);
+                      } else {
+                        updateStake(num);
+                      }
                     }}
                     className={`w-full rounded border px-3 py-2 text-sm font-semibold num outline-none ${
                       isDark
@@ -947,7 +1010,7 @@ export function TradeTerminal() {
                     onClick={() => {
                       const bal = activeAccount ? Number(activeAccount.balance) || 100 : 100;
                       const calculated = Math.max(0.35, Math.round((bal * (pct / 100)) * 100) / 100);
-                      setStake(calculated);
+                      updateStake(calculated);
                     }}
                     className={`rounded border py-1 text-[10px] font-semibold transition-colors ${
                       isDark
@@ -1002,11 +1065,28 @@ export function TradeTerminal() {
                   <div className="space-y-1">
                     <label className="text-[11px] text-zinc-500">Take Profit ($)</label>
                     <input
-                      type="number"
-                      min={1}
+                      type="text"
+                      inputMode="decimal"
                       disabled={running}
-                      value={tp}
-                      onChange={(e) => setTp(Math.max(1, Number(e.target.value)))}
+                      value={tpInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                          setTpInput(val);
+                          const num = parseFloat(val);
+                          if (!isNaN(num) && num > 0) {
+                            setTp(num);
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        const num = parseFloat(tpInput);
+                        if (isNaN(num) || num < 1) {
+                          updateTp(1);
+                        } else {
+                          updateTp(num);
+                        }
+                      }}
                       className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
                         isDark
                           ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
@@ -1017,11 +1097,28 @@ export function TradeTerminal() {
                   <div className="space-y-1">
                     <label className="text-[11px] text-zinc-500">Stop Loss ($)</label>
                     <input
-                      type="number"
-                      min={1}
+                      type="text"
+                      inputMode="decimal"
                       disabled={running}
-                      value={sl}
-                      onChange={(e) => setSl(Math.max(1, Number(e.target.value)))}
+                      value={slInput}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                          setSlInput(val);
+                          const num = parseFloat(val);
+                          if (!isNaN(num) && num > 0) {
+                            setSl(num);
+                          }
+                        }
+                      }}
+                      onBlur={() => {
+                        const num = parseFloat(slInput);
+                        if (isNaN(num) || num < 1) {
+                          updateSl(1);
+                        } else {
+                          updateSl(num);
+                        }
+                      }}
                       className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
                         isDark
                           ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
