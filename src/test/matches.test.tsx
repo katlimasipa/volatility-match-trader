@@ -56,6 +56,17 @@ describe("Volatility 100 Matches strategy", () => {
     expect(shouldEnter(a, 0)).toBe(false);
   });
 
+  it("strictly requires 1000 ticks before allowing trade entry", () => {
+    // Only 500 ticks buffered
+    const counts = [50, 50, 60, 50, 50, 50, 50, 59, 40, 41];
+    const a = analyze(build(counts));
+    expect(a.total).toBe(500);
+    expect(a.ready).toBe(false);
+    expect(a.ok).toBe(false);
+    // Even if diff <= 0.3% and incoming digit matches D1, shouldEnter must be false
+    expect(shouldEnter(a, a.most)).toBe(false);
+  });
+
   it("enforces max 3 runs per cycle", () => {
     expect(MAX_RUNS).toBe(3);
   });

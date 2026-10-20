@@ -22,19 +22,23 @@ export interface Analysis {
   mostPct: number;
   secondPct: number;
   diff: number;       // mostPct - secondPct
-  ok: boolean;        // diff <= MAX_DIFF
+  ready: boolean;     // strictly total >= WINDOW (1,000 ticks)
+  ok: boolean;        // ready && diff <= MAX_DIFF
 }
 
 /**
- * Compute frequency and percentage distribution of digits 0-9
+ * Compute frequency and percentage distribution of digits 0-9 across the last 1,000 ticks.
  * Determines most and second most appearing digits and verifies if spread <= 0.3%.
+ * Strictly requires at least 1,000 ticks buffered before condition (ok) can be met.
  */
 export function analyze(digits: number[]): Analysis {
+  // Always evaluate against the rolling last 1,000 ticks
+  const windowDigits = digits.length > WINDOW ? digits.slice(-WINDOW) : digits;
   const counts = new Array(10).fill(0);
-  for (const d of digits) {
+  for (const d of windowDigits) {
     if (d >= 0 && d <= 9) counts[d]++;
   }
-  const total = digits.length;
+  const total = windowDigits.length;
   const percents = counts.map((c) => (total > 0 ? (c / total) * 100 : 0));
 
   const order = percents
@@ -47,6 +51,7 @@ export function analyze(digits: number[]): Analysis {
   const most = first.d;
   const second = runner.d;
   const diff = Math.round((first.p - runner.p) * 1000) / 1000;
+  const ready = total >= WINDOW;
 
   return {
     total,
@@ -57,15 +62,17 @@ export function analyze(digits: number[]): Analysis {
     mostPct: first.p,
     secondPct: runner.p,
     diff,
-    ok: total > 0 && diff <= MAX_DIFF,
+    ready,
+    ok: ready && diff <= MAX_DIFF,
   };
 }
 
 /**
  * Trade entry condition:
- * Spread condition must be satisfied (diff <= 0.3%)
- * AND the current incoming digit must match the most appearing digit (entry point).
+ * 1. Exactly 1,000 ticks must have been analyzed (a.ready).
+ * 2. Spread condition must be satisfied (diff <= 0.3% and a.ok).
+ * 3. The current incoming digit must match the most appearing digit (entry point).
  */
 export function shouldEnter(a: Analysis, currentDigit: number): boolean {
-  return a.ok && currentDigit === a.most;
+  return a.ready && a.ok && currentDigit === a.most;
 }

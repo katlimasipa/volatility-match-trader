@@ -110,8 +110,8 @@ export function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
-  const [botState, setBotState] = useState<"IDLE" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED">("IDLE");
-  const [note, setNote] = useState("System idle. Configure stake and start bot.");
+  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED">("BUFFERING");
+  const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing Volatility 100...");
 
   // Backtest / Inspection Modal
   const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
@@ -262,8 +262,9 @@ export function TradeTerminal() {
         setRecentTicks(initialTicks);
 
         const a = analyze(dList);
+        setBotState("IDLE");
         setNote(
-          `1,000 ticks analyzed: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match [${a.second}] (${a.secondPct.toFixed(1)}%), Spread Δ ${a.diff.toFixed(2)}%. Ready to run.`
+          `1,000 ticks analyzed on Volatility 100: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`
         );
       }
     });
@@ -376,6 +377,13 @@ export function TradeTerminal() {
 
     if (!s.running) return;
 
+    // Strict 1,000-tick requirement: The bot must analyse the last 1,000 ticks before evaluating trade entry
+    if (tickList.length < WINDOW) {
+      setBotState("BUFFERING");
+      setNote(`Buffering market ticks (${tickList.length}/${WINDOW}). Analyzing last 1,000 ticks before evaluating entry...`);
+      return;
+    }
+
     if (s.botState === "LOSS RE-ANALYSIS") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
@@ -401,13 +409,13 @@ export function TradeTerminal() {
       setNote(`Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${MAX_DIFF}%). Waiting for entry digit ${a.most}...`);
     } else {
       setBotState("ANALYZING");
-      setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${MAX_DIFF}%. Analyzing market ticks...`);
+      setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${MAX_DIFF}%. Analyzing last 1,000 ticks...`);
     }
   }
 
   function startBot() {
-    if (digits.length === 0) {
-      setNote("Buffering market ticks. Please wait a moment before starting...");
+    if (digits.length < WINDOW) {
+      setNote(`Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks must be analyzed before entering a trade.`);
       return;
     }
     setTrades([]);
@@ -416,7 +424,7 @@ export function TradeTerminal() {
     lossCooldownTicks.current = 0;
     setRunning(true);
     setBotState("ANALYZING");
-    setNote("Bot active. Evaluating Volatility 100 digit distribution for Run 1...");
+    setNote("Bot active. Evaluating last 1,000 ticks of Volatility 100 for Run 1...");
   }
 
   function stopBot(message: string) {
@@ -447,25 +455,22 @@ export function TradeTerminal() {
   }
 
   function runBacktest1000Ticks() {
-    if (digits.length < 100) {
-      alert("Buffering ticks. Need at least 100 ticks to calculate backtest.");
+    if (digits.length < WINDOW) {
+      alert(`Buffering market ticks. Exactly 1,000 ticks are required to calculate the test (${digits.length}/${WINDOW} collected so far).`);
       return;
     }
 
+    const windowDigits = digits.slice(-WINDOW);
+    const a = analyze(windowDigits);
     let signals = 0;
     let wins = 0;
     let losses = 0;
     let pnl = 0;
-    const windowSize = Math.min(200, Math.floor(digits.length / 2));
 
-    for (let i = windowSize; i < digits.length - 1; i++) {
-      const slice = digits.slice(i - windowSize, i);
-      const a = analyze(slice);
-      const entryDigit = digits[i];
-
-      if (shouldEnter(a, entryDigit)) {
+    for (let i = 0; i < windowDigits.length - 1; i++) {
+      if (windowDigits[i] === a.most) {
         signals++;
-        const nextDigit = digits[i + 1];
+        const nextDigit = windowDigits[i + 1];
         if (nextDigit === a.second) {
           wins++;
           pnl += stake * WIN_MULTIPLIER;
@@ -478,7 +483,7 @@ export function TradeTerminal() {
 
     const winRate = signals > 0 ? (wins / signals) * 100 : 0;
     setBacktest({
-      totalTicks: digits.length,
+      totalTicks: windowDigits.length,
       signals,
       wins,
       losses,
@@ -642,10 +647,11 @@ export function TradeTerminal() {
               ) : (
                 <button
                   onClick={startBot}
-                  disabled={digits.length === 0}
-                  className="rounded bg-teal-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40"
+                  disabled={digits.length < WINDOW}
+                  title={digits.length < WINDOW ? `Buffering last 1,000 ticks (${digits.length}/${WINDOW}) before evaluating trade entry` : "Start automated Matches bot"}
+                  className="rounded bg-teal-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  START BOT
+                  {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
                 </button>
               )}
 
@@ -1061,7 +1067,7 @@ export function TradeTerminal() {
                     TICK STREAM
                   </span>
                   <span className="text-[10px] text-zinc-500 num">
-                    {digits.length} / {WINDOW} ticks
+                    {digits.length >= WINDOW ? "1,000 / 1,000 TICKS (READY)" : `${digits.length} / ${WINDOW} TICKS (BUFFERING)`}
                   </span>
                 </div>
 
@@ -1259,6 +1265,12 @@ export function TradeTerminal() {
                 <div>
                   <div className="text-[10px] text-zinc-500">Status</div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{botState}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-zinc-500">1,000 Ticks</div>
+                  <div className={`font-semibold ${digits.length >= WINDOW ? "text-teal-500" : "text-amber-500"}`}>
+                    {digits.length >= WINDOW ? "VERIFIED" : `${digits.length}/${WINDOW}`}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Pending</div>
