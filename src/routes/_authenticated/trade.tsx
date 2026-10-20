@@ -25,6 +25,28 @@ import {
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
 import { analyze, lastDigit, shouldEnter, MAX_DIFF, MAX_RUNS, SYMBOL, WINDOW } from "@/lib/matches";
+import {
+  isNotificationSupported,
+  isNotificationEnabled,
+  setNotificationEnabled,
+  requestNotificationPermission,
+  notifyTradeWon,
+  notifyTradeLost,
+  notifyTakeProfit,
+  notifyStopLoss,
+  notifyCycleCompleted,
+  isSoundEnabled,
+  setSoundEnabled,
+  playAlertSound,
+  dispatchNotification,
+} from "@/lib/notifications";
+import {
+  isRunningStandalone,
+  isIOS,
+  canInstallPWA,
+  onInstallableChange,
+  triggerInstallPrompt,
+} from "@/lib/pwa";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
@@ -186,6 +208,55 @@ export function TradeTerminal() {
   // Backtest / Inspection Modal
   const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
   const [showBacktestModal, setShowBacktestModal] = useState(false);
+
+  // Cross-device notifications, sound & PWA install state
+  const [notifsEnabled, setNotifsEnabled] = useState(isNotificationEnabled);
+  const [soundEnabled, setSoundEnabledState] = useState(isSoundEnabled);
+  const [installable, setInstallable] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"controls" | "market" | "session" | "all">("market");
+
+  useEffect(() => {
+    setIsStandalone(isRunningStandalone());
+    const unsub = onInstallableChange((canInstall) => setInstallable(canInstall));
+    return () => unsub();
+  }, []);
+
+  async function toggleNotifications() {
+    if (!notifsEnabled) {
+      const perm = await requestNotificationPermission();
+      if (perm === "granted") {
+        setNotifsEnabled(true);
+        dispatchNotification("Notifications Enabled", {
+          body: "You will receive real-time alerts for trade wins, losses, and cycle limits.",
+        });
+      } else if (perm === "denied") {
+        alert("Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.");
+      }
+    } else {
+      setNotificationEnabled(false);
+      setNotifsEnabled(false);
+    }
+  }
+
+  function toggleSound() {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    setSoundEnabledState(next);
+    if (next) playAlertSound("win");
+  }
+
+  async function handleInstallApp() {
+    if (isIOS()) {
+      setShowIOSInstallGuide(true);
+    } else {
+      const outcome = await triggerInstallPrompt();
+      if (outcome === "unavailable") {
+        setShowIOSInstallGuide(true);
+      }
+    }
+  }
 
   const pending = useRef<PendingTrade | null>(null);
   const lossCooldownTicks = useRef(0);
@@ -449,6 +520,12 @@ export function TradeTerminal() {
       const { netWinProfit } = calculateMatchesPayout(p.stake, s.configuredMarkup);
       const pnl = won ? netWinProfit : -p.stake;
 
+      if (won) {
+        notifyTradeWon(p.runIndex, netWinProfit, p.target);
+      } else {
+        notifyTradeLost(p.runIndex, p.stake, currentD, p.target);
+      }
+
       const newRow: TradeRow = {
         id: Date.now(),
         runIndex: p.runIndex,
@@ -484,12 +561,15 @@ export function TradeTerminal() {
 
       // Check Risk Limits
       if (totalPnl >= s.tp) {
+        notifyTakeProfit(totalPnl);
         return stopBot(`Take Profit reached (+$${totalPnl.toFixed(2)})`);
       }
       if (totalPnl <= -s.sl) {
+        notifyStopLoss(totalPnl);
         return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
       }
       if (nextRunCount >= MAX_RUNS) {
+        notifyCycleCompleted(MAX_RUNS, totalPnl);
         return stopBot(`Cycle completed: ${MAX_RUNS} runs finished (Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)})`);
       }
 
@@ -696,21 +776,21 @@ export function TradeTerminal() {
     <div className={`min-h-screen font-mono antialiased transition-colors ${
       isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
     }`}>
-      {/* 1. Header Bar: Minimalist */}
-      <header className={`border-b px-6 py-3.5 ${
+      {/* 1. Header Bar: Minimalist & Mobile-Optimized */}
+      <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3.5 transition-colors ${
         isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
       }`}>
-        <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-4">
+        <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-3 sm:gap-4">
           {/* Logo & Sub-status */}
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3 sm:gap-6">
+            <div className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full bg-teal-500" />
-              <span className={`text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
-                ThDpst Matches <span className="font-normal text-zinc-500">// Volatility 100</span>
+              <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
+                ThDpst Matches <span className="hidden sm:inline font-normal text-zinc-500">// Volatility 100</span>
               </span>
             </div>
 
-            <div className={`hidden sm:flex items-center gap-3 border-l pl-6 text-xs ${
+            <div className={`flex items-center gap-2 sm:gap-3 border-l pl-3 sm:pl-6 text-[11px] sm:text-xs ${
               isDark ? "border-zinc-800" : "border-slate-200"
             }`}>
               <div className="flex items-center gap-1.5">
@@ -719,7 +799,7 @@ export function TradeTerminal() {
               </div>
               <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
               <div className="flex items-center gap-1">
-                <span className="text-zinc-500">NET P/L</span>
+                <span className="text-zinc-500">P/L</span>
                 <span className={`font-semibold num ${
                   totalPnl > 0
                     ? isDark ? "text-white font-bold" : "text-teal-700 font-bold"
@@ -728,8 +808,8 @@ export function TradeTerminal() {
                   {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
                 </span>
               </div>
-              <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
-              <div className="flex items-center gap-1">
+              <span className={`hidden md:inline ${isDark ? "text-zinc-800" : "text-slate-300"}`}>|</span>
+              <div className="hidden md:flex items-center gap-1">
                 <span className="text-zinc-500">TRADES</span>
                 <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-700"}`}>{trades.length}</span>
               </div>
@@ -737,9 +817,9 @@ export function TradeTerminal() {
           </div>
 
           {/* Right Header Controls */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             {/* Live Auto-updating Balance */}
-            <div className="flex items-center gap-2 text-xs font-medium">
+            <div className="flex items-center gap-1.5 text-xs font-medium">
               <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
               <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -751,7 +831,7 @@ export function TradeTerminal() {
             <select
               value={activeId || ""}
               onChange={(e) => switchAccount(e.target.value)}
-              className={`rounded border px-2.5 py-1.5 text-xs font-medium outline-none transition-colors ${
+              className={`rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
                 isDark
                   ? "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700"
                   : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"
@@ -764,7 +844,56 @@ export function TradeTerminal() {
               ))}
             </select>
 
-            {/* Light / Dark Mode Toggle (Clean Text, No Emojis) */}
+            {/* Cross-Device Notification Toggle Button */}
+            <button
+              type="button"
+              onClick={toggleNotifications}
+              title={notifsEnabled ? "Notifications enabled (click to disable)" : "Enable cross-device trade notifications"}
+              className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
+                notifsEnabled
+                  ? isDark
+                    ? "border-teal-700 bg-teal-950/40 text-teal-300 font-bold"
+                    : "border-teal-500 bg-teal-50 text-teal-800 font-bold"
+                  : isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white"
+                    : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900"
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+              <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
+            </button>
+
+            {/* Audio Alert Toggle Button */}
+            <button
+              type="button"
+              onClick={toggleSound}
+              title="Toggle trade sound effects"
+              className={`hidden sm:inline-flex rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                soundEnabled
+                  ? isDark
+                    ? "border-zinc-700 bg-zinc-900 text-zinc-200"
+                    : "border-slate-300 bg-slate-100 text-slate-800"
+                  : isDark
+                    ? "border-zinc-800 text-zinc-500"
+                    : "border-slate-200 text-slate-400"
+              }`}
+            >
+              SOUND: {soundEnabled ? "ON" : "OFF"}
+            </button>
+
+            {/* PWA Install Button for iOS / Android / Desktop */}
+            {!isStandalone && (installable || isIOS()) && (
+              <button
+                type="button"
+                onClick={handleInstallApp}
+                title="Install PWA application"
+                className="rounded bg-teal-600 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
+              >
+                INSTALL
+              </button>
+            )}
+
+            {/* Light / Dark Mode Toggle */}
             <button
               onClick={toggleTheme}
               title="Toggle theme"
@@ -777,14 +906,14 @@ export function TradeTerminal() {
               {isDark ? "LIGHT" : "DARK"}
             </button>
 
-            {/* Log Out Button (Clean Text, No SVG) */}
+            {/* Log Out Button */}
             <button
               onClick={() => {
                 session.clear();
                 clearAllDerivAuth();
                 navigate({ to: "/" });
               }}
-              className={`rounded border px-2.5 py-1.5 text-xs uppercase tracking-wider transition-colors ${
+              className={`rounded border px-2 py-1.5 text-xs uppercase tracking-wider transition-colors ${
                 isDark
                   ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
                   : "border-slate-300 text-slate-600 hover:border-slate-400 hover:text-slate-900"
@@ -793,12 +922,12 @@ export function TradeTerminal() {
               EXIT
             </button>
 
-            {/* Action Buttons: Teal Start Bot button */}
-            <div className={`flex items-center gap-2 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+            {/* Action Buttons: Teal Start Bot, Reset, Test 1, Test 1K */}
+            <div className={`flex items-center gap-1.5 sm:gap-2 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
               {running ? (
                 <button
                   onClick={() => stopBot("User stopped bot.")}
-                  className="rounded bg-rose-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 transition-colors shadow-sm"
+                  className="rounded bg-rose-600 px-3.5 sm:px-5 py-1.5 sm:py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-rose-500 transition-colors shadow-sm"
                 >
                   STOP BOT
                 </button>
@@ -807,7 +936,7 @@ export function TradeTerminal() {
                   onClick={startBot}
                   disabled={digits.length < WINDOW}
                   title={digits.length < WINDOW ? `Buffering last 1,000 ticks (${digits.length}/${WINDOW}) before evaluating trade entry` : "Start automated Matches bot"}
-                  className="rounded bg-teal-600 px-5 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded bg-teal-600 px-3.5 sm:px-5 py-1.5 sm:py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
                 </button>
@@ -815,7 +944,7 @@ export function TradeTerminal() {
 
               <button
                 onClick={resetSession}
-                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
                     : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
@@ -828,19 +957,19 @@ export function TradeTerminal() {
                 onClick={triggerManualTestTrade}
                 disabled={digits.length < WINDOW || pending.current !== null}
                 title="Immediately execute 1 test run matching second most digit on next tick"
-                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   isDark
                     ? "border-teal-900 bg-teal-950/40 text-teal-300 hover:border-teal-700 hover:text-white"
                     : "border-teal-300 bg-teal-50 text-teal-800 hover:border-teal-400"
                 }`}
               >
-                TEST 1 RUN
+                TEST 1
               </button>
 
               <button
                 onClick={runBacktest1000Ticks}
                 title="Test strategy performance on last 1,000 ticks"
-                className={`rounded border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+                className={`rounded border px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700 hover:text-white"
                     : "border-slate-300 bg-white text-slate-700 hover:border-slate-400"
@@ -854,11 +983,61 @@ export function TradeTerminal() {
       </header>
 
       {/* 2. Main 3-Column Layout Matching User Spec */}
-      <main className="mx-auto max-w-[1560px] p-6">
+      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 safe-bottom">
+        {/* Mobile & Tablet Tab Switcher (Visible on < lg screens) */}
+        <div className={`lg:hidden mb-4 grid grid-cols-4 gap-1 rounded-lg border p-1 text-[11px] font-bold uppercase tracking-wider ${
+          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
+        }`}>
+          <button
+            type="button"
+            onClick={() => setMobileTab("market")}
+            className={`py-2 text-center rounded transition-colors ${
+              mobileTab === "market"
+                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Market
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("controls")}
+            className={`py-2 text-center rounded transition-colors ${
+              mobileTab === "controls"
+                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Controls
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("session")}
+            className={`py-2 text-center rounded transition-colors ${
+              mobileTab === "session"
+                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            Session
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileTab("all")}
+            className={`py-2 text-center rounded transition-colors ${
+              mobileTab === "all"
+                ? isDark ? "bg-zinc-800 text-teal-400 font-bold" : "bg-slate-100 text-teal-700 font-bold"
+                : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            All
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr_290px] gap-6 items-start">
 
           {/* LEFT COLUMN: Controls & Settings */}
-          <aside className="space-y-6">
+          <aside className={`space-y-6 ${mobileTab === "controls" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* CONNECTION */}
             <section className={`rounded-xl border p-4 space-y-3 shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
@@ -1266,7 +1445,7 @@ export function TradeTerminal() {
           </aside>
 
           {/* CENTER COLUMN: Last Digit, Tick Stream & Trade Log */}
-          <main className="space-y-6">
+          <div className={`space-y-6 min-w-0 ${mobileTab === "market" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* Top Row: Last Digit & Tick Stream Side by Side */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -1505,10 +1684,10 @@ export function TradeTerminal() {
                 )}
               </div>
             </section>
-          </main>
+          </div>
 
           {/* RIGHT COLUMN: Session & Bot Overview */}
-          <aside className="space-y-6">
+          <aside className={`space-y-6 ${mobileTab === "session" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
             {/* SESSION */}
             <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
@@ -1688,6 +1867,43 @@ export function TradeTerminal() {
               className="w-full rounded border border-white bg-white py-2.5 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
             >
               CLOSE TEST RESULTS
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* iOS PWA Install Guide Modal */}
+      {showIOSInstallGuide && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className={`w-full max-w-sm rounded-xl border p-6 space-y-4 shadow-2xl ${
+            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+          }`}>
+            <div className={`flex items-center justify-between border-b pb-3 ${
+              isDark ? "border-zinc-900" : "border-slate-200"
+            }`}>
+              <span className="text-xs font-bold uppercase tracking-wider">
+                Install on iOS
+              </span>
+              <button
+                onClick={() => setShowIOSInstallGuide(false)}
+                className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
+              >
+                [X]
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400 leading-relaxed">
+              To install ThDpst Matches as a full-screen app on your iPhone or iPad home screen:
+            </p>
+            <ol className="space-y-2.5 text-xs text-zinc-300 list-decimal list-inside leading-relaxed">
+              <li>Tap the <span className="font-semibold text-teal-400">Share</span> button in Safari's bottom toolbar.</li>
+              <li>Scroll down and select <span className="font-semibold text-teal-400">Add to Home Screen</span>.</li>
+              <li>Tap <span className="font-semibold text-teal-400">Add</span> in the top-right corner.</li>
+            </ol>
+            <button
+              onClick={() => setShowIOSInstallGuide(false)}
+              className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
+            >
+              GOT IT
             </button>
           </div>
         </div>
