@@ -28,7 +28,34 @@ export const Route = createFileRoute("/_authenticated/trade")({
   component: TradeTerminal,
 });
 
-const WIN_MULTIPLIER = 8.0;
+/**
+ * Deriv Digit Matches contract payout pricing:
+ * Deriv charges an 11.20% probability rate for Digit Match (1 out of 10 digits).
+ * Base Gross Payout = Stake / 0.1120 = Stake * 8.9285714...
+ *
+ * Developer App Markup:
+ * Deriv allows up to 3% markup commission on contract payouts.
+ * Markup Fee = Gross Payout * 3%
+ * Effective Client Payout = Gross Payout * (1 - 0.03) = Stake * 8.660714...
+ * Net Win Profit (P/L) = Effective Client Payout - Stake = Stake * 7.660714...
+ */
+export const DERIV_MATCH_BASE_PAYOUT_RATIO = 100 / 11.20; // 8.92857142857
+export const DEFAULT_APP_MARKUP_PERCENT = 3.0; // 3% markup as registered on Deriv Developer Portal
+
+export function calculateMatchesPayout(stake: number, markupPercent = DEFAULT_APP_MARKUP_PERCENT) {
+  const baseGrossPayout = stake * DERIV_MATCH_BASE_PAYOUT_RATIO;
+  const markupRate = markupPercent / 100;
+  const clientGrossPayout = Math.round(baseGrossPayout * (1 - markupRate) * 100) / 100;
+  const netWinProfit = Math.round((clientGrossPayout - stake) * 100) / 100;
+  const markupFee = Math.round(baseGrossPayout * markupRate * 100) / 100;
+  return {
+    baseGrossPayout,
+    clientGrossPayout,
+    netWinProfit,
+    markupFee,
+    payoutMultiplier: stake > 0 ? clientGrossPayout / stake : 0,
+  };
+}
 
 interface TradeRow {
   id: number;
@@ -170,7 +197,18 @@ export function TradeTerminal() {
       try {
         const fresh = await fetchDerivAccounts(authInfo, HARDCODED_APP_ID);
         if (fresh && fresh.length > 0) {
-          setAccounts(fresh);
+          setAccounts((prev) => {
+            // Keep active demo session balance intact so simulated trading amounts don't get reset
+            return fresh.map((f) => {
+              if (f.account_type === "demo") {
+                const existing = prev.find((p) => p.account_id === f.account_id);
+                if (existing && existing.balance !== undefined) {
+                  return { ...f, balance: existing.balance };
+                }
+              }
+              return f;
+            });
+          });
         }
       } catch {
         // Keep current balances
@@ -218,13 +256,6 @@ export function TradeTerminal() {
     }
 
     refreshDerivBalances();
-    const balanceInterval = setInterval(refreshDerivBalances, 8000);
-    window.addEventListener("focus", refreshDerivBalances);
-
-    return () => {
-      clearInterval(balanceInterval);
-      window.removeEventListener("focus", refreshDerivBalances);
-    };
   }, [navigate, refreshDerivBalances]);
 
   // Connect to Deriv WebSocket tick feed & balance stream
@@ -232,7 +263,7 @@ export function TradeTerminal() {
     const ws = new DerivWS(DERIV_WS_URL, (s) => setStatus(s));
     wsRef.current = ws;
 
-    // Listen for balance updates from Deriv
+    // Listen for balance updates from Deriv (applies to real accounts, preserves demo trading)
     ws.registerHandler("balance", (data) => {
       const bData = data.balance as {
         accounts?: Record<string, { balance: number; currency: string }>;
@@ -242,6 +273,7 @@ export function TradeTerminal() {
       if (bData?.accounts) {
         setAccounts((prev) => {
           const updated = prev.map((acc) => {
+            if (acc.account_type === "demo") return acc; // Preserve active demo trading balance
             const fresh = bData.accounts?.[acc.account_id];
             if (fresh) {
               return { ...acc, balance: Number(fresh.balance).toFixed(2), currency: fresh.currency || acc.currency };
@@ -254,6 +286,7 @@ export function TradeTerminal() {
       } else if (typeof bData?.balance === "number" && bData.loginid) {
         setAccounts((prev) => {
           const updated = prev.map((acc) => {
+            if (acc.account_type === "demo") return acc; // Preserve active demo trading balance
             if (acc.account_id === bData.loginid) {
               return { ...acc, balance: Number(bData.balance).toFixed(2) };
             }
@@ -350,7 +383,8 @@ export function TradeTerminal() {
       const p = pending.current;
       pending.current = null;
       const won = currentD === p.target;
-      const pnl = won ? p.stake * WIN_MULTIPLIER : -p.stake;
+      const { netWinProfit } = calculateMatchesPayout(p.stake);
+      const pnl = won ? netWinProfit : -p.stake;
 
       const newRow: TradeRow = {
         id: Date.now(),
@@ -368,8 +402,9 @@ export function TradeTerminal() {
 
       // Auto-update amounts for active Demo or Real account
       setAccounts((prev) => {
+        const targetId = s.activeId || activeId || (prev[0] ? prev[0].account_id : "");
         const updated = prev.map((acc) => {
-          if (acc.account_id === s.activeId || (!s.activeId && acc === prev[0])) {
+          if (acc.account_id === targetId || (!targetId && acc === prev[0])) {
             const currentBal = parseFloat(acc.balance) || 0;
             const nextBal = Math.max(0, currentBal + pnl);
             return { ...acc, balance: nextBal.toFixed(2) };
@@ -506,7 +541,7 @@ export function TradeTerminal() {
         const nextDigit = windowDigits[i + 1];
         if (nextDigit === a.second) {
           wins++;
-          pnl += stake * WIN_MULTIPLIER;
+          pnl += calculateMatchesPayout(stake).netWinProfit;
         } else {
           losses++;
           pnl -= stake;
@@ -1022,6 +1057,38 @@ export function TradeTerminal() {
                   </button>
                 ))}
               </div>
+
+              {/* Live Deriv Matches Payout Breakdown with 3% Developer Markup */}
+              {(() => {
+                const payoutInfo = calculateMatchesPayout(stake);
+                return (
+                  <div className={`mt-3 rounded-lg border p-3 space-y-2 ${
+                    isDark ? "border-zinc-800/80 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
+                  }`}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-500 font-medium">Potential Payout</span>
+                      <span className={`font-bold num ${isDark ? "text-teal-400" : "text-teal-700"}`}>
+                        ${payoutInfo.clientGrossPayout.toFixed(2)} USD
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-500 font-medium">Net Profit / Win</span>
+                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                        +${payoutInfo.netWinProfit.toFixed(2)} USD
+                        <span className="ml-1 text-[10px] text-zinc-500 font-normal">
+                          (+{((payoutInfo.netWinProfit / (stake || 1)) * 100).toFixed(0)}%)
+                        </span>
+                      </span>
+                    </div>
+                    <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
+                      isDark ? "border-zinc-800/60" : "border-slate-200"
+                    }`}>
+                      <span>Deriv Markup (3%): -${payoutInfo.markupFee.toFixed(2)}</span>
+                      <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
+                    </div>
+                  </div>
+                );
+              })()}
             </section>
 
             {/* RISK */}
