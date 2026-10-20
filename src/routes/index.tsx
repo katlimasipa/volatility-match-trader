@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
-import { session } from "@/lib/deriv-config";
+import { useEffect, useState, type FormEvent } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -21,11 +21,34 @@ function SignIn() {
   const [mode, setMode] = useState<"in" | "up">("in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  const submit = (e: FormEvent) => {
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) navigate({ to: "/trade" });
+    });
+  }, [navigate]);
+
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!email || !password) return;
-    session.set(email);
+    setBusy(true);
+    setMsg(null);
+    if (mode === "up") {
+      const { data, error } = await supabase.auth.signUp({
+        email, password, options: { emailRedirectTo: window.location.origin },
+      });
+      setBusy(false);
+      if (error) return setMsg(error.message);
+      if (!data.session) {
+        setMode("in");
+        return setMsg("Check your inbox to confirm your email, then sign in.");
+      }
+      return navigate({ to: "/trade" });
+    }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
+    if (error) return setMsg(error.message);
     navigate({ to: "/trade" });
   };
 
@@ -39,7 +62,7 @@ function SignIn() {
           Trade the match.
         </h1>
         <p className="max-w-sm text-sm text-primary-foreground/60">
-          A single-purpose bot. One market, one contract type, three runs.
+          Create your account, then link Deriv to trade.
         </p>
       </section>
 
@@ -53,26 +76,24 @@ function SignIn() {
           <div className="space-y-6">
             <label className="block space-y-1">
               <span className="label-caps">Email</span>
-              <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+              <input className="field" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
             </label>
             <label className="block space-y-1">
               <span className="label-caps">Password</span>
-              <input className="field" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              <input className="field" type="password" minLength={6} autoComplete={mode === "in" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} required />
             </label>
           </div>
 
           <div className="space-y-3">
-            <button type="submit" className="btn-solid w-full">
-              {mode === "in" ? "Continue" : "Create account"}
+            <button type="submit" disabled={busy} className="btn-solid w-full">
+              {busy ? "Please wait" : mode === "in" ? "Sign in" : "Create account"}
             </button>
-            <button type="button" disabled className="btn-line w-full" title="Available once Deriv app ID is connected">
-              Continue with Deriv
-            </button>
+            {msg && <p className="text-sm text-muted-foreground">{msg}</p>}
           </div>
 
           <button
             type="button"
-            onClick={() => setMode(mode === "in" ? "up" : "in")}
+            onClick={() => { setMode(mode === "in" ? "up" : "in"); setMsg(null); }}
             className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
             {mode === "in" ? "No account? Create one" : "Have an account? Sign in"}
