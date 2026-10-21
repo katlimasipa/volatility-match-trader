@@ -878,7 +878,7 @@ export function TradeTerminal() {
     if (!isConnectedToDeriv || !tradingReady) {
       setShowConnectModal(true);
       setNote(
-        "Connect Deriv Auth 2.0 (or an API token) so trades hit your Deriv account and the balance updates live."
+        "Connect Deriv Auth 2.0 or an API token so trades hit your account and the balance updates."
       );
       return;
     }
@@ -1285,16 +1285,26 @@ export function TradeTerminal() {
 
           {/* Mobile Right Controls: Compact Balance & Menu Button (< lg screens, Guaranteed Zero Overlap) */}
           <div className="flex lg:hidden items-center gap-2 shrink-0">
-            <div className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
-              isDark ? "border-zinc-800 bg-zinc-900/90 text-white" : "border-slate-200 bg-slate-100 text-slate-900"
-            }`}>
-              <span className={`text-[9px] font-bold uppercase ${activeAccount?.account_type === "real" ? "text-teal-500" : "text-zinc-500"}`}>
-                {activeAccount?.account_type === "real" ? "Real" : "Demo"}
+            <button
+              type="button"
+              onClick={() => {
+                if (!isConnectedToDeriv || !activeAccount) setShowConnectModal(true);
+              }}
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
+                isDark ? "border-zinc-800 bg-zinc-900/90 text-white" : "border-slate-200 bg-slate-100 text-slate-900"
+              }`}
+            >
+              <span className={`text-[9px] font-bold uppercase ${
+                !activeAccount ? "text-zinc-500" : activeAccount.account_type === "real" ? "text-teal-500" : "text-zinc-500"
+              }`}>
+                {!activeAccount ? "Off" : activeAccount.account_type === "real" ? "Real" : "Demo"}
               </span>
               <span className="num">
-                ${activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
+                {activeAccount
+                  ? `$${Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}`
+                  : "Connect"}
               </span>
-            </div>
+            </button>
 
             <button
               type="button"
@@ -1403,10 +1413,10 @@ export function TradeTerminal() {
                   </div>
                   <p className="mt-1 text-[11px] text-zinc-500 leading-tight">
                     {tradingReady
-                      ? "Live Deriv balance — updates after every DIGITMATCH buy."
-                      : activeType === "real"
-                        ? "Live funds. Connect trading socket before starting the bot."
-                        : "Demo funds from Deriv. Connect so each trade moves the real demo balance."}
+                      ? "Live Deriv balance. Updates after every trade."
+                      : isConnectedToDeriv
+                        ? "Signed in. Opening the trading connection..."
+                        : "Connect Deriv so each trade moves your real balance."}
                   </p>
                   {tradingStatusNote && (
                     <p className="mt-1 text-[10px] text-zinc-600 leading-tight">{tradingStatusNote}</p>
