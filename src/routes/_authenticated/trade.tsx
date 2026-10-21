@@ -907,7 +907,7 @@ export function TradeTerminal() {
       <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3 transition-colors sticky top-0 z-30 ${
         isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
       }`}>
-        <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-2 sm:gap-4">
+        <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
             <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
@@ -917,7 +917,7 @@ export function TradeTerminal() {
           </div>
 
           {/* Desktop Bot Telemetry Pill (lg screens only) */}
-          <div className={`hidden lg:flex items-center gap-2 border-l pl-3 text-xs ${
+          <div className={`hidden xl:flex min-w-0 items-center gap-2 border-l pl-3 text-xs ${
             isDark ? "border-zinc-800" : "border-slate-200"
           }`}>
             <div className="flex items-center gap-1.5">
@@ -943,7 +943,7 @@ export function TradeTerminal() {
           </div>
 
           {/* Desktop Right Header Controls (lg screens) */}
-          <div className="hidden lg:flex items-center gap-2.5">
+          <div className="hidden lg:flex min-w-0 flex-wrap items-center justify-end gap-2.5">
             {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
