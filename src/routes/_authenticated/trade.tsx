@@ -957,7 +957,7 @@ export function TradeTerminal() {
             <select
               value={activeId || ""}
               onChange={(e) => switchAccount(e.target.value)}
-              className={`rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
+              className={`max-w-[220px] truncate rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
                 isDark
                   ? "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700"
                   : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"
