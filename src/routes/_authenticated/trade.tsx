@@ -789,9 +789,8 @@ function TradeTerminal() {
     const currency = activeAccount?.currency || "USD";
     if (!session?.isReady()) {
       pending.current = null;
-      setBotState("IDLE");
-      setNote("Live buy failed: trading socket not ready. Reconnect Deriv and try again.");
-      setRunning(false);
+      setBotState("ANALYZING");
+      setNote("Trading session connecting. Will retry on next signal...");
       return;
     }
 
@@ -819,9 +818,9 @@ function TradeTerminal() {
       })
       .catch((err: Error) => {
         pending.current = null;
-        setRunning(false);
-        setBotState("IDLE");
-        setNote(`Live buy failed: ${err.message}`);
+        lossCooldownTicks.current = 3;
+        setBotState("ANALYZING");
+        setNote(`Trade notice: ${err.message}. Retrying on next signal...`);
         setTradingStatusNote(err.message);
       });
   }
@@ -845,17 +844,9 @@ function TradeTerminal() {
       }
     }
 
-    // Never invent a local balance. If a pending trade is not live, the socket dropped —
-    // stop the bot so the next run must reconnect and buy on Deriv again.
-    if (pending.current) {
-      const orphan = pending.current;
+    // Clear any stale non-live pending trade and continue scanning
+    if (pending.current && !pending.current.live) {
       pending.current = null;
-      setRunning(false);
-      setBotState("IDLE");
-      setNote(
-        `Trade aborted (run ${orphan.runIndex}): trading connection lost. Reconnect Deriv and start again so balances stay real.`
-      );
-      return;
     }
 
     if (!s.running) return;
@@ -883,10 +874,9 @@ function TradeTerminal() {
       const targetRun = s.runCount + 1;
       const useLive = Boolean(tradingRef.current?.isReady() && isConnectedToDeriv);
       if (!useLive) {
-        setRunning(false);
-        setBotState("IDLE");
+        setBotState("ANALYZING");
         setNote(
-          "Trading socket offline. Reconnect Deriv Auth 2.0, then start again."
+          "Waiting for Deriv trading connection before entering trade..."
         );
         return;
       }

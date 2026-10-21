@@ -269,24 +269,22 @@ export class DerivTradingSession {
       return false;
     }
 
-    // Prefer Auth 2.0 OTP authenticated socket (required for OAuth / PAT)
+    // Try Deriv WebSocket v3 authorize first (supports DIGITMATCH natively)
+    const classicUrls = new Set<string>();
+    for (const appId of CLASSIC_WS_APP_IDS.length ? CLASSIC_WS_APP_IDS : ['1089']) {
+      classicUrls.add(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+      classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+    }
+    for (const url of classicUrls) {
+      const ok = await this.openSocket(url, 'classic', true, token);
+      if (ok) return true;
+    }
+
+    // Fallback: Auth 2.0 OTP authenticated socket
     const otpUrl = await fetchAuthenticatedWsUrl(account.account_id, token);
     if (otpUrl) {
       const ok = await this.openSocket(otpUrl, 'otp', false);
       if (ok) return true;
-    }
-
-    // Classic Binary WebSocket + authorize (legacy API tokens)
-    if (looksLikeClassicApiToken(token) || CLASSIC_WS_APP_IDS.length > 0) {
-      const classicUrls = new Set<string>([...DERIV_CLASSIC_WS_URLS]);
-      for (const appId of CLASSIC_WS_APP_IDS.length ? CLASSIC_WS_APP_IDS : ['1089']) {
-        classicUrls.add(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
-        classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
-      }
-      for (const url of classicUrls) {
-        const ok = await this.openSocket(url, 'classic', true, token);
-        if (ok) return true;
-      }
     }
 
     this.emitStatus('error', 'Could not open an authorized Deriv trading connection.');
@@ -523,7 +521,10 @@ export class DerivTradingSession {
       payout?: number | string;
     };
     if (!proposal?.id) {
-      throw new Error('Deriv did not return a proposal id for DIGITMATCH.');
+      const errMsg =
+        (proposalRes?.['error'] as { message?: string })?.message ||
+        'Deriv did not return a proposal id for DIGITMATCH.';
+      throw new Error(errMsg);
     }
 
     const ask = Number(proposal.ask_price ?? amount);
@@ -538,9 +539,13 @@ export class DerivTradingSession {
       price: ask,
     });
 
-    const buy = buyRes.buy;
+    const buy = buyRes?.buy;
     if (!buy?.contract_id) {
-      throw new Error('Deriv buy failed — no contract id returned.');
+      const errMsg =
+        (buyRes as Record<string, unknown>)?.['error']
+          ? ((buyRes as Record<string, unknown>)['error'] as { message?: string })?.message
+          : 'Deriv buy failed — no contract id returned.';
+      throw new Error(errMsg || 'Deriv buy failed — no contract id returned.');
     }
 
     const loginid = this.accountId;
