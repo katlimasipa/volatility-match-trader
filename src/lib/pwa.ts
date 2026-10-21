@@ -21,7 +21,7 @@ const installListeners = new Set<(canInstall: boolean) => void>();
 export function registerServiceWorker(): void {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
 
-  window.addEventListener('load', () => {
+  const register = () => {
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
       .then((registration) => {
@@ -33,7 +33,11 @@ export function registerServiceWorker(): void {
       .catch((error) => {
         console.warn('[PWA] ServiceWorker registration failed:', error);
       });
-  });
+  };
+
+  // Called from a React effect, which usually runs after `load` has already fired.
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register, { once: true });
 
   // Listen for beforeinstallprompt event (Chrome, Edge, Android)
   window.addEventListener('beforeinstallprompt', (e) => {
