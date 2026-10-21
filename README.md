@@ -1,35 +1,52 @@
-# Volatility Match Trader
+# ThDpst Matches — Volatility 100
 
-Use the impeccable design skill to create a Deriv smart trader bot that will trade the Deriv matches strategy on Volatility 100 exclusively. For now, I'm going to... I'm just going to ask you to read this. Then afterwards, at some point, I'm going to connect you to Deriv Auth. Just prepare the app for that. Make it proper, minimalistic, monochrome, black and white. No fancy colors, no fancy symbols, no fancy... Just make it so that I'm able to choose my stake, take profit, stop loss, or basic stuff. Just make it as basic as possible for now, but still make it look and feel premium. You understand? So, yeah. I should be able to sign in and log in with email and password. No... No authentication needed just yet, at least. But yeah, I'm going to need the new Deriv Auth 2.0. I'm going to give an app ID, the new app IDs by Deriv at some point. So don't rush into anything. Just make sure that it works. Make sure that it looks good. And this app is also going to be... able to analyze the numbers, the lost digits, the likelihood. I'm going to give you the parameters of how it should work in this prompt. I'm going to give them to you, and you will just run with that for now. And then, yeah. Just build that for me for now. And from here on, I'll take it. I'll make any other changes and let you know.
+Monochrome Deriv Matches bot for **Volatility 100**. It reads the last 1,000 digits, checks the spread rule, and places live **DIGITMATCH** trades on your Deriv account.
 
-a bot that interacts with Darive percentages
-LOGIC:
-*Determin most and second most appearing digits
-*calculate percentage of the most and second most digits
-﻿The difference must not exceed 0,3.
-﻿﻿If the above conditions are met the bot should execute the the trade on Matchess
-﻿use the most appearing digit as the entry point
-﻿﻿matching the second most appearing digit
-﻿3 runs only
-﻿If Loss analyze the market again
+## What it does
 
-This project was built with [Lovable](https://lovable.dev).
+1. Connect with **Deriv Auth 2.0** (or paste an API token on the iPhone home-screen app).
+2. Buffer 1,000 ticks from Volatility 100.
+3. Find the most and second-most common digits. Enter only when their difference is ≤ 0.3%.
+4. Buy DIGITMATCH using the second-most digit as the barrier (3 runs per cycle).
+5. On a loss, wait and re-analyse. Stop on take profit, stop loss, or end of cycle.
+6. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
 
-## Build with Lovable
+## Auth & PWA
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/2e41679d-ba7e-41cc-a927-895d9c5fab58).
+| Surface | How to connect |
+|--------|----------------|
+| Desktop / Android browser or PWA | **Sign in with Deriv Auth 2.0** (redirect must match the registered URI). |
+| iPhone installed PWA | Paste a Deriv API token with **Read** + **Trade** (Safari and the app do not share OAuth storage). |
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+Registered redirect URI (must match Deriv portal exactly):
 
-## Development
+`https://thdpstmatches.vercel.app/`
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+## Setup
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+npm install
 npm run dev
 ```
+
+Copy `.env` values as needed:
+
+- `VITE_DERIV_CLIENT_ID` — Auth 2.0 app / client id
+- `VITE_DERIV_REDIRECT_URI` — exact redirect URI from the Deriv portal
+- Supabase keys (optional email session)
+
+```sh
+npm test
+npm run build
+```
+
+## Strategy rules
+
+- Window: last **1,000** ticks
+- Spread: most − second-most ≤ **0.3%** (configurable)
+- Entry digit = most common; match barrier = second most
+- **3** runs per cycle; re-analyse after a loss
+
+## Stack
+
+TanStack Start, React, Tailwind, Deriv Auth 2.0 + WebSocket trading, PWA service worker.

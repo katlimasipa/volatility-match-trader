@@ -15,6 +15,10 @@ interface PendingRequest {
 export const DERIV_PUBLIC_WS_URL = getDerivWsUrl();
 /** Classic Binary WS requires a numeric app_id — Auth 2.0 client ids are strings. */
 export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=1089`;
+export const DERIV_CLASSIC_WS_URLS = [
+  DERIV_FALLBACK_WS_URL,
+  `wss://ws.binaryws.com/websockets/v3?app_id=1089`,
+] as const;
 
 export class DerivWS {
   private ws: WebSocket | null = null;

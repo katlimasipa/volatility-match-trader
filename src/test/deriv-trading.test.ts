@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/routes/_authenticated/trade";
+import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/payout";
 
 describe("Matches payout math", () => {
   it("uses Deriv 11.20% digit-match base ratio", () => {

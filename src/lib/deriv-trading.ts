@@ -3,7 +3,7 @@
  * balance subscription, DIGITMATCH proposal + buy, and contract settlement.
  */
 
-import { DerivWS, DERIV_FALLBACK_WS_URL } from './deriv-ws';
+import { DerivWS, DERIV_CLASSIC_WS_URLS } from './deriv-ws';
 import {
   fetchOptionsAccountsViaRest,
   getManualToken,
@@ -278,14 +278,15 @@ export class DerivTradingSession {
 
     // Classic Binary WebSocket + authorize (legacy API tokens)
     if (looksLikeClassicApiToken(token) || CLASSIC_WS_APP_IDS.length > 0) {
+      const classicUrls = new Set<string>([...DERIV_CLASSIC_WS_URLS]);
       for (const appId of CLASSIC_WS_APP_IDS.length ? CLASSIC_WS_APP_IDS : ['1089']) {
-        const url = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`;
+        classicUrls.add(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+        classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+      }
+      for (const url of classicUrls) {
         const ok = await this.openSocket(url, 'classic', true, token);
         if (ok) return true;
       }
-
-      const ok = await this.openSocket(DERIV_FALLBACK_WS_URL, 'classic', true, token);
-      if (ok) return true;
     }
 
     this.emitStatus('error', 'Could not open an authorized Deriv trading connection.');
