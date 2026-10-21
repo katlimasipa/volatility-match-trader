@@ -7,9 +7,15 @@
 import { supabase } from "@/integrations/supabase/client";
 import { session } from "@/lib/deriv-config";
 import { getActiveAccountId } from "@/lib/deriv-auth";
+import { removeTargets, upsertPeerTarget, type PushTarget } from "@/lib/push-targets";
 
 const DEVICE_KEY = "thdpst_device_id";
 const ROOM_OVERRIDE_KEY = "thdpst_alert_room";
+const PEER_PUSH_PREFIX = "thdpst_peer_push_";
+const OWN_PUSH_SUB_KEY = "thdpst_own_push_sub";
+const PEER_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
+
+type PushSubscriptionInfo = Pick<PushTarget, "endpoint" | "p256dh" | "auth">;
 
 export type AlertKind =
   | "bot_start"
@@ -35,6 +41,7 @@ type AlertHandler = (alert: SyncedAlert) => void;
 
 let channel: ReturnType<typeof supabase.channel> | null = null;
 let joinedRoom: string | null = null;
+let channelSubscribed = false;
 let handlers = new Set<AlertHandler>();
 let publishQueue: SyncedAlert[] = [];
 
@@ -80,6 +87,133 @@ export function resolveAlertRoomId(accountId?: string | null): string | null {
 
 function sanitizeRoom(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 120);
+}
+
+function isHttpsEndpoint(endpoint: string): boolean {
+  try {
+    return new URL(endpoint).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizePushSubscription(value: unknown): PushSubscriptionInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const endpoint = item["endpoint"];
+  const p256dh = item["p256dh"];
+  const auth = item["auth"];
+  if (
+    typeof endpoint !== "string" ||
+    !isHttpsEndpoint(endpoint) ||
+    typeof p256dh !== "string" ||
+    !p256dh ||
+    typeof auth !== "string" ||
+    !auth
+  ) {
+    return null;
+  }
+  return { endpoint, p256dh, auth };
+}
+
+function getOwnPushSubscription(): PushSubscriptionInfo | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(OWN_PUSH_SUB_KEY);
+    return raw ? normalizePushSubscription(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveOwnPushSubscription(sub: PushSubscriptionInfo): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(OWN_PUSH_SUB_KEY, JSON.stringify(sub));
+  } catch {
+    // ignore
+  }
+}
+
+function peerPushKey(roomId: string): string {
+  return `${PEER_PUSH_PREFIX}${roomId}`;
+}
+
+export function getPeerPushTargets(roomId: string): PushTarget[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(peerPushKey(roomId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - PEER_MAX_AGE_MS;
+    return parsed
+      .filter((value): value is PushTarget => {
+        if (!value || typeof value !== "object") return false;
+        const target = value as Record<string, unknown>;
+        return (
+          typeof target["endpoint"] === "string" &&
+          isHttpsEndpoint(target["endpoint"]) &&
+          typeof target["p256dh"] === "string" &&
+          Boolean(target["p256dh"]) &&
+          typeof target["auth"] === "string" &&
+          Boolean(target["auth"]) &&
+          typeof target["deviceId"] === "string" &&
+          Boolean(target["deviceId"]) &&
+          typeof target["seenAt"] === "number" &&
+          Number.isFinite(target["seenAt"]) &&
+          target["seenAt"] >= cutoff
+        );
+      })
+      .sort((a, b) => b.seenAt - a.seenAt)
+      .slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+function savePeerPushTargets(roomId: string, targets: PushTarget[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(peerPushKey(roomId), JSON.stringify(targets));
+  } catch {
+    // ignore
+  }
+}
+
+export function dropPeerPushTargets(roomId: string, endpoints: string[]): void {
+  savePeerPushTargets(roomId, removeTargets(getPeerPushTargets(roomId), endpoints));
+}
+
+export function clearOwnPushSubscription(): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(OWN_PUSH_SUB_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+async function broadcastPushSubscription(
+  sub: PushSubscriptionInfo,
+  targetChannel: ReturnType<typeof supabase.channel> | null = channel,
+): Promise<void> {
+  if (!targetChannel) return;
+  try {
+    await targetChannel.send({
+      type: "broadcast",
+      event: "push_sub",
+      payload: { deviceId: getDeviceId(), ...sub },
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export async function announcePushSubscription(sub: PushSubscriptionInfo): Promise<void> {
+  const validSub = normalizePushSubscription(sub);
+  if (!validSub) return;
+  saveOwnPushSubscription(validSub);
+  if (channelSubscribed) await broadcastPushSubscription(validSub);
 }
 
 export function onSyncedAlert(handler: AlertHandler): () => void {
@@ -128,12 +262,42 @@ export async function connectAlertSync(accountId?: string | null): Promise<strin
     emitLocal(alert);
   });
 
+  next.on("broadcast", { event: "push_sub" }, ({ payload }) => {
+    if (!payload || typeof payload !== "object") return;
+    const item = payload as Record<string, unknown>;
+    const deviceId = item["deviceId"];
+    if (typeof deviceId !== "string" || !deviceId || deviceId === getDeviceId()) return;
+    const sub = normalizePushSubscription(item);
+    if (!sub) return;
+
+    const result = upsertPeerTarget(getPeerPushTargets(roomId), {
+      ...sub,
+      deviceId,
+      seenAt: Date.now(),
+    });
+    savePeerPushTargets(roomId, result.list);
+
+    if (result.isNew) {
+      const ownSub = getOwnPushSubscription();
+      if (ownSub) void broadcastPushSubscription(ownSub, next);
+    }
+  });
+
   channel = next;
   joinedRoom = roomId;
+  channelSubscribed = false;
 
   await new Promise<void>((resolve) => {
     next.subscribe((status) => {
-      if (status === "SUBSCRIBED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+      if (status === "SUBSCRIBED") {
+        if (channel === next) {
+          channelSubscribed = true;
+          const ownSub = getOwnPushSubscription();
+          if (ownSub) void broadcastPushSubscription(ownSub, next);
+        }
+        resolve();
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        if (channel === next) channelSubscribed = false;
         resolve();
       }
     });
@@ -161,6 +325,7 @@ export async function connectAlertSync(accountId?: string | null): Promise<strin
 }
 
 export async function disconnectAlertSync(): Promise<void> {
+  channelSubscribed = false;
   if (channel) {
     try {
       await supabase.removeChannel(channel);
@@ -243,6 +408,14 @@ async function fanoutPush(alert: SyncedAlert) {
       title: alert.title,
       body: alert.body,
       kind: alert.kind,
+      subscriptions: getPeerPushTargets(alert.roomId).map(
+        ({ endpoint, p256dh, auth, deviceId }) => ({
+          endpoint,
+          p256dh,
+          auth,
+          deviceId,
+        }),
+      ),
     });
   } catch (err) {
     console.warn("[alert-sync] push fanout skipped:", err);
