@@ -383,7 +383,8 @@ export function TradeTerminal() {
           if (saved.length > 0) {
             setAccounts(saved);
             const storedActive = getActiveAccountId();
-            const chosen = saved.find((a) => a.account_id === storedActive) || saved[0];
+            const chosen = saved.find((a) => a.account_id === storedActive) ?? saved[0];
+            if (!chosen) return;
             setActiveId(chosen.account_id);
             setIsConnectedToDeriv(true);
           }
@@ -406,8 +407,8 @@ export function TradeTerminal() {
 
     if (savedAccounts.length > 0) {
       setAccounts(savedAccounts);
-      const chosen = savedAccounts.find((a) => a.account_id === storedActive) || savedAccounts[0];
-      setActiveId(chosen.account_id);
+      const chosen = savedAccounts.find((a) => a.account_id === storedActive) ?? savedAccounts[0];
+      if (chosen) setActiveId(chosen.account_id);
       setIsConnectedToDeriv(Boolean(authInfo || manualToken));
     } else {
       const initialMock: DerivAccount[] = [
@@ -431,7 +432,7 @@ export function TradeTerminal() {
 
     // Listen for live proposal responses from Deriv to sync exact App ID server markup
     ws.registerHandler("proposal", (data) => {
-      const pData = data.proposal as { payout?: number; ask_price?: number };
+      const pData = data['proposal'] as { payout?: number; ask_price?: number };
       if (pData?.payout && pData?.ask_price) {
         const ask = pData.ask_price;
         const payout = pData.payout;
@@ -448,7 +449,7 @@ export function TradeTerminal() {
 
     // Listen for balance updates from Deriv (applies to real accounts, preserves demo trading)
     ws.registerHandler("balance", (data) => {
-      const bData = data.balance as {
+      const bData = data['balance'] as {
         accounts?: Record<string, { balance: number; currency: string }>;
         balance?: number;
         loginid?: string;
@@ -483,7 +484,7 @@ export function TradeTerminal() {
 
     // Listen for tick history and incoming live ticks
     ws.registerHandler("history", (data) => {
-      const history = data.history as { prices?: number[]; times?: number[] };
+      const history = data['history'] as { prices?: number[]; times?: number[] };
       if (history?.prices && history.prices.length > 0) {
         const pList = history.prices;
         const tList = history.times || [];
@@ -495,11 +496,12 @@ export function TradeTerminal() {
         const initialTicks: TickItem[] = [];
         const count = Math.min(15, pList.length);
         for (let i = pList.length - count; i < pList.length; i++) {
-          const timestamp = tList[i] ? new Date(tList[i] * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+          const ts = tList[i];
+          const timestamp = ts ? new Date(ts * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
           initialTicks.unshift({
             time: timestamp,
-            price: pList[i],
-            digit: dList[i],
+            price: pList[i] ?? 0,
+            digit: dList[i] ?? 0,
           });
         }
         setRecentTicks(initialTicks);
@@ -513,7 +515,7 @@ export function TradeTerminal() {
     });
 
     ws.registerHandler("tick", (data) => {
-      const tick = data.tick as { quote?: number; epoch?: number };
+      const tick = data['tick'] as { quote?: number; epoch?: number };
       if (typeof tick?.quote === "number") {
         const q = tick.quote;
         const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
@@ -907,7 +909,7 @@ export function TradeTerminal() {
       <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3 transition-colors sticky top-0 z-30 ${
         isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
       }`}>
-        <div className="mx-auto flex max-w-[1560px] items-center justify-between gap-2 sm:gap-4">
+        <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
             <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
@@ -917,7 +919,7 @@ export function TradeTerminal() {
           </div>
 
           {/* Desktop Bot Telemetry Pill (lg screens only) */}
-          <div className={`hidden lg:flex items-center gap-2 border-l pl-3 text-xs ${
+          <div className={`hidden xl:flex min-w-0 items-center gap-2 border-l pl-3 text-xs ${
             isDark ? "border-zinc-800" : "border-slate-200"
           }`}>
             <div className="flex items-center gap-1.5">
@@ -943,7 +945,7 @@ export function TradeTerminal() {
           </div>
 
           {/* Desktop Right Header Controls (lg screens) */}
-          <div className="hidden lg:flex items-center gap-2.5">
+          <div className="hidden lg:flex min-w-0 flex-wrap items-center justify-end gap-2.5">
             {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
@@ -957,7 +959,7 @@ export function TradeTerminal() {
             <select
               value={activeId || ""}
               onChange={(e) => switchAccount(e.target.value)}
-              className={`rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
+              className={`max-w-[220px] truncate rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
                 isDark
                   ? "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700"
                   : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"

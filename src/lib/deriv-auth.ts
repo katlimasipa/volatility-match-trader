@@ -87,7 +87,7 @@ export async function sha256Base64url(input: string): Promise<string> {
  */
 export function getSavedAppId(): string {
   if (typeof window === 'undefined') return HARDCODED_APP_ID;
-  return localStorage.getItem(STORAGE_KEYS.APP_ID) || import.meta.env.VITE_DERIV_CLIENT_ID || HARDCODED_APP_ID;
+  return localStorage.getItem(STORAGE_KEYS.APP_ID) || import.meta.env['VITE_DERIV_CLIENT_ID'] || HARDCODED_APP_ID;
 }
 
 export function setSavedAppId(appId: string): void {
@@ -233,8 +233,9 @@ export async function exchangeCodeForTokens(
   let codeVerifierFromState = '';
   if (state && state.includes('.')) {
     const parts = state.split('.');
-    if (parts.length >= 2 && parts[1].length >= 30) {
-      codeVerifierFromState = parts[1];
+    const verifierPart = parts[1];
+    if (parts.length >= 2 && verifierPart && verifierPart.length >= 30) {
+      codeVerifierFromState = verifierPart;
     }
   }
 
@@ -309,7 +310,7 @@ export async function exchangeCodeForTokens(
 export async function authorizeWithToken(token: string): Promise<{
   success: boolean;
   accounts: DerivAccount[];
-  activeAccount?: DerivAccount;
+  activeAccount?: DerivAccount | undefined;
   error?: string;
 }> {
   const cleanToken = token.trim();
@@ -366,17 +367,17 @@ export async function authorizeWithToken(token: string): Promise<{
             const rawList: Record<string, unknown>[] = Array.isArray(auth.account_list) ? auth.account_list : [];
 
             let accounts: DerivAccount[] = rawList.map((acc: Record<string, unknown>) => {
-              const id = String(acc.loginid || '');
+              const id = String(acc['loginid'] || '');
               const isDemo =
                 id.toUpperCase().startsWith('VRTC') ||
                 id.toUpperCase().startsWith('V') ||
-                Boolean(acc.is_virtual);
+                Boolean(acc['is_virtual']);
               return {
                 account_id: id,
                 account_type: isDemo ? 'demo' : 'real',
-                currency: String(acc.currency || 'USD'),
+                currency: String(acc['currency'] || 'USD'),
                 balance: id === auth.loginid ? Number(auth.balance || 0).toFixed(2) : '0.00',
-                status: acc.is_disabled ? 'disabled' : 'active',
+                status: acc['is_disabled'] ? 'disabled' : 'active',
               };
             });
 

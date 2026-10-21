@@ -43,7 +43,7 @@ describe("Volatility 100 Matches strategy", () => {
   });
 
   it("supports configurable spread threshold", () => {
-    const counts = [95, 95, 95, 120, 95, 95, 95, 110, 95, 100]; // diff 1.0%
+    const counts = [95, 95, 95, 125, 95, 95, 95, 115, 90, 100]; // 1000 ticks, diff 1.0%
     const strictAnalysis = analyze(build(counts), 0.3);
     expect(strictAnalysis.diff).toBe(1.0);
     expect(strictAnalysis.ok).toBe(false);

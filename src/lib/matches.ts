@@ -50,7 +50,10 @@ export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis 
 
   const most = first.d;
   const second = runner.d;
-  const diff = Math.round((first.p - runner.p) * 1000) / 1000;
+  const round3 = (n: number) => Math.round(n * 1000) / 1000;
+  const mostPct = round3(first.p);
+  const secondPct = round3(runner.p);
+  const diff = round3(mostPct - secondPct);
   const ready = total >= WINDOW;
 
   return {
@@ -59,8 +62,8 @@ export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis 
     percents,
     most,
     second,
-    mostPct: first.p,
-    secondPct: runner.p,
+    mostPct,
+    secondPct,
     diff,
     ready,
     ok: ready && diff <= maxDiff,

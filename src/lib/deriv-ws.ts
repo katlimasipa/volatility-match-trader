@@ -100,14 +100,14 @@ export class DerivWS {
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as Record<string, unknown>;
-          const reqId = typeof data.req_id === 'number' ? data.req_id : null;
+          const reqId = typeof data['req_id'] === 'number' ? data['req_id'] : null;
 
           // Settle pending one-off request
           if (reqId !== null && this.pendingRequests.has(reqId)) {
             const p = this.pendingRequests.get(reqId)!;
             this.pendingRequests.delete(reqId);
-            if (data.error) {
-              const err = data.error as { message?: string };
+            if (data['error']) {
+              const err = data['error'] as { message?: string };
               p.reject(new Error(err.message || 'Deriv API error'));
             } else {
               p.resolve(data);
@@ -115,15 +115,15 @@ export class DerivWS {
           }
 
           // Trigger subscription listeners by subscription.id
-          if (data.subscription) {
-            const sub = data.subscription as { id?: string };
+          if (data['subscription']) {
+            const sub = data['subscription'] as { id?: string };
             if (sub.id && this.subscriptionHandlers.has(sub.id)) {
               this.subscriptionHandlers.get(sub.id)!(data);
             }
           }
 
           // Message type based routing (e.g. tick, history, proposal_open_contract)
-          const msgType = data.msg_type as string;
+          const msgType = data['msg_type'] as string;
           if (msgType && this.subscriptionHandlers.has(msgType)) {
             this.subscriptionHandlers.get(msgType)!(data);
           }
@@ -207,8 +207,8 @@ export class DerivWS {
     const msg = { ...payload, req_id: reqId };
 
     // If it's a persistent subscription request, track it for auto-resubscription on reconnect
-    if (payload.subscribe === 1 || payload.ticks_history) {
-      const key = String(payload.ticks_history || payload.ticks || 'sub');
+    if (payload['subscribe'] === 1 || payload['ticks_history']) {
+      const key = String(payload['ticks_history'] || payload['ticks'] || 'sub');
       this.activeSubscriptions.set(key, payload);
     }
 
