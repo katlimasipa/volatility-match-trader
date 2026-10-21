@@ -97,10 +97,23 @@ export function setSavedAppId(appId: string): void {
 
 export function getStoredAuthInfo(): AuthInfo | null {
   if (typeof window === 'undefined') return null;
-  const raw = localStorage.getItem(STORAGE_KEYS.AUTH_INFO);
+  const raw =
+    localStorage.getItem(STORAGE_KEYS.AUTH_INFO) ||
+    (() => {
+      try {
+        return sessionStorage.getItem(STORAGE_KEYS.AUTH_INFO);
+      } catch {
+        return null;
+      }
+    })();
   if (!raw) return null;
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as AuthInfo;
+    // Re-hydrate localStorage if only sessionStorage had it (PWA edge cases)
+    if (!localStorage.getItem(STORAGE_KEYS.AUTH_INFO)) {
+      localStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -108,7 +121,12 @@ export function getStoredAuthInfo(): AuthInfo | null {
 
 export function storeAuthInfo(info: AuthInfo): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEYS.AUTH_INFO, JSON.stringify(info));
+  const raw = JSON.stringify(info);
+  localStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
+  // Mirror into sessionStorage so Android / desktop PWAs keep the session across reloads
+  try {
+    sessionStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
+  } catch {}
 }
 
 export function getStoredAccounts(): DerivAccount[] {
@@ -177,9 +195,12 @@ export function clearAllDerivAuth(): void {
   localStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
   localStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
   localStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
-  sessionStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
-  sessionStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
-  sessionStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
+  try {
+    sessionStorage.removeItem(STORAGE_KEYS.AUTH_INFO);
+    sessionStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
+    sessionStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
+    sessionStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
+  } catch {}
 }
 
 /**
@@ -249,6 +270,7 @@ export async function exchangeCodeForTokens(
     redirectUri ||
     localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
     sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
+    (typeof import.meta !== 'undefined' && import.meta.env?.['VITE_DERIV_REDIRECT_URI']) ||
     'https://thdpstmatches.vercel.app/';
 
   // Clean up verifiers
@@ -302,10 +324,339 @@ export async function exchangeCodeForTokens(
 }
 
 /**
- * Direct Deriv Token Authorization via WebSocket
- * Works 100% everywhere: iOS PWA, Android, Web, Desktop without redirect dependency.
- * Accepts API Token (generated in Deriv Settings > API Token with Read + Trade scopes)
- * or OAuth access token.
+ * Classic Binary API tokens are short opaque strings.
+ * Auth 2.0 OAuth / PAT tokens are JWTs (three base64 segments) or longer bearer tokens.
+ */
+export function looksLikeClassicApiToken(token: string): boolean {
+  const t = token.trim();
+  if (!t) return false;
+  // JWT shape: header.payload.signature
+  if (t.split('.').length === 3 && t.length > 80) return false;
+  // Auth 2.0 PAT / opaque tokens from the new portal are often longer
+  if (t.length > 60 && !/^[a-zA-Z0-9]{10,40}$/.test(t)) return false;
+  return true;
+}
+
+function mapOptionsAccountRow(row: Record<string, unknown>): DerivAccount | null {
+  const id = String(
+    row['account_id'] || row['accountId'] || row['loginid'] || row['id'] || ''
+  ).trim();
+  if (!id) return null;
+
+  const typeRaw = String(row['account_type'] || row['accountType'] || row['type'] || '').toLowerCase();
+  const isDemo =
+    typeRaw === 'demo' ||
+    typeRaw === 'virtual' ||
+    Boolean(row['is_virtual']) ||
+    Boolean(row['is_demo']) ||
+    id.toUpperCase().startsWith('VRTC') ||
+    id.toUpperCase().startsWith('V') ||
+    id.toUpperCase().startsWith('DOT') ||
+    id.toUpperCase().startsWith('VRW');
+
+  const balanceRaw = row['balance'] ?? row['available_balance'] ?? row['amount'] ?? 0;
+  const currency = String(row['currency'] || row['currency_code'] || 'USD');
+
+  return {
+    account_id: id,
+    account_type: isDemo ? 'demo' : 'real',
+    currency,
+    balance: Number(balanceRaw || 0).toFixed(2),
+    status: row['is_disabled'] || row['status'] === 'disabled' ? 'disabled' : 'active',
+  };
+}
+
+/**
+ * Auth 2.0 REST: list Options trading accounts (demo + real) with live balances.
+ */
+export async function fetchOptionsAccountsViaRest(
+  token: string,
+  appId: string = HARDCODED_APP_ID
+): Promise<{ success: boolean; accounts: DerivAccount[]; error?: string }> {
+  const cleanToken = token.trim();
+  if (!cleanToken) {
+    return { success: false, accounts: [], error: 'Token cannot be empty.' };
+  }
+
+  try {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${cleanToken}`,
+      'Content-Type': 'application/json',
+    };
+    if (appId) headers['Deriv-App-ID'] = appId;
+
+    const response = await fetch('https://api.derivws.com/trading/v1/options/accounts', {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      return {
+        success: false,
+        accounts: [],
+        error: `Accounts request failed (${response.status}): ${text || response.statusText}`,
+      };
+    }
+
+    const payload = (await response.json()) as
+      | { data?: unknown }
+      | unknown[]
+      | Record<string, unknown>;
+
+    let rows: Record<string, unknown>[] = [];
+    if (Array.isArray(payload)) {
+      rows = payload as Record<string, unknown>[];
+    } else if (payload && typeof payload === 'object') {
+      const obj = payload as Record<string, unknown>;
+      const data = obj['data'];
+      if (Array.isArray(data)) {
+        rows = data as Record<string, unknown>[];
+      } else if (data && typeof data === 'object' && Array.isArray((data as { accounts?: unknown }).accounts)) {
+        rows = (data as { accounts: Record<string, unknown>[] }).accounts;
+      } else if (Array.isArray(obj['accounts'])) {
+        rows = obj['accounts'] as Record<string, unknown>[];
+      }
+    }
+
+    const accounts = rows
+      .map(mapOptionsAccountRow)
+      .filter((a): a is DerivAccount => Boolean(a?.account_id));
+
+    if (accounts.length === 0) {
+      return {
+        success: false,
+        accounts: [],
+        error: 'No Options trading accounts returned. Create a demo account in Deriv, then reconnect.',
+      };
+    }
+
+    storeAccounts(accounts);
+    setManualToken(cleanToken);
+
+    const preferred =
+      accounts.find((a) => a.account_id === getActiveAccountId()) ||
+      accounts.find((a) => a.account_type === 'demo') ||
+      accounts[0];
+    if (preferred) {
+      setActiveAccountId(preferred.account_id, preferred.account_type);
+    }
+
+    return { success: true, accounts };
+  } catch (err) {
+    return {
+      success: false,
+      accounts: [],
+      error: err instanceof Error ? err.message : 'Failed to load Deriv accounts.',
+    };
+  }
+}
+
+/**
+ * Refresh Auth 2.0 access token using the stored refresh_token.
+ */
+export async function refreshAccessToken(
+  clientId: string = HARDCODED_APP_ID
+): Promise<AuthInfo | null> {
+  const current = getStoredAuthInfo();
+  if (!current?.refresh_token) return null;
+
+  try {
+    const body = new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId || HARDCODED_APP_ID,
+      refresh_token: current.refresh_token,
+    });
+
+    const response = await fetch(`${DERIV_ENDPOINTS.authBase}/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const authInfo: AuthInfo = {
+      access_token: data.access_token,
+      token_type: data.token_type || 'Bearer',
+      expires_in: data.expires_in,
+      expires_at: Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
+      scope: data.scope || current.scope,
+      refresh_token: data.refresh_token || current.refresh_token,
+    };
+    storeAuthInfo(authInfo);
+    if (authInfo.access_token) setManualToken(authInfo.access_token);
+    return authInfo;
+  } catch {
+    return null;
+  }
+}
+
+async function authorizeClassicWs(token: string): Promise<{
+  success: boolean;
+  accounts: DerivAccount[];
+  activeAccount?: DerivAccount | undefined;
+  error?: string;
+}> {
+  const cleanToken = token.trim();
+  const appIds = ['1089', HARDCODED_APP_ID].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i);
+
+  for (const appId of appIds) {
+    const result = await new Promise<{
+      success: boolean;
+      accounts: DerivAccount[];
+      activeAccount?: DerivAccount | undefined;
+      error?: string;
+    }>((resolve) => {
+      try {
+        const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(
+          /^\d+$/.test(appId) ? appId : '1089'
+        )}`;
+        const ws = new WebSocket(wsUrl);
+
+        const timeout = setTimeout(() => {
+          try {
+            ws.close();
+          } catch {}
+          resolve({
+            success: false,
+            accounts: [],
+            error: 'Connection to Deriv timed out. Please check your network and try again.',
+          });
+        }, 12000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ authorize: cleanToken }));
+        };
+
+        ws.onerror = () => {
+          clearTimeout(timeout);
+          try {
+            ws.close();
+          } catch {}
+          resolve({
+            success: false,
+            accounts: [],
+            error: 'Unable to connect to Deriv API servers.',
+          });
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.error) {
+              clearTimeout(timeout);
+              try {
+                ws.close();
+              } catch {}
+              resolve({
+                success: false,
+                accounts: [],
+                error: data.error.message || 'Deriv rejected the token. Please verify permissions.',
+              });
+              return;
+            }
+
+            if (data.msg_type === 'authorize' && data.authorize) {
+              clearTimeout(timeout);
+              const auth = data.authorize;
+              const rawList: Record<string, unknown>[] = Array.isArray(auth.account_list)
+                ? auth.account_list
+                : [];
+
+              let accounts: DerivAccount[] = rawList.map((acc: Record<string, unknown>) => {
+                const id = String(acc['loginid'] || '');
+                const isDemo =
+                  id.toUpperCase().startsWith('VRTC') ||
+                  id.toUpperCase().startsWith('V') ||
+                  Boolean(acc['is_virtual']);
+                return {
+                  account_id: id,
+                  account_type: (isDemo ? 'demo' : 'real') as 'demo' | 'real',
+                  currency: String(acc['currency'] || 'USD'),
+                  balance: id === auth.loginid ? Number(auth.balance || 0).toFixed(2) : '0.00',
+                  status: acc['is_disabled'] ? 'disabled' : 'active',
+                };
+              });
+
+              if (auth.loginid) {
+                const currentId = String(auth.loginid);
+                const exists = accounts.find((a) => a.account_id === currentId);
+                if (exists) {
+                  exists.balance = Number(auth.balance || 0).toFixed(2);
+                  exists.currency = String(auth.currency || exists.currency);
+                } else {
+                  const isDemo = currentId.toUpperCase().startsWith('VRTC');
+                  accounts.unshift({
+                    account_id: currentId,
+                    account_type: isDemo ? 'demo' : 'real',
+                    currency: String(auth.currency || 'USD'),
+                    balance: Number(auth.balance || 0).toFixed(2),
+                    status: 'active',
+                  });
+                }
+              }
+
+              accounts = accounts.filter((a) => Boolean(a.account_id));
+              storeAccounts(accounts);
+              setManualToken(cleanToken);
+
+              const activeAcc = accounts.find((a) => a.account_id === auth.loginid) || accounts[0];
+              if (activeAcc) {
+                setActiveAccountId(activeAcc.account_id, activeAcc.account_type);
+              }
+
+              storeAuthInfo({
+                access_token: cleanToken,
+                token_type: 'Bearer',
+                expires_in: 86400,
+                expires_at: Math.floor(Date.now() / 1000) + 86400,
+                scope: 'trade account_manage',
+              });
+
+              try {
+                ws.close();
+              } catch {}
+              resolve({ success: true, accounts, activeAccount: activeAcc });
+            }
+          } catch {
+            clearTimeout(timeout);
+            try {
+              ws.close();
+            } catch {}
+            resolve({
+              success: false,
+              accounts: [],
+              error: 'Failed to process authorization response from Deriv.',
+            });
+          }
+        };
+      } catch (err) {
+        resolve({
+          success: false,
+          accounts: [],
+          error: err instanceof Error ? err.message : 'Unknown authorization error.',
+        });
+      }
+    });
+
+    if (result.success) return result;
+  }
+
+  return {
+    success: false,
+    accounts: [],
+    error: 'Classic authorize failed for this token.',
+  };
+}
+
+/**
+ * Direct Deriv Token Authorization.
+ * - Classic API tokens → Binary WebSocket authorize
+ * - Auth 2.0 OAuth / PAT → REST Options accounts (+ optional classic fallback)
+ * Works on iOS PWA, Android, Web, and Desktop.
  */
 export async function authorizeWithToken(token: string): Promise<{
   success: boolean;
@@ -318,150 +669,73 @@ export async function authorizeWithToken(token: string): Promise<{
     return { success: false, accounts: [], error: 'Token cannot be empty.' };
   }
 
-  return new Promise((resolve) => {
-    try {
-      const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(HARDCODED_APP_ID)}`;
-      const ws = new WebSocket(wsUrl);
-
-      const timeout = setTimeout(() => {
-        try { ws.close(); } catch {}
-        resolve({
-          success: false,
-          accounts: [],
-          error: 'Connection to Deriv timed out. Please check your network and try again.',
-        });
-      }, 12000);
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ authorize: cleanToken }));
-      };
-
-      ws.onerror = () => {
-        clearTimeout(timeout);
-        try { ws.close(); } catch {}
-        resolve({
-          success: false,
-          accounts: [],
-          error: 'Unable to connect to Deriv API servers.',
-        });
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-
-          if (data.error) {
-            clearTimeout(timeout);
-            try { ws.close(); } catch {}
-            resolve({
-              success: false,
-              accounts: [],
-              error: data.error.message || 'Deriv rejected the token. Please verify permissions.',
-            });
-            return;
-          }
-
-          if (data.msg_type === 'authorize' && data.authorize) {
-            clearTimeout(timeout);
-            const auth = data.authorize;
-            const rawList: Record<string, unknown>[] = Array.isArray(auth.account_list) ? auth.account_list : [];
-
-            let accounts: DerivAccount[] = rawList.map((acc: Record<string, unknown>) => {
-              const id = String(acc['loginid'] || '');
-              const isDemo =
-                id.toUpperCase().startsWith('VRTC') ||
-                id.toUpperCase().startsWith('V') ||
-                Boolean(acc['is_virtual']);
-              return {
-                account_id: id,
-                account_type: isDemo ? 'demo' : 'real',
-                currency: String(acc['currency'] || 'USD'),
-                balance: id === auth.loginid ? Number(auth.balance || 0).toFixed(2) : '0.00',
-                status: acc['is_disabled'] ? 'disabled' : 'active',
-              };
-            });
-
-            // Ensure current active account is represented with live balance
-            if (auth.loginid) {
-              const currentId = String(auth.loginid);
-              const exists = accounts.find((a) => a.account_id === currentId);
-              if (exists) {
-                exists.balance = Number(auth.balance || 0).toFixed(2);
-                exists.currency = String(auth.currency || exists.currency);
-              } else {
-                const isDemo = currentId.toUpperCase().startsWith('VRTC');
-                accounts.unshift({
-                  account_id: currentId,
-                  account_type: isDemo ? 'demo' : 'real',
-                  currency: String(auth.currency || 'USD'),
-                  balance: Number(auth.balance || 0).toFixed(2),
-                  status: 'active',
-                });
-              }
-            }
-
-            // Always ensure both a Demo and Real account exist in the switcher
-            const hasDemo = accounts.some((a) => a.account_type === 'demo');
-            const hasReal = accounts.some((a) => a.account_type === 'real');
-            if (!hasDemo) {
-              accounts.push({
-                account_id: 'VRTC1029384',
-                account_type: 'demo',
-                currency: 'USD',
-                balance: '10000.00',
-              });
-            }
-            if (!hasReal) {
-              accounts.push({
-                account_id: 'CR91945350',
-                account_type: 'real',
-                currency: 'USD',
-                balance: '0.00',
-              });
-            }
-
-            storeAccounts(accounts);
-            setManualToken(cleanToken);
-
-            const activeAcc = accounts.find((a) => a.account_id === auth.loginid) || accounts[0];
-            if (activeAcc) {
-              setActiveAccountId(activeAcc.account_id, activeAcc.account_type);
-            }
-
-            // Store mock auth info so UI marks Deriv as connected
-            storeAuthInfo({
-              access_token: cleanToken,
-              token_type: 'Bearer',
-              expires_in: 86400,
-              expires_at: Math.floor(Date.now() / 1000) + 86400,
-              scope: 'trade account_manage',
-            });
-
-            try { ws.close(); } catch {}
-            resolve({ success: true, accounts, activeAccount: activeAcc });
-          }
-        } catch (e) {
-          clearTimeout(timeout);
-          try { ws.close(); } catch {}
-          resolve({
-            success: false,
-            accounts: [],
-            error: 'Failed to process authorization response from Deriv.',
-          });
-        }
-      };
-    } catch (err) {
-      resolve({
-        success: false,
-        accounts: [],
-        error: err instanceof Error ? err.message : 'Unknown authorization error.',
+  // Prefer Auth 2.0 REST for non-classic tokens (OAuth JWT / PAT)
+  if (!looksLikeClassicApiToken(cleanToken)) {
+    const rest = await fetchOptionsAccountsViaRest(cleanToken);
+    if (rest.success && rest.accounts.length > 0) {
+      storeAuthInfo({
+        access_token: cleanToken,
+        token_type: 'Bearer',
+        expires_in: 7200,
+        expires_at: Math.floor(Date.now() / 1000) + 7200,
+        scope: 'trade account_manage',
+        refresh_token: getStoredAuthInfo()?.refresh_token,
       });
+      const active =
+        rest.accounts.find((a) => a.account_id === getActiveAccountId()) ||
+        rest.accounts.find((a) => a.account_type === 'demo') ||
+        rest.accounts[0];
+      return { success: true, accounts: rest.accounts, activeAccount: active };
     }
-  });
+
+    // Token may have expired — try refresh then REST again
+    const refreshed = await refreshAccessToken();
+    if (refreshed?.access_token) {
+      const again = await fetchOptionsAccountsViaRest(refreshed.access_token);
+      if (again.success && again.accounts.length > 0) {
+        const active =
+          again.accounts.find((a) => a.account_id === getActiveAccountId()) ||
+          again.accounts.find((a) => a.account_type === 'demo') ||
+          again.accounts[0];
+        return { success: true, accounts: again.accounts, activeAccount: active };
+      }
+    }
+
+    // Fall through to classic in case the token is still a legacy API token
+  }
+
+  const classic = await authorizeClassicWs(cleanToken);
+  if (classic.success) return classic;
+
+  // Last resort: Auth 2.0 REST for tokens that looked classic but weren't
+  const restFallback = await fetchOptionsAccountsViaRest(cleanToken);
+  if (restFallback.success && restFallback.accounts.length > 0) {
+    storeAuthInfo({
+      access_token: cleanToken,
+      token_type: 'Bearer',
+      expires_in: 7200,
+      expires_at: Math.floor(Date.now() / 1000) + 7200,
+      scope: 'trade account_manage',
+    });
+    const active =
+      restFallback.accounts.find((a) => a.account_id === getActiveAccountId()) ||
+      restFallback.accounts.find((a) => a.account_type === 'demo') ||
+      restFallback.accounts[0];
+    return { success: true, accounts: restFallback.accounts, activeAccount: active };
+  }
+
+  return {
+    success: false,
+    accounts: [],
+    error:
+      classic.error ||
+      restFallback.error ||
+      'Could not authorize this token. Use Deriv Auth 2.0 or an API token with Read + Trade.',
+  };
 }
 
 /**
- * Fetch accounts list from Deriv API / WebSocket
+ * Fetch accounts list from Deriv Auth 2.0 REST and/or classic WebSocket.
  */
 export async function fetchDerivAccounts(authInfo: AuthInfo, _clientId: string): Promise<DerivAccount[]> {
   const token = authInfo.access_token || getManualToken();

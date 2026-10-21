@@ -57,19 +57,34 @@ export const DERIV_WS_URL = getDerivWsUrl();
 
 /**
  * Deriv OAuth 2.0 Redirect URI
- * Strictly guaranteed exact registered URL on Vercel with trailing slash: https://thdpstmatches.vercel.app/
- * (Deriv's authorization server requires the exact registered string; omitting trailing slash breaks the flow)
+ * Must match the exact string registered in the Deriv developer portal (trailing slash matters).
+ * Priority: local override → VITE_DERIV_REDIRECT_URI → production default.
  */
 export const PRODUCTION_REDIRECT_URI = 'https://thdpstmatches.vercel.app/';
+
+function withTrailingSlash(uri: string): string {
+  return uri.endsWith('/') ? uri : `${uri}/`;
+}
 
 export const derivRedirectUri = (): string => {
   if (typeof window !== 'undefined') {
     const override = localStorage.getItem('deriv_redirect_uri_override');
-    if (override) {
-      return override.endsWith('/') ? override : `${override}/`;
-    }
+    if (override) return withTrailingSlash(override.trim());
   }
+  const fromEnv = import.meta.env['VITE_DERIV_REDIRECT_URI'] as string | undefined;
+  if (fromEnv && fromEnv.trim()) return withTrailingSlash(fromEnv.trim());
   return PRODUCTION_REDIRECT_URI;
+};
+
+/** True when the current origin can complete OAuth (registered redirect host). */
+export const isOAuthOriginReady = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const redirect = new URL(derivRedirectUri());
+    return redirect.origin === window.location.origin;
+  } catch {
+    return false;
+  }
 };
 
 // Session storage helper for authenticated user

@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { analyze, lastDigit, shouldEnter, MAX_DIFF, MAX_RUNS, SYMBOL } from "@/lib/matches";
+import {
+  analyze,
+  lastDigit,
+  shouldEnter,
+  MAX_DIFF,
+  MAX_RUNS,
+  SYMBOL,
+  CLASSIC_SYMBOL,
+  OPTIONS_SYMBOL,
+} from "@/lib/matches";
 
 const build = (counts: number[]) => counts.flatMap((c, d) => new Array(c).fill(d));
 
 describe("Volatility 100 Matches strategy", () => {
-  it("targets Volatility 100 with 2 decimal precision", () => {
+  it("targets Volatility 100 with classic and Auth 2.0 symbols", () => {
+    expect(CLASSIC_SYMBOL).toBe("R_100");
+    expect(OPTIONS_SYMBOL).toBe("1HZ100V");
     expect(SYMBOL).toBe("R_100");
     expect(lastDigit(1234.5)).toBe(0);
     expect(lastDigit(1234.57)).toBe(7);

@@ -10,6 +10,8 @@
 <!-- LOVABLE:END -->
 
 ## Project rules
-- Strategy logic lives in src/lib/matches.ts as pure functions with tests; UI only calls it. Why: rules must stay testable.
-- Deriv app ID and auth hooks live in src/lib/deriv-config.ts (VITE_DERIV_APP_ID). Why: single place to wire Deriv Auth later.
-- Trades are simulated until Deriv auth is connected. Why: no real orders without an account token.
+- Strategy logic lives in `src/lib/matches.ts` as pure functions with tests; UI only calls it.
+- Deriv Auth 2.0 + tokens live in `src/lib/deriv-auth.ts` and `src/lib/deriv-config.ts` (`VITE_DERIV_CLIENT_ID`, `VITE_DERIV_REDIRECT_URI`).
+- Live buys and balance sync live in `src/lib/deriv-trading.ts` (OTP Auth 2.0 socket or classic authorize). The bot must place real DIGITMATCH contracts when connected — do not fake balances.
+- Public tick feed stays on the public WebSocket; money movement uses the authorized trading session.
+- On iOS installed PWA, prefer API token auth (Safari and the app do not share storage after OAuth).

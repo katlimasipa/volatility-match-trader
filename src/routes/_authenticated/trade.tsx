@@ -7,6 +7,7 @@ import {
   getDerivWsUrl,
   getAppIdMarkup,
   setAppIdMarkup,
+  isOAuthOriginReady,
 } from "@/lib/deriv-config";
 import {
   startDerivAuth,
@@ -14,10 +15,7 @@ import {
   storeAccounts,
   getActiveAccountId,
   setActiveAccountId,
-  getActiveAccountType,
   getStoredAuthInfo,
-  fetchDerivAccounts,
-  HARDCODED_APP_ID,
   clearAllDerivAuth,
   handleIncomingOAuth,
   authorizeWithToken,
@@ -25,7 +23,18 @@ import {
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
-import { analyze, lastDigit, shouldEnter, MAX_DIFF, MAX_RUNS, SYMBOL, WINDOW } from "@/lib/matches";
+import { DerivTradingSession, type ContractResult } from "@/lib/deriv-trading";
+import {
+  analyze,
+  lastDigit,
+  shouldEnter,
+  MAX_DIFF,
+  MAX_RUNS,
+  SYMBOL,
+  CLASSIC_SYMBOL,
+  OPTIONS_SYMBOL,
+  WINDOW,
+} from "@/lib/matches";
 import {
   isNotificationSupported,
   isNotificationEnabled,
@@ -109,6 +118,8 @@ interface PendingTrade {
   entry: number;
   target: number;
   stake: number;
+  /** When true, settlement comes from Deriv contract result — not the next local tick. */
+  live?: boolean;
 }
 
 interface TickItem {
@@ -310,6 +321,9 @@ export function TradeTerminal() {
   const pending = useRef<PendingTrade | null>(null);
   const lossCooldownTicks = useRef(0);
   const wsRef = useRef<DerivWS | null>(null);
+  const tradingRef = useRef<DerivTradingSession | null>(null);
+  const [tradingReady, setTradingReady] = useState(false);
+  const [tradingStatusNote, setTradingStatusNote] = useState<string | null>(null);
 
   const stateRef = useRef({
     running,
@@ -338,30 +352,35 @@ export function TradeTerminal() {
     configuredMarkup,
   };
 
-  // Refresh live balances from Deriv API / WebSocket
+  // Refresh live balances from Deriv (never keep stale local demo balances)
   const refreshDerivBalances = useCallback(async () => {
     const manualToken = getManualToken();
     const authInfo = getStoredAuthInfo();
     const token = authInfo?.access_token || manualToken;
-    if (token) {
-      try {
-        const res = await authorizeWithToken(token);
-        if (res.success && res.accounts.length > 0) {
-          setAccounts((prev) => {
-            return res.accounts.map((fresh) => {
-              if (fresh.account_type === "demo") {
-                const existing = prev.find((p) => p.account_id === fresh.account_id);
-                if (existing && existing.balance !== undefined) {
-                  return { ...fresh, balance: existing.balance };
-                }
-              }
-              return fresh;
-            });
-          });
-        }
-      } catch {
-        // Keep current balances
+    if (!token) return;
+
+    try {
+      if (tradingRef.current?.isReady()) {
+        await tradingRef.current.refreshBalance();
+        return;
       }
+      const res = await authorizeWithToken(token);
+      if (res.success && res.accounts.length > 0) {
+        setAccounts(res.accounts);
+        storeAccounts(res.accounts);
+        const storedActive = getActiveAccountId();
+        const chosen =
+          res.accounts.find((a) => a.account_id === storedActive) ||
+          res.accounts.find((a) => a.account_type === "demo") ||
+          res.accounts[0];
+        if (chosen) {
+          setActiveId(chosen.account_id);
+          setActiveAccountId(chosen.account_id, chosen.account_type);
+        }
+        setIsConnectedToDeriv(true);
+      }
+    } catch {
+      // Keep current balances on network error
     }
   }, []);
 
@@ -405,20 +424,26 @@ export function TradeTerminal() {
     const authInfo = getStoredAuthInfo();
     const manualToken = getManualToken();
 
-    if (savedAccounts.length > 0) {
-      setAccounts(savedAccounts);
-      const chosen = savedAccounts.find((a) => a.account_id === storedActive) ?? savedAccounts[0];
+    // Drop leftover fake accounts from older builds
+    const realAccounts = savedAccounts.filter(
+      (a) => a.account_id !== "VRTC1029384" && a.account_id !== "CR91945350"
+    );
+    if (realAccounts.length !== savedAccounts.length) {
+      storeAccounts(realAccounts);
+    }
+
+    if (realAccounts.length > 0) {
+      setAccounts(realAccounts);
+      const chosen = realAccounts.find((a) => a.account_id === storedActive) ?? realAccounts[0];
       if (chosen) setActiveId(chosen.account_id);
       setIsConnectedToDeriv(Boolean(authInfo || manualToken));
     } else {
-      const initialMock: DerivAccount[] = [
-        { account_id: "VRTC1029384", account_type: "demo", currency: "USD", balance: "10000.00" },
-        { account_id: "CR91945350", account_type: "real", currency: "USD", balance: "0.00" },
-      ];
-      storeAccounts(initialMock);
-      setAccounts(initialMock);
-      setActiveId("VRTC1029384");
-      setIsConnectedToDeriv(Boolean(manualToken));
+      setAccounts([]);
+      setActiveId(null);
+      setIsConnectedToDeriv(Boolean(manualToken || authInfo));
+      if (!authInfo && !manualToken) {
+        setShowConnectModal(true);
+      }
     }
 
     refreshDerivBalances();
@@ -444,41 +469,6 @@ export function TradeTerminal() {
             setAppIdMarkup(activeAppId, liveMarkup);
           }
         }
-      }
-    });
-
-    // Listen for balance updates from Deriv (applies to real accounts, preserves demo trading)
-    ws.registerHandler("balance", (data) => {
-      const bData = data['balance'] as {
-        accounts?: Record<string, { balance: number; currency: string }>;
-        balance?: number;
-        loginid?: string;
-      };
-      if (bData?.accounts) {
-        setAccounts((prev) => {
-          const updated = prev.map((acc) => {
-            if (acc.account_type === "demo") return acc; // Preserve active demo trading balance
-            const fresh = bData.accounts?.[acc.account_id];
-            if (fresh) {
-              return { ...acc, balance: Number(fresh.balance).toFixed(2), currency: fresh.currency || acc.currency };
-            }
-            return acc;
-          });
-          storeAccounts(updated);
-          return updated;
-        });
-      } else if (typeof bData?.balance === "number" && bData.loginid) {
-        setAccounts((prev) => {
-          const updated = prev.map((acc) => {
-            if (acc.account_type === "demo") return acc; // Preserve active demo trading balance
-            if (acc.account_id === bData.loginid) {
-              return { ...acc, balance: Number(bData.balance).toFixed(2) };
-            }
-            return acc;
-          });
-          storeAccounts(updated);
-          return updated;
-        });
       }
     });
 
@@ -544,14 +534,34 @@ export function TradeTerminal() {
       }
     });
 
-    // Request 1000 ticks history & subscribe to live stream
-    ws.send({
-      ticks_history: SYMBOL,
-      count: WINDOW,
-      end: "latest",
-      style: "ticks",
-      subscribe: 1,
-    }).catch((err) => console.error("Ticks subscription error:", err));
+    // Request 1000 ticks: Auth 2.0 public feed uses 1HZ100V; classic uses R_100
+    const subscribeTicks = async () => {
+      const payload = (sym: string) => ({
+        ticks_history: sym,
+        count: WINDOW,
+        end: "latest",
+        style: "ticks",
+        subscribe: 1,
+      });
+      try {
+        await ws.send(payload(OPTIONS_SYMBOL));
+      } catch {
+        try {
+          await ws.send(payload(CLASSIC_SYMBOL));
+        } catch (err) {
+          console.error("Ticks subscription error:", err);
+          // Last resort: classic Binary public socket
+          try {
+            ws.updateUrl(`wss://ws.derivws.com/websockets/v3?app_id=1089`);
+            await ws.waitForOpen(8000);
+            await ws.send(payload(CLASSIC_SYMBOL));
+          } catch (fallbackErr) {
+            console.error("Classic ticks fallback failed:", fallbackErr);
+          }
+        }
+      }
+    };
+    subscribeTicks();
 
     return () => {
       ws.dispose();
@@ -559,61 +569,129 @@ export function TradeTerminal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Request live contract proposal from Deriv when connected and when stake changes
+  // Authorized trading socket (balance + live DIGITMATCH buys) for the active account
   useEffect(() => {
-    if (status === "live" && wsRef.current) {
-      wsRef.current.send({
-        proposal: 1,
-        amount: stake,
-        basis: "stake",
-        contract_type: "DIGITMATCH",
-        currency: activeAccount?.currency || "USD",
-        duration: 1,
-        duration_unit: "t",
-        underlying_symbol: "R_100",
-        barrier: "5",
-      }).catch(() => {});
+    const token = getStoredAuthInfo()?.access_token || getManualToken();
+    if (!token || !activeAccount?.account_id) {
+      setTradingReady(false);
+      tradingRef.current?.dispose();
+      tradingRef.current = null;
+      return;
     }
-  }, [status, stake, activeAccount?.currency]);
 
-  function handleTickEvent(tickList: number[], _currentPrice: number, currentD: number) {
+    const session = new DerivTradingSession();
+    tradingRef.current = session;
+
+    const unsubBal = session.onBalance((loginid, balance, currency) => {
+      const idNorm = String(loginid).toUpperCase();
+      setAccounts((prev) => {
+        let matched = false;
+        const updated = prev.map((acc) => {
+          if (acc.account_id.toUpperCase() === idNorm) {
+            matched = true;
+            return {
+              ...acc,
+              balance: Number(balance).toFixed(2),
+              currency: currency || acc.currency,
+            };
+          }
+          return acc;
+        });
+        if (!matched) {
+          const isDemo =
+            idNorm.startsWith("VRTC") || idNorm.startsWith("V") || idNorm.startsWith("DOT");
+          updated.push({
+            account_id: loginid,
+            account_type: isDemo ? "demo" : "real",
+            currency: currency || "USD",
+            balance: Number(balance).toFixed(2),
+            status: "active",
+          });
+        }
+        storeAccounts(updated);
+        return updated;
+      });
+      // Keep the UI on the account Deriv actually authorized
+      setActiveId((cur) => {
+        if (cur && cur.toUpperCase() === idNorm) return cur;
+        if (!cur) {
+          setActiveAccountId(loginid);
+          return loginid;
+        }
+        return cur;
+      });
+    });
+
+    const unsubStatus = session.onStatus((st, detail) => {
+      if (st === "ready") {
+        setTradingReady(true);
+        const modeLabel = detail === "otp" ? "Auth 2.0" : detail === "classic" ? "API token" : detail || "authorized";
+        setTradingStatusNote(`Live trading ready (${modeLabel})`);
+        setIsConnectedToDeriv(true);
+        const authorizedId = session.getAccountId();
+        if (authorizedId) {
+          setActiveId(authorizedId);
+          setActiveAccountId(authorizedId);
+        }
+      } else if (st === "connecting") {
+        setTradingReady(false);
+        setTradingStatusNote("Opening authorized Deriv trading socket...");
+      } else if (st === "error" || st === "offline") {
+        setTradingReady(false);
+        setTradingStatusNote(detail || "Trading socket offline");
+      }
+    });
+
+    session.connect(activeAccount).catch(() => {
+      setTradingReady(false);
+    });
+
+    return () => {
+      unsubBal();
+      unsubStatus();
+      session.dispose();
+      if (tradingRef.current === session) tradingRef.current = null;
+      setTradingReady(false);
+    };
+  }, [activeAccount?.account_id, isConnectedToDeriv]);
+
+  function settleTradeResult(
+    p: PendingTrade,
+    won: boolean,
+    pnl: number,
+    resultDigit: number,
+    updateLocalBalance: boolean
+  ) {
     const s = stateRef.current;
 
-    // 1. Settle in-flight trade on the tick following entry
-    if (pending.current) {
-      const p = pending.current;
-      pending.current = null;
-      const won = currentD === p.target;
-      const { netWinProfit } = calculateMatchesPayout(p.stake, s.configuredMarkup);
-      const pnl = won ? netWinProfit : -p.stake;
+    if (won) {
+      notifyTradeWon(p.runIndex, Math.abs(pnl), p.target);
+    } else {
+      notifyTradeLost(p.runIndex, p.stake, resultDigit, p.target);
+    }
 
-      if (won) {
-        notifyTradeWon(p.runIndex, netWinProfit, p.target);
-      } else {
-        notifyTradeLost(p.runIndex, p.stake, currentD, p.target);
-      }
+    const newRow: TradeRow = {
+      id: Date.now(),
+      runIndex: p.runIndex,
+      entry: p.entry,
+      target: p.target,
+      result: resultDigit,
+      stake: p.stake,
+      pnl,
+      time: new Date().toLocaleTimeString(),
+    };
 
-      const newRow: TradeRow = {
-        id: Date.now(),
-        runIndex: p.runIndex,
-        entry: p.entry,
-        target: p.target,
-        result: currentD,
-        stake: p.stake,
-        pnl,
-        time: new Date().toLocaleTimeString(),
-      };
+    const updatedTrades = [newRow, ...s.trades];
+    setTrades(updatedTrades);
 
-      const updatedTrades = [newRow, ...s.trades];
-      setTrades(updatedTrades);
-
-      // Auto-update amounts for active Demo or Real account
+    if (updateLocalBalance) {
+      // Paper mode only — live balances come from Deriv buy/balance sockets
       setAccounts((prev) => {
-        const targetId = s.activeId || activeId || (prev[0] ? prev[0].account_id : "");
+        const targetId = (s.activeId || activeId || (prev[0] ? prev[0].account_id : "")).toUpperCase();
         const updated = prev.map((acc) => {
-          if (acc.account_id === targetId || (!targetId && acc === prev[0])) {
+          if (acc.account_id.toUpperCase() === targetId || (!targetId && acc === prev[0])) {
             const currentBal = parseFloat(acc.balance) || 0;
-            const nextBal = Math.max(0, currentBal + pnl);
+            const nextBal = Math.max(0, Math.round((currentBal + pnl) * 100) / 100);
             return { ...acc, balance: nextBal.toFixed(2) };
           }
           return acc;
@@ -621,44 +699,105 @@ export function TradeTerminal() {
         storeAccounts(updated);
         return updated;
       });
+    } else {
+      tradingRef.current?.refreshBalance().catch(() => {});
+    }
 
-      const totalPnl = updatedTrades.reduce((acc, t) => acc + t.pnl, 0);
-      const nextRunCount = s.runCount + 1;
-      setRunCount(nextRunCount);
+    const totalPnl = updatedTrades.reduce((acc, t) => acc + t.pnl, 0);
+    const nextRunCount = s.runCount + 1;
+    setRunCount(nextRunCount);
 
-      // Check Risk Limits
-      if (totalPnl >= s.tp) {
-        notifyTakeProfit(totalPnl);
-        return stopBot(`Take Profit reached (+$${totalPnl.toFixed(2)})`);
-      }
-      if (totalPnl <= -s.sl) {
-        notifyStopLoss(totalPnl);
-        return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
-      }
-      if (nextRunCount >= MAX_RUNS) {
-        notifyCycleCompleted(MAX_RUNS, totalPnl);
-        return stopBot(`Cycle completed: ${MAX_RUNS} runs finished (Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)})`);
-      }
+    if (totalPnl >= s.tp) {
+      notifyTakeProfit(totalPnl);
+      return stopBot(`Take Profit reached (+$${totalPnl.toFixed(2)})`);
+    }
+    if (totalPnl <= -s.sl) {
+      notifyStopLoss(totalPnl);
+      return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
+    }
+    if (nextRunCount >= MAX_RUNS) {
+      notifyCycleCompleted(MAX_RUNS, totalPnl);
+      return stopBot(
+        `Cycle completed: ${MAX_RUNS} runs finished (Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)})`
+      );
+    }
 
-      // Re-analysis rule on loss
-      if (!won && s.reAnalyzeOnLoss) {
-        lossCooldownTicks.current = 5;
-        setBotState("LOSS RE-ANALYSIS");
-        setNote(`Run ${p.runIndex}/${MAX_RUNS} Lost (${currentD} ≠ ${p.target}). Re-analyzing market distribution...`);
-        return;
-      } else {
-        setBotState("ANALYZING");
-        setNote(`Run ${p.runIndex}/${MAX_RUNS} Won (+${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`);
-        return;
-      }
+    if (!won && s.reAnalyzeOnLoss) {
+      lossCooldownTicks.current = 5;
+      setBotState("LOSS RE-ANALYSIS");
+      setNote(
+        `Run ${p.runIndex}/${MAX_RUNS} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
+      );
+      return;
+    }
+
+    setBotState("ANALYZING");
+    setNote(
+      `Run ${p.runIndex}/${MAX_RUNS} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
+    );
+  }
+
+  function placeLiveMatch(p: PendingTrade) {
+    const session = tradingRef.current;
+    const currency = activeAccount?.currency || "USD";
+    if (!session?.isReady()) {
+      pending.current = null;
+      setBotState("IDLE");
+      setNote("Live buy failed: trading socket not ready. Reconnect Deriv and try again.");
+      setRunning(false);
+      return;
+    }
+
+    session
+      .buyDigitMatch({
+        stake: p.stake,
+        barrierDigit: p.target,
+        currency,
+      })
+      .then((result: ContractResult) => {
+        if (pending.current?.live && pending.current.runIndex === p.runIndex) {
+          pending.current = null;
+        }
+        const pnl = Number(result.profit);
+        const resultDigit =
+          typeof result.exitDigit === "number" ? result.exitDigit : result.won ? p.target : -1;
+        settleTradeResult(p, result.won || pnl > 0, pnl, resultDigit, false);
+      })
+      .catch((err: Error) => {
+        pending.current = null;
+        setRunning(false);
+        setBotState("IDLE");
+        setNote(`Live buy failed: ${err.message}`);
+        setTradingStatusNote(err.message);
+      });
+  }
+
+  function handleTickEvent(tickList: number[], _currentPrice: number, currentD: number) {
+    const s = stateRef.current;
+
+    // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
+    if (pending.current?.live) {
+      return;
+    }
+
+    // Simulated settle on the tick following entry (only when not live-connected)
+    if (pending.current) {
+      const p = pending.current;
+      pending.current = null;
+      const won = currentD === p.target;
+      const { netWinProfit } = calculateMatchesPayout(p.stake, s.configuredMarkup);
+      const pnl = won ? netWinProfit : -p.stake;
+      settleTradeResult(p, won, pnl, currentD, true);
+      return;
     }
 
     if (!s.running) return;
 
-    // Strict 1,000-tick requirement: The bot must analyse the last 1,000 ticks before evaluating trade entry
     if (tickList.length < WINDOW) {
       setBotState("BUFFERING");
-      setNote(`Buffering market ticks (${tickList.length}/${WINDOW}). Analyzing last 1,000 ticks before evaluating entry...`);
+      setNote(
+        `Buffering market ticks (${tickList.length}/${WINDOW}). Analyzing last 1,000 ticks before evaluating entry...`
+      );
       return;
     }
 
@@ -674,17 +813,30 @@ export function TradeTerminal() {
 
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
+      const useLive = Boolean(tradingRef.current?.isReady() && isConnectedToDeriv);
       pending.current = {
         runIndex: targetRun,
         entry: currentD,
         target: a.second,
         stake: s.stake,
+        live: useLive,
       };
       setBotState("IN TRADE");
-      setNote(`Run ${targetRun}/${MAX_RUNS}: Entered on digit ${currentD}. Matching target ${a.second}...`);
+      if (useLive) {
+        setNote(
+          `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
+        );
+        placeLiveMatch(pending.current);
+      } else {
+        setNote(
+          `Run ${targetRun}/${MAX_RUNS}: Paper trade on digit ${currentD}. Matching target ${a.second}...`
+        );
+      }
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
-      setNote(`Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`);
+      setNote(
+        `Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`
+      );
     } else {
       setBotState("ANALYZING");
       setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${s.maxDiff}%. Analyzing last 1,000 ticks...`);
@@ -694,7 +846,21 @@ export function TradeTerminal() {
   function startBot() {
     initAudioContext();
     if (digits.length < WINDOW) {
-      setNote(`Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks must be analyzed before entering a trade.`);
+      setNote(
+        `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks must be analyzed before entering a trade.`
+      );
+      return;
+    }
+    if (!isConnectedToDeriv || !tradingReady) {
+      setShowConnectModal(true);
+      setNote(
+        "Connect Deriv Auth 2.0 (or an API token) so trades hit your Deriv account and the balance updates live."
+      );
+      return;
+    }
+    if (!activeAccount) {
+      setShowConnectModal(true);
+      setNote("No Deriv account selected. Connect Deriv first.");
       return;
     }
     setTrades([]);
@@ -703,7 +869,9 @@ export function TradeTerminal() {
     lossCooldownTicks.current = 0;
     setRunning(true);
     setBotState("ANALYZING");
-    setNote("Bot active. Evaluating last 1,000 ticks of Volatility 100 for Run 1...");
+    setNote(
+      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on Volatility 100 — Run 1...`
+    );
   }
 
   function stopBot(message: string) {
@@ -719,18 +887,10 @@ export function TradeTerminal() {
     setRunCount(0);
   }
 
-  // Refill demo balance back to $10,000.00
+  // Pull the latest balance from Deriv (demo top-ups happen in Deriv, not locally)
   function resetDemoBalance() {
-    setAccounts((prev) => {
-      const updated = prev.map((acc) => {
-        if (acc.account_type === "demo") {
-          return { ...acc, balance: "10000.00" };
-        }
-        return acc;
-      });
-      storeAccounts(updated);
-      return updated;
-    });
+    refreshDerivBalances();
+    setNote("Synced balance from Deriv. Top up demo funds in your Deriv account if needed.");
   }
 
   function runBacktest1000Ticks() {
@@ -786,19 +946,10 @@ export function TradeTerminal() {
     if (targetAcc) {
       switchAccount(targetAcc.account_id);
     } else {
-      const newAcc: DerivAccount = {
-        account_id: targetType === "demo" ? "VRTC1029384" : "CR91945350",
-        account_type: targetType,
-        currency: "USD",
-        balance: targetType === "demo" ? "10000.00" : "0.00",
-        status: "active",
-      };
-      setAccounts((prev) => {
-        const updated = [...prev, newAcc];
-        storeAccounts(updated);
-        return updated;
-      });
-      switchAccount(newAcc.account_id);
+      setNote(
+        `No ${targetType} account on this Deriv login. Open Deriv and create one, then reconnect.`
+      );
+      setShowConnectModal(true);
     }
   }
 
@@ -808,26 +959,50 @@ export function TradeTerminal() {
       alert(`Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks required.`);
       return;
     }
+    if (!tradingReady || !isConnectedToDeriv) {
+      setShowConnectModal(true);
+      setNote("Connect Deriv before placing a live test trade.");
+      return;
+    }
     const a = analyze(digits, maxDiff);
     const targetRun = (runCount % MAX_RUNS) + 1;
-    pending.current = {
+    const p: PendingTrade = {
       runIndex: targetRun,
       entry: a.most,
       target: a.second,
       stake,
+      live: true,
     };
+    pending.current = p;
     setBotState("IN TRADE");
-    setNote(`Test run ${targetRun}/${MAX_RUNS}: Entered on digit ${a.most}. Matching second most digit ${a.second} on next tick...`);
+    setNote(
+      `Test run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
+    );
+    placeLiveMatch(p);
   }
 
   async function handleDirectOAuth() {
     try {
+      if (isRunningStandalone() && isIOS()) {
+        setShowConnectModal(true);
+        setTokenError(
+          "On iPhone installed apps, use an API token below. Safari and the app do not share login storage."
+        );
+        return;
+      }
+      if (!isOAuthOriginReady()) {
+        setShowConnectModal(true);
+        setTokenError(
+          `Auth 2.0 redirect is registered for ${derivRedirectUri()}. Open that URL, or paste an API token here.`
+        );
+        return;
+      }
       await startDerivAuth({
         clientId: getDerivClientId(),
         redirectUri: derivRedirectUri(),
       });
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to initiate Deriv Auth 2.0");
+      alert(e instanceof Error ? e.message : "Failed to start Deriv Auth 2.0");
     }
   }
 
@@ -874,7 +1049,7 @@ export function TradeTerminal() {
   const recentDigits33 = digits.slice(-33);
 
   return (
-    <div className={`min-h-screen font-mono antialiased transition-colors overflow-x-hidden ${
+    <div className={`min-h-screen font-sans antialiased transition-colors overflow-x-hidden ${
       isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
     }`}>
       {/* Floating In-App Alert Toast (Cross-device feedback) */}
@@ -1171,20 +1346,19 @@ export function TradeTerminal() {
                 <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                   CONNECTION
                 </span>
-                {activeType === "demo" && (
+                {isConnectedToDeriv && (
                   <button
                     onClick={resetDemoBalance}
-                    title="Reset demo virtual balance to $10,000"
+                    title="Sync balance from Deriv"
                     className="text-[10px] text-teal-500 hover:underline uppercase font-bold"
                   >
-                    RESET $10K
+                    SYNC BALANCE
                   </button>
                 )}
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-xs text-zinc-500">Active Account (Tap to Switch)</label>
-                {/* Clickable Card to switch Demo / Real */}
                 <div
                   onClick={toggleDemoReal}
                   title="Click to toggle Real / Demo"
@@ -1196,17 +1370,23 @@ export function TradeTerminal() {
                 >
                   <div className="flex items-center justify-between text-xs font-semibold">
                     <span className={isDark ? "text-white" : "text-slate-900"}>
-                      {activeAccount?.account_id} ({activeType === "real" ? "Real" : "Demo"})
+                      {activeAccount?.account_id || "Not connected"}{" "}
+                      {activeAccount ? `(${activeType === "real" ? "Real" : "Demo"})` : ""}
                     </span>
                     <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                       ${Number(activeAccount?.balance || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-zinc-500 leading-tight">
-                    {activeType === "real"
-                      ? "Live trading uses real funds. Trade at your own risk."
-                      : "Virtual trading environment with simulated balance."}
+                    {tradingReady
+                      ? "Live Deriv balance — updates after every DIGITMATCH buy."
+                      : activeType === "real"
+                        ? "Live funds. Connect trading socket before starting the bot."
+                        : "Demo funds from Deriv. Connect so each trade moves the real demo balance."}
                   </p>
+                  {tradingStatusNote && (
+                    <p className="mt-1 text-[10px] text-zinc-600 leading-tight">{tradingStatusNote}</p>
+                  )}
                 </div>
               </div>
 
@@ -1216,10 +1396,16 @@ export function TradeTerminal() {
                     <button
                       disabled
                       className={`flex-1 rounded border py-2 text-xs font-medium uppercase tracking-wider ${
-                        isDark ? "border-teal-900/60 bg-teal-950/30 text-teal-400" : "border-teal-200 bg-teal-50 text-teal-700"
+                        tradingReady
+                          ? isDark
+                            ? "border-teal-900/60 bg-teal-950/30 text-teal-400"
+                            : "border-teal-200 bg-teal-50 text-teal-700"
+                          : isDark
+                            ? "border-amber-900/60 bg-amber-950/30 text-amber-400"
+                            : "border-amber-200 bg-amber-50 text-amber-700"
                       }`}
                     >
-                      CONNECTED
+                      {tradingReady ? "LIVE TRADING" : "AUTHED · SOCKET…"}
                     </button>
                     <button
                       onClick={refreshDerivBalances}
@@ -1262,7 +1448,7 @@ export function TradeTerminal() {
                   isDark ? "border-zinc-800 bg-zinc-900 text-white" : "border-slate-300 bg-slate-50 text-slate-900"
                 }`}>
                   <span>Matches · Volatility 100</span>
-                  <span className="text-zinc-500 text-[10px]">R_100</span>
+                  <span className="text-zinc-500 text-[10px]">Vol 100</span>
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}%.

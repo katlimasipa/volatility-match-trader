@@ -1,8 +1,13 @@
-// Matches strategy analysis for Volatility 100 (R_100).
-export const SYMBOL = "R_100";
+// Matches strategy analysis for Volatility 100.
+// Classic Binary API uses R_100; Auth 2.0 Options API uses 1HZ100V.
+export const CLASSIC_SYMBOL = "R_100";
+export const OPTIONS_SYMBOL = "1HZ100V";
+/** @deprecated Prefer CLASSIC_SYMBOL / OPTIONS_SYMBOL by connection mode */
+export const SYMBOL = CLASSIC_SYMBOL;
+export const DISPLAY_NAME = "Volatility 100";
 export const PIP_DECIMALS = 2;
 export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
-export const MAX_RUNS = 3;   // exactly 3 runs per cycle
+export const MAX_RUNS = 3; // exactly 3 runs per cycle
 export const WINDOW = 1000;
 
 /**
@@ -17,13 +22,13 @@ export interface Analysis {
   total: number;
   counts: number[];
   percents: number[]; // index 0-9
-  most: number;       // most appearing digit
-  second: number;     // second most appearing digit
+  most: number; // most appearing digit
+  second: number; // second most appearing digit
   mostPct: number;
   secondPct: number;
-  diff: number;       // mostPct - secondPct
-  ready: boolean;     // strictly total >= WINDOW (1,000 ticks)
-  ok: boolean;        // ready && diff <= maxDiff
+  diff: number; // mostPct - secondPct
+  ready: boolean; // strictly total >= WINDOW (1,000 ticks)
+  ok: boolean; // ready && diff <= maxDiff
 }
 
 /**

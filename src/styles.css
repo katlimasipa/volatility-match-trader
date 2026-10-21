@@ -5,8 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-display: "Familjen Grotesk", ui-sans-serif, sans-serif;
-  --font-sans: "Hanken Grotesk", ui-sans-serif, sans-serif;
+  --font-display: "Syne", "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: var(--radius);
@@ -65,8 +66,13 @@
   input[type="number"] { -moz-appearance: textfield; }
 }
 
-@utility font-display { font-family: var(--font-display); letter-spacing: -0.02em; }
-@utility num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+@utility font-display { font-family: var(--font-display); letter-spacing: -0.03em; font-weight: 600; }
+@utility font-mono { font-family: var(--font-mono); }
+@utility num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-family: var(--font-mono);
+}
 @utility label-caps { font-size: 0.6875rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--color-muted-foreground); }
 @utility field {
   width: 100%;

@@ -208,7 +208,13 @@ export class DerivWS {
 
     // If it's a persistent subscription request, track it for auto-resubscription on reconnect
     if (payload['subscribe'] === 1 || payload['ticks_history']) {
-      const key = String(payload['ticks_history'] || payload['ticks'] || 'sub');
+      const key = String(
+        payload['ticks_history'] ||
+          payload['ticks'] ||
+          (payload['balance'] ? 'balance' : null) ||
+          (payload['proposal_open_contract'] ? `poc:${payload['contract_id']}` : null) ||
+          `sub:${reqId}`
+      );
       this.activeSubscriptions.set(key, payload);
     }
 

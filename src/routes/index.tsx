@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
+import { session, getDerivClientId, derivRedirectUri, isOAuthOriginReady } from "@/lib/deriv-config";
 import { startDerivAuth, handleIncomingOAuth, authorizeWithToken } from "@/lib/deriv-auth";
+import { isIOS, isRunningStandalone } from "@/lib/pwa";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -103,6 +104,21 @@ function SignIn() {
   };
 
   const onConnectDeriv = async () => {
+    // iOS installed PWA cannot share storage with Safari after OAuth redirect
+    if (isRunningStandalone() && isIOS()) {
+      setShowTokenInput(true);
+      setMsg(
+        "On the iPhone home-screen app, paste an API token below. Auth 2.0 opens in Safari and cannot return here."
+      );
+      return;
+    }
+    if (!isOAuthOriginReady()) {
+      setShowTokenInput(true);
+      setMsg(
+        `Auth 2.0 is registered for ${derivRedirectUri()}. Open that site for one-tap login, or paste an API token below.`
+      );
+      return;
+    }
     setBusy(true);
     setMsg("Connecting to Deriv Auth 2.0...");
     try {
@@ -112,7 +128,7 @@ function SignIn() {
       });
     } catch (e) {
       setBusy(false);
-      setMsg(e instanceof Error ? e.message : "Failed to initiate Deriv authorization.");
+      setMsg(e instanceof Error ? e.message : "Failed to start Deriv authorization.");
     }
   };
 
@@ -144,20 +160,20 @@ function SignIn() {
       <section className="hidden flex-col justify-between border-r border-zinc-900 bg-zinc-950 p-12 md:flex">
         <div className="flex items-center gap-3">
           <img src="/app-icon.png" alt="Icon" className="h-8 w-8 rounded-full border border-zinc-800" />
-          <span className="font-mono text-xs uppercase tracking-[0.25em] text-zinc-400">
+          <span className="text-xs uppercase tracking-[0.25em] text-zinc-400">
             DERIV // VOLATILITY 100
           </span>
         </div>
 
         <div className="space-y-6">
           <img src="/logo.png" alt="ThDpst Matches" className="h-16 w-auto max-w-[280px] object-contain" />
-          <h1 className="font-mono text-4xl font-light tracking-tight text-white lg:text-5xl">
-            Precision Match.
+          <h1 className="font-display text-4xl tracking-tight text-white lg:text-5xl">
+            Volatility 100
             <br />
-            Monochrome Edge.
+            <span className="text-zinc-300">Matches terminal</span>
           </h1>
-          <p className="max-w-md font-mono text-xs leading-relaxed text-zinc-400">
-            Automated Deriv Matches strategy exclusively on Volatility 100. Real-time digit distribution analysis, strict spread validation, and direct Deriv permission integration for Demo and Real accounts.
+          <p className="max-w-md text-sm leading-relaxed text-zinc-400">
+            Connect with Deriv Auth 2.0, read the last 1,000 digits, and place live DIGITMATCH trades. Your Deriv balance updates on every buy.
           </p>
         </div>
 
@@ -182,10 +198,10 @@ function SignIn() {
           <div className="flex items-center gap-4 border-b border-zinc-900 pb-4">
             <img src="/app-icon.png" alt="Icon" className="h-12 w-12 rounded-full border border-zinc-800" />
             <div className="space-y-1">
-              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
                 {mode === "in" ? "Authentication" : "Register"}
               </span>
-              <h2 className="font-mono text-2xl tracking-tight text-white">
+              <h2 className="font-display text-2xl tracking-tight text-white">
                 {mode === "in" ? "Sign In" : "Create Account"}
               </h2>
             </div>
