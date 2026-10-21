@@ -3,7 +3,7 @@
  * Handles offline caching, background sync, and cross-device push notifications.
  */
 
-const CACHE_NAME = 'thdpst-matches-v5';
+const CACHE_NAME = 'thdpst-matches-v6';
 const STATIC_ASSETS = [
   '/',
   '/trade',

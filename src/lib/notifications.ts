@@ -1,13 +1,15 @@
 /**
  * Cross-Device Notification & Audio Alert Manager
- * Supports Web Push, Service Worker notifications, iOS PWA notifications, and audio alerts.
+ * Local: Web Notification API, Service Worker, in-app banners, audio.
+ * Across devices: Supabase Realtime (same Deriv account / email) via alert-sync.
  *
  * iOS Notification Strategy:
- * - iOS Safari: No notification API at all — fall back to in-app visual + audio alerts
- * - iOS Standalone PWA (16.4+): Web Push supported, permission MUST come from direct user tap
- * - iOS < 16.4 Standalone: No notification support — fall back to in-app alerts
- * - All other browsers: Standard Notification API
+ * - iOS Safari: No notification API — install as PWA, or use in-app + audio
+ * - iOS Standalone PWA (16.4+): permission MUST come from a direct user tap
+ * - Other browsers: Standard Notification API
  */
+
+import { publishSyncedAlert, type AlertKind } from "@/lib/alert-sync";
 
 const NOTIFICATION_PREF_KEY = 'thdpst_notifications_enabled';
 const SOUND_PREF_KEY = 'thdpst_sound_enabled';
@@ -285,24 +287,43 @@ export function playAlertSound(type: 'win' | 'loss' | 'alert') {
 
 // ─── Notification Dispatch ────────────────────────────────────────────────────
 
+export interface DispatchNotificationOptions extends NotificationOptions {
+  /** When true, do not fan-out to other devices (already a remote alert). */
+  skipSync?: boolean;
+  /** Sync payload kind for other devices. */
+  syncKind?: AlertKind;
+}
+
 /**
- * Dispatch cross-device push / service worker notification with in-app fallback.
- * On platforms without push support, emits an in-app visual alert instead.
+ * Show a local OS / in-app notification, and (by default) sync to other devices
+ * logged into the same Deriv account or email session.
  */
-export async function dispatchNotification(title: string, options: NotificationOptions = {}) {
+export async function dispatchNotification(
+  title: string,
+  options: DispatchNotificationOptions = {}
+) {
+  const { skipSync, syncKind, ...notifOpts } = options;
+
   // Vibrate on supported devices
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
     navigator.vibrate([150, 60, 150]);
   }
 
-  // If push notifications aren't available or enabled, use in-app banner fallback
+  const alertType: InAppAlertType =
+    title.toLowerCase().includes('won') || title.toLowerCase().includes('profit') || title.toLowerCase().includes('started') ? 'win' :
+    title.toLowerCase().includes('lost') || title.toLowerCase().includes('loss') ? 'loss' :
+    title.toLowerCase().includes('stop') ? 'warning' : 'info';
+
+  // Always surface an in-app banner so open tabs see the event
+  emitInAppAlert(title, notifOpts.body || '', alertType);
+
+  // Fan-out to other devices (phone ↔ desktop) when this is the origin device
+  if (!skipSync) {
+    void publishSyncedAlert(title, String(notifOpts.body || ''), syncKind || 'info');
+  }
+
+  // OS notification when permission is on
   if (!isNotificationEnabled() || !isNotificationSupported() || Notification.permission !== 'granted') {
-    // Still emit in-app alert so user gets visual feedback
-    const alertType: InAppAlertType =
-      title.toLowerCase().includes('won') || title.toLowerCase().includes('profit') ? 'win' :
-      title.toLowerCase().includes('lost') || title.toLowerCase().includes('loss') ? 'loss' :
-      title.toLowerCase().includes('stop') ? 'warning' : 'info';
-    emitInAppAlert(title, options.body || '', alertType);
     return;
   }
 
@@ -310,10 +331,9 @@ export async function dispatchNotification(title: string, options: NotificationO
     icon: '/app-icon.png',
     badge: '/favicon.png',
     tag: 'thdpst-matches-alert',
-    ...options,
+    ...notifOpts,
   };
 
-  // Try service worker registration first (works in background on mobile & desktop)
   if ('serviceWorker' in navigator) {
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -326,53 +346,91 @@ export async function dispatchNotification(title: string, options: NotificationO
     }
   }
 
-  // Fallback to window Notification API
   try {
     new Notification(title, defaultOpts);
   } catch {
-    // In some mobile contexts, window Notification constructor may throw
-    emitInAppAlert(title, options.body || '', 'info');
+    // window Notification may throw on some mobile contexts
   }
+}
+
+/**
+ * Handle an alert that arrived from another device (already synced).
+ */
+export function presentRemoteAlert(title: string, body: string, kind: AlertKind = 'info') {
+  if (kind === 'win' || kind === 'tp' || kind === 'bot_start') playAlertSound('win');
+  else if (kind === 'loss' || kind === 'sl') playAlertSound('loss');
+  else playAlertSound('alert');
+
+  void dispatchNotification(title, {
+    body,
+    tag: `remote-${kind}-${Date.now()}`,
+    skipSync: true,
+    syncKind: kind,
+  });
 }
 
 // ─── Specific Trade Alerts ────────────────────────────────────────────────────
 
 export function notifyTradeWon(runIndex: number, pnl: number, target: number) {
   playAlertSound('win');
-  dispatchNotification(`Trade Won: +$${pnl.toFixed(2)} USD`, {
+  void dispatchNotification(`Trade Won: +$${pnl.toFixed(2)} USD`, {
     body: `Run #${runIndex} matched digit [${target}]. Profit added to balance.`,
     tag: `trade-win-${Date.now()}`,
+    syncKind: 'win',
   });
 }
 
 export function notifyTradeLost(runIndex: number, stake: number, result: number, target: number) {
   playAlertSound('loss');
-  dispatchNotification(`Trade Lost: -$${stake.toFixed(2)} USD`, {
+  void dispatchNotification(`Trade Lost: -$${stake.toFixed(2)} USD`, {
     body: `Run #${runIndex} exited with [${result}] (target was [${target}]).`,
     tag: `trade-loss-${Date.now()}`,
+    syncKind: 'loss',
   });
 }
 
 export function notifyTakeProfit(totalPnl: number) {
   playAlertSound('win');
-  dispatchNotification(`Take Profit Reached! (+$${totalPnl.toFixed(2)})`, {
+  void dispatchNotification(`Take Profit Reached! (+$${totalPnl.toFixed(2)})`, {
     body: `Target profit achieved. Bot execution automatically stopped.`,
     tag: `tp-hit-${Date.now()}`,
+    syncKind: 'tp',
   });
 }
 
 export function notifyStopLoss(totalPnl: number) {
   playAlertSound('loss');
-  dispatchNotification(`Stop Loss Hit (-$${Math.abs(totalPnl).toFixed(2)})`, {
+  void dispatchNotification(`Stop Loss Hit (-$${Math.abs(totalPnl).toFixed(2)})`, {
     body: `Risk limit reached. Bot execution stopped to protect capital.`,
     tag: `sl-hit-${Date.now()}`,
+    syncKind: 'sl',
   });
 }
 
 export function notifyCycleCompleted(runCount: number, totalPnl: number) {
   playAlertSound('alert');
-  dispatchNotification(`Cycle Completed (${runCount} Runs)`, {
+  void dispatchNotification(`Cycle Completed (${runCount} Runs)`, {
     body: `Total Session Net: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} USD.`,
     tag: `cycle-completed-${Date.now()}`,
+    syncKind: 'cycle',
+  });
+}
+
+export function notifyBotStarted(accountId: string, deviceLabel?: string) {
+  playAlertSound('alert');
+  const where = deviceLabel || 'another device';
+  void dispatchNotification('Bot started', {
+    body: `Matches bot is running on ${accountId} (${where}). You will get trade alerts here too.`,
+    tag: `bot-start-${Date.now()}`,
+    syncKind: 'bot_start',
+  });
+}
+
+export function notifyBotStopped(message: string) {
+  playAlertSound('alert');
+  void dispatchNotification('Bot stopped', {
+    body: message || 'Matches bot stopped.',
+    tag: `bot-stop-${Date.now()}`,
+    syncKind: 'bot_stop',
   });
 }

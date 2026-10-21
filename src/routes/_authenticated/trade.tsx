@@ -46,14 +46,18 @@ import {
   notifyTakeProfit,
   notifyStopLoss,
   notifyCycleCompleted,
+  notifyBotStarted,
+  notifyBotStopped,
   isSoundEnabled,
   setSoundEnabled,
   playAlertSound,
   dispatchNotification,
+  presentRemoteAlert,
   onInAppAlert,
   initAudioContext,
   isIOSSafariNotPWA,
 } from "@/lib/notifications";
+import { connectAlertSync, disconnectAlertSync, onSyncedAlert } from "@/lib/alert-sync";
 import {
   isRunningStandalone,
   isIOS,
@@ -247,6 +251,19 @@ function TradeTerminal() {
     return () => unsub();
   }, []);
 
+  // Cross-device alerts: same Deriv account → Realtime room on every open device
+  useEffect(() => {
+    const accountId = activeAccount?.account_id || getActiveAccountId();
+    void connectAlertSync(accountId);
+    const unsub = onSyncedAlert((alert) => {
+      presentRemoteAlert(alert.title, alert.body, alert.kind);
+    });
+    return () => {
+      unsub();
+      void disconnectAlertSync();
+    };
+  }, [activeAccount?.account_id]);
+
   async function toggleNotifications() {
     initAudioContext();
     if (!notifsEnabled) {
@@ -257,8 +274,11 @@ function TradeTerminal() {
       const perm = await requestNotificationPermission();
       if (perm === "granted") {
         setNotifsEnabled(true);
-        dispatchNotification("Notifications Enabled", {
-          body: "You will receive real-time alerts for trade wins, losses, and cycle limits.",
+        setNotificationEnabled(true);
+        void connectAlertSync(activeAccount?.account_id || getActiveAccountId());
+        void dispatchNotification("Notifications Enabled", {
+          body: "Alerts sync across your devices on this Deriv account — bot start, wins, losses, and stops.",
+          skipSync: true,
         });
       } else if (perm === "denied") {
         alert("Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.");
@@ -881,13 +901,25 @@ function TradeTerminal() {
     setNote(
       `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on Volatility 100 — Run 1...`
     );
+    const deviceLabel = isRunningStandalone()
+      ? isIOS()
+        ? "iPhone app"
+        : "installed app"
+      : typeof navigator !== "undefined" && /mobile/i.test(navigator.userAgent)
+        ? "phone browser"
+        : "desktop";
+    notifyBotStarted(activeAccount.account_id, deviceLabel);
   }
 
   function stopBot(message: string) {
+    const wasRunning = running || stateRef.current.running;
     setRunning(false);
     setBotState("IDLE");
     setNote(message);
     pending.current = null;
+    if (wasRunning) {
+      notifyBotStopped(message);
+    }
   }
 
   function resetSession() {
@@ -1160,7 +1192,7 @@ function TradeTerminal() {
             <button
               type="button"
               onClick={toggleNotifications}
-              title={notifsEnabled ? "Notifications enabled" : "Enable cross-device notifications"}
+              title={notifsEnabled ? "Alerts on — synced across your devices" : "Enable alerts on this device (syncs across devices)"}
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
                 notifsEnabled
                   ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300 font-bold" : "border-zinc-500 bg-zinc-100 text-zinc-800 font-bold"

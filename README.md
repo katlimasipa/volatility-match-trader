@@ -10,6 +10,7 @@ Monochrome Deriv Matches bot for **Volatility 100**. It reads the last 1,000 dig
 4. Buy DIGITMATCH using the second-most digit as the barrier (3 runs per cycle).
 5. On a loss, wait and re-analyse. Stop on take profit, stop loss, or end of cycle.
 6. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
+7. **Cross-device alerts** — turn notifications on on each device. When you start the bot (or a trade settles) on one phone/desktop, the others on the same Deriv account get the alert too (app must be open or in the background on that device).
 
 ## Auth & PWA
 
