@@ -1087,13 +1087,13 @@ function TradeTerminal() {
         <aside
           role="status"
           aria-live="polite"
-          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-md animate-in fade-in slide-in-from-top-4 duration-200"
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-md animate-in fade-in slide-in-from-top-4 duration-200 lg:top-auto lg:bottom-6 lg:left-auto lg:right-6 lg:translate-x-0 lg:w-80 lg:slide-in-from-right-4"
         >
           <div className={`rounded-lg border px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
             inAppAlert.type === "win"
-              ? isDark ? "border-zinc-600 bg-zinc-950 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-900"
+              ? isDark ? "border-emerald-500/60 bg-zinc-950 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700"
               : inAppAlert.type === "loss"
-              ? isDark ? "border-zinc-800 bg-zinc-950 text-zinc-300" : "border-slate-300 bg-white text-slate-800"
+              ? isDark ? "border-red-500/60 bg-zinc-950 text-red-400" : "border-red-500 bg-red-50 text-red-700"
               : isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
           }`}>
             <div className="space-y-0.5">
@@ -1136,8 +1136,8 @@ function TradeTerminal() {
               <span className="text-zinc-500 text-[11px]">P/L</span>
               <span className={`font-semibold num ${
                 totalPnl > 0
-                  ? isDark ? "text-white font-bold" : "text-zinc-700 font-bold"
-                  : totalPnl < 0 ? "text-zinc-400" : isDark ? "text-white" : "text-slate-700"
+                  ? "text-emerald-500 font-bold"
+                  : totalPnl < 0 ? "text-red-500 font-bold" : isDark ? "text-white" : "text-slate-700"
               }`}>
                 {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
               </span>
@@ -1336,7 +1336,7 @@ function TradeTerminal() {
 
           <div className="flex items-center gap-1">
             <span className="text-[10px] text-zinc-500 uppercase">P/L:</span>
-            <span className={`font-bold num ${totalPnl > 0 ? "text-zinc-600 font-bold" : totalPnl < 0 ? "text-zinc-500" : isDark ? "text-white" : "text-slate-800"}`}>
+            <span className={`font-bold num ${totalPnl > 0 ? "text-emerald-500 font-bold" : totalPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-800"}`}>
               {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
             </span>
           </div>
@@ -2018,16 +2018,16 @@ function TradeTerminal() {
                             <td>
                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                                 t.pnl > 0
-                                  ? isDark ? "bg-white text-black" : "bg-slate-900 text-white"
-                                  : "border border-zinc-700 text-zinc-400"
+                                  ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
+                                  : "bg-red-500/15 text-red-500 border border-red-500/40"
                               }`}>
                                 {t.pnl > 0 ? "WON" : "LOST"}
                               </span>
                             </td>
                             <td className={`text-right font-bold ${
                               t.pnl > 0
-                                ? isDark ? "text-white" : "text-zinc-700"
-                                : "text-zinc-500"
+                                ? "text-emerald-500"
+                                : "text-red-500"
                             }`}>
                               {t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}
                             </td>
@@ -2059,13 +2059,13 @@ function TradeTerminal() {
                   <span className="text-zinc-500">NET P/L</span>
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                     totalPnl >= 0
-                      ? isDark ? "bg-zinc-800 text-white" : "bg-slate-200 text-slate-800"
-                      : "border border-zinc-700 text-zinc-400"
+                      ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
+                      : "bg-red-500/15 text-red-500 border border-red-500/40"
                   }`}>
                     {totalPnl >= 0 ? "PROFIT" : "LOSS"}
                   </span>
                 </div>
-                <div className={`text-3xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}>
+                <div className={`text-3xl font-light tracking-tight num ${totalPnl > 0 ? "text-emerald-500" : totalPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}>
                   {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)} <span className="text-xs font-normal text-zinc-500">USD</span>
                 </div>
               </div>
@@ -2472,7 +2472,7 @@ function TradeTerminal() {
               </div>
               <div>
                 <span className="text-[10px] uppercase text-zinc-500">Simulated Net P/L</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
+                <div className={`text-2xl font-light ${backtest.netPnl > 0 ? "text-emerald-500" : backtest.netPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}>
                   {backtest.netPnl >= 0 ? "+" : ""}${backtest.netPnl.toFixed(2)}
                 </div>
               </div>
