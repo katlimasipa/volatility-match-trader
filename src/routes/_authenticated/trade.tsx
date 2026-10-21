@@ -61,11 +61,19 @@ import {
 import {
   catchUpAlerts,
   connectAlertSync,
+  countLinkedPushDevices,
   disconnectAlertSync,
   onSyncedAlert,
   publishSyncedAlert,
+  refreshAlertPresence,
 } from "@/lib/alert-sync";
-import { disableWebPush, enableWebPush } from "@/lib/push-client";
+import {
+  disableWebPush,
+  enableWebPush,
+  getPushStatus,
+  preparePush,
+  subscribePushFromGesture,
+} from "@/lib/push-client";
 import {
   isRunningStandalone,
   isIOS,
@@ -226,11 +234,46 @@ function TradeTerminal() {
 
   // Cross-device notifications, sound & PWA install state
   const [notifsEnabled, setNotifsEnabled] = useState(isNotificationEnabled);
+  const [pushInfo, setPushInfo] = useState<{
+    subscribed: boolean;
+    linked: number;
+    error?: string;
+  }>({ subscribed: false, linked: 0 });
   const [soundEnabled, setSoundEnabledState] = useState(isSoundEnabled);
   const [installable, setInstallable] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
   const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
   const [mobileTab, setMobileTab] = useState<"controls" | "market" | "session" | "all">("market");
+
+  const refreshPushInfo = useCallback(async (error?: string | null) => {
+    const status = await getPushStatus();
+    const linked = countLinkedPushDevices();
+    setPushInfo((previous) => {
+      const nextError =
+        error === undefined ? (status.subscribed ? undefined : previous.error) : error || undefined;
+      return {
+        subscribed: status.subscribed,
+        linked,
+        ...(nextError ? { error: nextError } : {}),
+      };
+    });
+  }, []);
+
+  const pushStatusText = pushInfo.subscribed
+    ? `Background push: ON · ${pushInfo.linked} other devices linked`
+    : `Background push: OFF — tap NOTIF off/on to fix${pushInfo.error ? ` — ${pushInfo.error}` : ""}`;
+
+  useEffect(() => {
+    void preparePush();
+  }, []);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void refreshAlertPresence();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   // In-app alert listener
   useEffect(() => {
@@ -277,7 +320,9 @@ function TradeTerminal() {
         presentRemoteAlert(alert.title, alert.body, alert.kind, alert.id);
       }
       if (notifsEnabled) {
-        await enableWebPush(accountId);
+        const push = await enableWebPush(accountId);
+        if (cancelled) return;
+        await refreshPushInfo(push.ok ? null : push.error || "Background push could not be enabled.");
       }
     })();
 
@@ -290,7 +335,30 @@ function TradeTerminal() {
       unsub();
       void disconnectAlertSync();
     };
-  }, [activeAccount?.account_id, notifsEnabled]);
+  }, [activeAccount?.account_id, notifsEnabled, refreshPushInfo]);
+
+  useEffect(() => {
+    if (!notifsEnabled) return;
+    void refreshPushInfo();
+    const interval = window.setInterval(() => void refreshPushInfo(), 10_000);
+    return () => window.clearInterval(interval);
+  }, [notifsEnabled, refreshPushInfo]);
+
+  async function finishNotificationEnable(sub?: PushSubscription) {
+    setNotifsEnabled(true);
+    setNotificationEnabled(true);
+    const accountId = activeAccount?.account_id || getActiveAccountId();
+    void connectAlertSync(accountId);
+    const push = await enableWebPush(accountId, sub);
+    await refreshPushInfo(push.ok ? null : push.error || "Background push could not be enabled.");
+    void dispatchNotification("Notifications Enabled", {
+      body: push.ok
+        ? "Alerts sync across your devices — including when the app is closed (Web Push)."
+        : "Alerts sync on open devices. " +
+          (push.error || "Background push will turn on once keys/tables are configured."),
+      skipSync: true,
+    });
+  }
 
   async function toggleNotifications() {
     initAudioContext();
@@ -299,19 +367,22 @@ function TradeTerminal() {
         setShowIOSInstallGuide(true);
         return;
       }
+      const subPromise = subscribePushFromGesture();
+      let sub: PushSubscription | undefined;
+      if (subPromise) {
+        try {
+          sub = await subPromise;
+        } catch {
+          // Fall back to the notification permission flow.
+        }
+      }
+      if (sub) {
+        await finishNotificationEnable(sub);
+        return;
+      }
       const perm = await requestNotificationPermission();
       if (perm === "granted") {
-        setNotifsEnabled(true);
-        setNotificationEnabled(true);
-        const accountId = activeAccount?.account_id || getActiveAccountId();
-        void connectAlertSync(accountId);
-        const push = await enableWebPush(accountId);
-        void dispatchNotification("Notifications Enabled", {
-          body: push.ok
-            ? "Alerts sync across your devices — including when the app is closed (Web Push)."
-            : "Alerts sync on open devices. " + (push.error || "Background push will turn on once keys/tables are configured."),
-          skipSync: true,
-        });
+        await finishNotificationEnable();
       } else if (perm === "denied") {
         alert("Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.");
       } else if (perm === "unsupported") {
@@ -320,7 +391,8 @@ function TradeTerminal() {
     } else {
       setNotificationEnabled(false);
       setNotifsEnabled(false);
-      void disableWebPush();
+      await disableWebPush();
+      await refreshPushInfo(null);
     }
   }
 
@@ -1224,6 +1296,15 @@ function TradeTerminal() {
               <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
               <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
             </button>
+            {notifsEnabled && (
+              <span
+                className={`max-w-48 text-[10px] leading-tight ${
+                  isDark ? "text-zinc-500" : "text-slate-500"
+                }`}
+              >
+                {pushStatusText}
+              </span>
+            )}
 
             {/* Audio Alert Toggle */}
             <button
@@ -2359,18 +2440,29 @@ function TradeTerminal() {
 
             {/* Quick Actions Grid */}
             <div className="grid grid-cols-2 gap-2 pt-1">
-              <button
-                type="button"
-                onClick={toggleNotifications}
-                className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
-                  notifsEnabled
-                    ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-800"
-                    : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
-                }`}
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
-                NOTIF: {notifsEnabled ? "ON" : "OFF"}
-              </button>
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={toggleNotifications}
+                  className={`w-full rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
+                    notifsEnabled
+                      ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-800"
+                      : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
+                  NOTIF: {notifsEnabled ? "ON" : "OFF"}
+                </button>
+                {notifsEnabled && (
+                  <p
+                    className={`mt-1 text-[10px] leading-tight ${
+                      isDark ? "text-zinc-500" : "text-slate-500"
+                    }`}
+                  >
+                    {pushStatusText}
+                  </p>
+                )}
+              </div>
 
               <button
                 type="button"

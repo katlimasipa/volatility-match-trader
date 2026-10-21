@@ -16,6 +16,9 @@ import {
   unregisterPushSubscription,
 } from "@/lib/push.functions";
 
+let cachedReg: ServiceWorkerRegistration | null = null;
+let cachedVapidKey: string | null = null;
+
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -23,6 +26,24 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const out = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
   return out;
+}
+
+function getViteVapidKey(): string {
+  return (
+    (typeof import.meta !== "undefined"
+      ? (import.meta.env?.["VITE_VAPID_PUBLIC_KEY"] as string | undefined)
+      : "") || ""
+  );
+}
+
+async function resolveVapidKey(): Promise<string> {
+  try {
+    const { publicKey } = await getVapidPublicKey();
+    if (publicKey) return publicKey;
+  } catch {
+    // Use the client-side key as a fallback.
+  }
+  return getViteVapidKey();
 }
 
 export function isWebPushSupported(): boolean {
@@ -34,10 +55,39 @@ export function isWebPushSupported(): boolean {
   );
 }
 
+export async function preparePush(): Promise<void> {
+  if (!isWebPushSupported()) return;
+  try {
+    const [reg, key] = await Promise.all([
+      navigator.serviceWorker.ready,
+      resolveVapidKey(),
+    ]);
+    cachedReg = reg;
+    cachedVapidKey = key || null;
+  } catch {
+    // Push is prepared opportunistically; the gesture path can retry later.
+  }
+}
+
+export function subscribePushFromGesture(): Promise<PushSubscription> | null {
+  if (!cachedReg || !cachedVapidKey) return null;
+  try {
+    return cachedReg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(cachedVapidKey) as BufferSource,
+    });
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
 /**
  * Ask the browser for a push subscription and save it for the current room.
  */
-export async function enableWebPush(accountId?: string | null): Promise<{
+export async function enableWebPush(
+  accountId?: string | null,
+  existingSub?: PushSubscription,
+): Promise<{
   ok: boolean;
   error?: string;
 }> {
@@ -54,28 +104,26 @@ export async function enableWebPush(accountId?: string | null): Promise<{
   }
 
   try {
-    const { publicKey } = await getVapidPublicKey();
-    const key =
-      publicKey ||
-      (typeof import.meta !== "undefined"
-        ? (import.meta.env?.["VITE_VAPID_PUBLIC_KEY"] as string | undefined)
-        : "") ||
-      "";
-
-    if (!key) {
-      return {
-        ok: false,
-        error: "Push keys are not configured on the server yet. Realtime alerts still work while the app is open.",
-      };
-    }
-
-    const reg = await navigator.serviceWorker.ready;
-    let sub = await reg.pushManager.getSubscription();
+    let sub = existingSub;
     if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
-      });
+      const key = cachedVapidKey || (await resolveVapidKey());
+      if (!key) {
+        return {
+          ok: false,
+          error: "Push keys are not configured on the server yet. Realtime alerts still work while the app is open.",
+        };
+      }
+      cachedVapidKey = key;
+
+      const reg = cachedReg || (await navigator.serviceWorker.ready);
+      cachedReg = reg;
+      sub = (await reg.pushManager.getSubscription()) ?? undefined;
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
+        });
+      }
     }
 
     const json = sub.toJSON();
@@ -111,6 +159,24 @@ export async function enableWebPush(accountId?: string | null): Promise<{
       ok: false,
       error: err instanceof Error ? err.message : "Push subscription failed.",
     };
+  }
+}
+
+export async function getPushStatus(): Promise<{
+  supported: boolean;
+  permission: string;
+  subscribed: boolean;
+}> {
+  const permission = typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  if (!isWebPushSupported()) return { supported: false, permission, subscribed: false };
+
+  try {
+    const reg = cachedReg || (await navigator.serviceWorker.ready);
+    cachedReg = reg;
+    const sub = await reg.pushManager.getSubscription();
+    return { supported: true, permission, subscribed: Boolean(sub) };
+  } catch {
+    return { supported: true, permission, subscribed: false };
   }
 }
 

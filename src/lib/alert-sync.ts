@@ -180,6 +180,16 @@ export function getPeerPushTargets(roomId: string): PushTarget[] {
   }
 }
 
+export function countLinkedPushDevices(): number {
+  const endpoints = new Set<string>();
+  for (const roomId of resolveAlertRoomIds()) {
+    for (const target of getPeerPushTargets(roomId)) {
+      endpoints.add(target.endpoint);
+    }
+  }
+  return endpoints.size;
+}
+
 function savePeerPushTargets(roomId: string, targets: PushTarget[]): void {
   if (typeof window === "undefined") return;
   try {
@@ -217,6 +227,18 @@ async function broadcastPushSubscription(
   }
 }
 
+async function broadcastPushHello(targetChannel: AlertChannel): Promise<void> {
+  try {
+    await targetChannel.send({
+      type: "broadcast",
+      event: "push_hello",
+      payload: { deviceId: getDeviceId() },
+    });
+  } catch {
+    // ignore
+  }
+}
+
 export async function announcePushSubscription(sub: PushSubscriptionInfo): Promise<void> {
   const validSub = normalizePushSubscription(sub);
   if (!validSub) return;
@@ -225,6 +247,18 @@ export async function announcePushSubscription(sub: PushSubscriptionInfo): Promi
     [...channels.entries()]
       .filter(([roomId]) => subscribedRooms.has(roomId))
       .map(([, targetChannel]) => broadcastPushSubscription(validSub, targetChannel)),
+  );
+}
+
+export async function refreshAlertPresence(): Promise<void> {
+  await Promise.all(
+    [...channels.entries()]
+      .filter(([roomId]) => subscribedRooms.has(roomId))
+      .map(async ([, targetChannel]) => {
+        const ownSub = getOwnPushSubscription();
+        if (ownSub) await broadcastPushSubscription(ownSub, targetChannel);
+        await broadcastPushHello(targetChannel);
+      }),
   );
 }
 
@@ -311,17 +345,7 @@ function subscribeAlertRoom(roomId: string): Promise<void> {
         subscribedRooms.add(roomId);
         const ownSub = getOwnPushSubscription();
         if (ownSub) void broadcastPushSubscription(ownSub, next);
-        try {
-          void next
-            .send({
-              type: "broadcast",
-              event: "push_hello",
-              payload: { deviceId: getDeviceId() },
-            })
-            .catch(() => {});
-        } catch {
-          // ignore
-        }
+        void broadcastPushHello(next);
         resolve();
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         subscribedRooms.delete(roomId);
