@@ -292,6 +292,13 @@ function subscribeAlertRoom(roomId: string): Promise<void> {
     }
   });
 
+  next.on("broadcast", { event: "push_hello" }, ({ payload }) => {
+    const id = payload?.deviceId;
+    if (typeof id !== "string" || !id || id === getDeviceId()) return;
+    const ownSub = getOwnPushSubscription();
+    if (ownSub) void broadcastPushSubscription(ownSub, next);
+  });
+
   channels.set(roomId, next);
   subscribedRooms.delete(roomId);
   const subscription = new Promise<void>((resolve) => {
@@ -304,6 +311,17 @@ function subscribeAlertRoom(roomId: string): Promise<void> {
         subscribedRooms.add(roomId);
         const ownSub = getOwnPushSubscription();
         if (ownSub) void broadcastPushSubscription(ownSub, next);
+        try {
+          void next
+            .send({
+              type: "broadcast",
+              event: "push_hello",
+              payload: { deviceId: getDeviceId() },
+            })
+            .catch(() => {});
+        } catch {
+          // ignore
+        }
         resolve();
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         subscribedRooms.delete(roomId);
