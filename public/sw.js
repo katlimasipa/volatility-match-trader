@@ -3,7 +3,7 @@
  * Handles offline caching, background sync, and cross-device push notifications.
  */
 
-const CACHE_NAME = 'thdpst-matches-v3';
+const CACHE_NAME = 'thdpst-matches-v4';
 const STATIC_ASSETS = [
   '/',
   '/trade',
@@ -63,7 +63,8 @@ self.addEventListener('fetch', (event) => {
       url.searchParams.has('acct1') ||
       url.searchParams.has('error');
 
-    if (isOAuthReturn) {
+    // Never cache OAuth returns or the dedicated callback route
+    if (isOAuthReturn || url.pathname.startsWith('/deriv/callback')) {
       event.respondWith(fetch(request));
       return;
     }

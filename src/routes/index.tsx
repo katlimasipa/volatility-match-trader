@@ -2,7 +2,12 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { session, getDerivClientId, derivRedirectUri, isOAuthOriginReady } from "@/lib/deriv-config";
-import { startDerivAuth, handleIncomingOAuth, authorizeWithToken } from "@/lib/deriv-auth";
+import {
+  startDerivAuth,
+  handleIncomingOAuth,
+  authorizeWithToken,
+  isStandaloneIosPwa,
+} from "@/lib/deriv-auth";
 import { isIOS, isRunningStandalone } from "@/lib/pwa";
 
 export const Route = createFileRoute("/")({
@@ -104,23 +109,23 @@ function SignIn() {
   };
 
   const onConnectDeriv = async () => {
-    // iOS installed PWA cannot share storage with Safari after OAuth redirect
-    if (isRunningStandalone() && isIOS()) {
+    // iOS home-screen apps open OAuth in Safari and cannot return into the PWA
+    if (isStandaloneIosPwa() || (isRunningStandalone() && isIOS())) {
       setShowTokenInput(true);
       setMsg(
-        "On the iPhone home-screen app, paste an API token below. Auth 2.0 opens in Safari and cannot return here."
+        "On the iPhone app, paste a Deriv API token below (Read + Trade). Auth 2.0 login opens in Safari and cannot return here."
       );
       return;
     }
     if (!isOAuthOriginReady()) {
       setShowTokenInput(true);
       setMsg(
-        `Auth 2.0 is registered for ${derivRedirectUri()}. Open that site for one-tap login, or paste an API token below.`
+        `Auth 2.0 login works on ${derivRedirectUri()}. Open that link, or paste an API token below.`
       );
       return;
     }
     setBusy(true);
-    setMsg("Connecting to Deriv Auth 2.0...");
+    setMsg("Opening Deriv Auth 2.0...");
     try {
       await startDerivAuth({
         clientId: getDerivClientId(),
@@ -128,7 +133,7 @@ function SignIn() {
       });
     } catch (e) {
       setBusy(false);
-      setMsg(e instanceof Error ? e.message : "Failed to start Deriv authorization.");
+      setMsg(e instanceof Error ? e.message : "Could not start Deriv login.");
     }
   };
 
@@ -173,7 +178,7 @@ function SignIn() {
             <span className="text-zinc-300">Matches terminal</span>
           </h1>
           <p className="max-w-md text-sm leading-relaxed text-zinc-400">
-            Connect with Deriv Auth 2.0, read the last 1,000 digits, and place live DIGITMATCH trades. Your Deriv balance updates on every buy.
+            Sign in with Deriv Auth 2.0, scan the last 1,000 digits, and place live DIGITMATCH trades. Your balance updates on every trade in the app and on Deriv.
           </p>
         </div>
 
@@ -239,16 +244,15 @@ function SignIn() {
               }}
               className="w-full border border-zinc-800 bg-zinc-900/60 py-2.5 font-mono text-xs uppercase tracking-wider text-teal-400 hover:border-zinc-700 hover:text-teal-300 transition-colors"
             >
-              {showTokenInput ? "Close Token Authorization" : "Authorize via Deriv API Token (iOS / PWA)"}
+              {showTokenInput ? "Hide token login" : "Use API token (iPhone app / backup)"}
             </button>
 
-            {/* Direct Token Authorization Card (Guaranteed on iOS PWA) */}
             {showTokenInput && (
               <form onSubmit={handleAuthorizeToken} className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 space-y-3">
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="font-mono text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
-                      Deriv API Token
+                      Deriv API token
                     </span>
                     <a
                       href="https://app.deriv.com/account/api-token"
@@ -256,11 +260,11 @@ function SignIn() {
                       rel="noopener noreferrer"
                       className="font-mono text-[10px] text-teal-400 hover:underline"
                     >
-                      Create Token ↗
+                      Create token ↗
                     </a>
                   </div>
                   <p className="font-mono text-[10px] text-zinc-500 leading-tight">
-                    On iOS PWA or mobile: Generate a token in Deriv Settings &gt; API Token (select <strong>Read</strong> + <strong>Trade</strong>) and paste it below for instant access.
+                    Required on the iPhone home-screen app. In Deriv, open Settings → API token, enable Read and Trade, then paste it here.
                   </p>
                 </div>
 

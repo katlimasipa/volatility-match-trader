@@ -5,10 +5,13 @@
 
 import { DerivWS, DERIV_FALLBACK_WS_URL } from './deriv-ws';
 import {
+  fetchOptionsAccountsViaRest,
   getManualToken,
   getStoredAuthInfo,
   HARDCODED_APP_ID,
   looksLikeClassicApiToken,
+  refreshAccessToken,
+  storeAccounts,
   type DerivAccount,
 } from './deriv-auth';
 import { getDerivClientId } from './deriv-config';
@@ -40,6 +43,30 @@ const CLASSIC_WS_APP_IDS = ['1089', getDerivClientId(), HARDCODED_APP_ID].filter
   (v, i, a) => Boolean(v) && /^\d+$/.test(v) && a.indexOf(v) === i
 );
 
+function isFakeAccountId(id: string): boolean {
+  return id === 'VRTC1029384' || id === 'CR91945350';
+}
+
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Resolve a usable access token, refreshing Auth 2.0 when close to expiry.
+ */
+export async function resolveTradingToken(): Promise<string | null> {
+  const info = getStoredAuthInfo();
+  const manual = getManualToken();
+  const now = Math.floor(Date.now() / 1000);
+
+  if (info?.refresh_token && info.expires_at && info.expires_at <= now + 90) {
+    const refreshed = await refreshAccessToken(getDerivClientId());
+    if (refreshed?.access_token) return refreshed.access_token;
+  }
+
+  return info?.access_token || manual || null;
+}
+
 /**
  * Fetch an authenticated Options WebSocket URL (Deriv Auth 2.0 OTP).
  */
@@ -57,10 +84,8 @@ export async function fetchAuthenticatedWsUrl(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      'Deriv-App-ID': appId || HARDCODED_APP_ID,
     };
-    if (appId) {
-      headers['Deriv-App-ID'] = appId;
-    }
 
     const response = await fetch(
       `https://api.derivws.com/trading/v1/options/accounts/${encodeURIComponent(cleanId)}/otp`,
@@ -84,10 +109,6 @@ export async function fetchAuthenticatedWsUrl(
   }
 }
 
-function isFakeAccountId(id: string): boolean {
-  return id === 'VRTC1029384' || id === 'CR91945350';
-}
-
 /**
  * Authorized trading connection used for balance + contract execution.
  * Market ticks stay on the public feed; this socket is for money movement.
@@ -107,6 +128,7 @@ export class DerivTradingSession {
   >();
   private ready = false;
   private lastBalance: number | null = null;
+  private balancePollTimer: ReturnType<typeof setInterval> | null = null;
 
   onBalance(listener: BalanceListener): () => void {
     this.balanceListeners.add(listener);
@@ -154,6 +176,73 @@ export class DerivTradingSession {
     this.contractListeners.forEach((fn) => fn(result));
   }
 
+  private startBalancePoll() {
+    this.stopBalancePoll();
+    this.balancePollTimer = setInterval(() => {
+      if (!this.ready || this.disposed) return;
+      // Socket first; REST only if the socket has no balance yet
+      this.refreshBalance()
+        .then(() => {
+          if (this.lastBalance === null) return this.syncBalanceFromRest();
+          return null;
+        })
+        .catch(() => {});
+    }, 15000);
+  }
+
+  private stopBalancePoll() {
+    if (this.balancePollTimer) {
+      clearInterval(this.balancePollTimer);
+      this.balancePollTimer = null;
+    }
+  }
+
+  /**
+   * Pull live balance from the trading socket and/or Auth 2.0 REST accounts.
+   * REST is the source of truth when the socket omits balance_after.
+   */
+  async syncBalance(preferRest = false): Promise<number | null> {
+    if (this.disposed) return this.lastBalance;
+
+    if (!preferRest) {
+      await this.refreshBalance();
+      if (this.lastBalance !== null) {
+        // Still confirm against REST so the UI matches Deriv after buys
+        const restBal = await this.syncBalanceFromRest();
+        return restBal ?? this.lastBalance;
+      }
+    }
+
+    const fromRest = await this.syncBalanceFromRest();
+    if (fromRest !== null) return fromRest;
+    await this.refreshBalance();
+    return this.lastBalance;
+  }
+
+  private async syncBalanceFromRest(): Promise<number | null> {
+    const token = await resolveTradingToken();
+    if (!token || !this.accountId) return null;
+
+    try {
+      const rest = await fetchOptionsAccountsViaRest(token, getDerivClientId());
+      if (!rest.success || rest.accounts.length === 0) return null;
+
+      storeAccounts(rest.accounts);
+      const match =
+        rest.accounts.find((a) => a.account_id.toUpperCase() === this.accountId!.toUpperCase()) ||
+        rest.accounts[0];
+      if (!match) return null;
+
+      const bal = Number(match.balance);
+      if (!Number.isFinite(bal)) return null;
+      this.emitBalance(match.account_id, bal, match.currency || this.currency);
+      return bal;
+    } catch (err) {
+      console.warn('[deriv-trading] REST balance sync failed:', err);
+      return null;
+    }
+  }
+
   async connect(account: DerivAccount): Promise<boolean> {
     if (this.disposed) return false;
     if (isFakeAccountId(account.account_id)) {
@@ -167,7 +256,7 @@ export class DerivTradingSession {
     this.ready = false;
     this.emitStatus('connecting');
 
-    const token = getStoredAuthInfo()?.access_token || getManualToken();
+    const token = await resolveTradingToken();
     if (!token) {
       this.emitStatus('error', 'No Deriv token. Sign in with Auth 2.0 or paste an API token.');
       return false;
@@ -245,6 +334,10 @@ export class DerivTradingSession {
       this.mode = mode;
       this.ready = true;
       this.emitStatus('ready', mode);
+      this.startBalancePoll();
+
+      // Confirm opening balance against REST (Auth 2.0 source of truth)
+      this.syncBalanceFromRest().catch(() => {});
       return true;
     } catch (err) {
       console.warn('[deriv-trading] openSocket failed:', url, err);
@@ -298,6 +391,9 @@ export class DerivTradingSession {
       const sold = Boolean(poc.is_sold) || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost';
       if (!sold || !pending) return;
 
+      // Remove first so duplicate sold messages do not double-settle
+      this.openContracts.delete(poc.contract_id);
+
       const profit = Number(poc.profit ?? 0);
       const buyPrice = Number(poc.buy_price ?? pending.stake);
       const payout = Number(poc.payout ?? (profit > 0 ? buyPrice + profit : 0));
@@ -317,21 +413,32 @@ export class DerivTradingSession {
         }
       }
 
-      const result: ContractResult = {
-        contractId: poc.contract_id,
-        won,
-        profit,
-        payout,
-        buyPrice,
-        exitDigit,
-        status: poc.status || (won ? 'won' : 'lost'),
-        balanceAfter: this.lastBalance ?? undefined,
-      };
+      // Stake already left the account on buy (lastBalance is post-buy).
+      // After settle: final = lastBalance + buyPrice + profit
+      // (loss: profit ≈ -buyPrice → no change; win: credits payout).
+      const settleAdjust =
+        this.lastBalance !== null ? roundMoney(this.lastBalance + buyPrice + profit) : null;
 
-      this.openContracts.delete(poc.contract_id);
-      pending.resolve(result);
-      this.emitContract(result);
-      this.refreshBalance().catch(() => {});
+      void (async () => {
+        if (settleAdjust !== null && this.accountId) {
+          this.emitBalance(this.accountId, settleAdjust, this.currency);
+        }
+
+        const synced = await this.syncBalance(true);
+        const result: ContractResult = {
+          contractId: poc.contract_id!,
+          won,
+          profit,
+          payout,
+          buyPrice,
+          exitDigit,
+          status: poc.status || (won ? 'won' : 'lost'),
+          balanceAfter: synced ?? this.lastBalance ?? settleAdjust ?? undefined,
+        };
+
+        pending.resolve(result);
+        this.emitContract(result);
+      })();
     });
   }
 
@@ -381,8 +488,10 @@ export class DerivTradingSession {
       };
       if (this.mode === 'otp') {
         alt['underlying_symbol'] = CLASSIC_SYMBOL;
+        alt['symbol'] = CLASSIC_SYMBOL;
       } else {
         alt['underlying_symbol'] = OPTIONS_SYMBOL;
+        alt['symbol'] = OPTIONS_SYMBOL;
       }
       try {
         proposalRes = await this.ws.send(alt);
@@ -428,13 +537,15 @@ export class DerivTradingSession {
     }
 
     const loginid = this.accountId;
+    const buyPrice = Number(buy.buy_price ?? ask);
     if (buy.balance_after !== undefined && buy.balance_after !== null && loginid) {
       this.emitBalance(loginid, Number(buy.balance_after), currency);
     } else if (loginid && this.lastBalance !== null) {
-      this.emitBalance(loginid, Math.round((this.lastBalance - amount) * 100) / 100, currency);
+      this.emitBalance(loginid, roundMoney(this.lastBalance - buyPrice), currency);
     }
 
-    this.refreshBalance().catch(() => {});
+    // Confirm debit with Deriv (socket + REST)
+    await this.syncBalance(false);
 
     const contractId = buy.contract_id;
     await this.ws.send({
@@ -468,10 +579,24 @@ export class DerivTradingSession {
     if (!this.ws || !this.ready) return;
     try {
       const balRes = await this.ws.send<{
-        balance?: { balance?: number | string; loginid?: string; currency?: string };
+        balance?: {
+          balance?: number | string;
+          loginid?: string;
+          currency?: string;
+          accounts?: Record<string, { balance: number | string; currency: string }>;
+        };
       }>({ balance: 1, subscribe: 1 });
       const bal = balRes.balance;
-      if (bal && bal.balance !== undefined && bal.balance !== null) {
+      if (!bal) return;
+
+      if (bal.accounts) {
+        for (const [loginid, row] of Object.entries(bal.accounts)) {
+          this.emitBalance(loginid, Number(row.balance), row.currency || this.currency);
+        }
+        return;
+      }
+
+      if (bal.balance !== undefined && bal.balance !== null) {
         const loginid = bal.loginid || this.accountId || '';
         if (loginid) {
           this.emitBalance(loginid, Number(bal.balance), bal.currency || this.currency);
@@ -483,6 +608,7 @@ export class DerivTradingSession {
   }
 
   private disconnectSocket() {
+    this.stopBalancePoll();
     if (this.ws) {
       this.ws.dispose();
       this.ws = null;

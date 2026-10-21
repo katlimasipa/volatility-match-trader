@@ -5,9 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-display: "Syne", "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Plus Jakarta Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-display: "IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: var(--radius);
@@ -66,7 +66,7 @@
   input[type="number"] { -moz-appearance: textfield; }
 }
 
-@utility font-display { font-family: var(--font-display); letter-spacing: -0.03em; font-weight: 600; }
+@utility font-display { font-family: var(--font-display); letter-spacing: -0.02em; font-weight: 600; }
 @utility font-mono { font-family: var(--font-mono); }
 @utility num {
   font-variant-numeric: tabular-nums;

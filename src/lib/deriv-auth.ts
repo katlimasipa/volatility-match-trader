@@ -83,7 +83,59 @@ export async function sha256Base64url(input: string): Promise<string> {
 }
 
 /**
- * Storage helpers (using both localStorage and sessionStorage for iOS PWA persistence)
+ * Dual-write helpers so Auth 2.0 survives PWA reloads and Safari ITP quirks.
+ * iOS home-screen apps still cannot share storage with Safari after OAuth —
+ * for those, paste an API / Auth 2.0 token instead.
+ */
+function readDual(key: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return localStorage.getItem(key) || sessionStorage.getItem(key);
+  } catch {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function writeDual(key: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+  try {
+    sessionStorage.setItem(key, value);
+  } catch {}
+}
+
+function removeDual(key: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(key);
+  } catch {}
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
+}
+
+/** True when OAuth redirect cannot return into this app shell (iOS installed PWA). */
+export function isStandaloneIosPwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  const standalone =
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.matchMedia('(display-mode: fullscreen)').matches ||
+    (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+  const ua = window.navigator.userAgent.toLowerCase();
+  const ios =
+    /iphone|ipad|ipod/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return standalone && ios;
+}
+
+/**
+ * Storage helpers (using both localStorage and sessionStorage for PWA persistence)
  */
 export function getSavedAppId(): string {
   if (typeof window === 'undefined') return HARDCODED_APP_ID;
@@ -97,22 +149,12 @@ export function setSavedAppId(appId: string): void {
 
 export function getStoredAuthInfo(): AuthInfo | null {
   if (typeof window === 'undefined') return null;
-  const raw =
-    localStorage.getItem(STORAGE_KEYS.AUTH_INFO) ||
-    (() => {
-      try {
-        return sessionStorage.getItem(STORAGE_KEYS.AUTH_INFO);
-      } catch {
-        return null;
-      }
-    })();
+  const raw = readDual(STORAGE_KEYS.AUTH_INFO);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as AuthInfo;
-    // Re-hydrate localStorage if only sessionStorage had it (PWA edge cases)
-    if (!localStorage.getItem(STORAGE_KEYS.AUTH_INFO)) {
-      localStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
-    }
+    // Re-hydrate both stores if only one had it (PWA / Safari edge cases)
+    writeDual(STORAGE_KEYS.AUTH_INFO, raw);
     return parsed;
   } catch {
     return null;
@@ -121,20 +163,17 @@ export function getStoredAuthInfo(): AuthInfo | null {
 
 export function storeAuthInfo(info: AuthInfo): void {
   if (typeof window === 'undefined') return;
-  const raw = JSON.stringify(info);
-  localStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
-  // Mirror into sessionStorage so Android / desktop PWAs keep the session across reloads
-  try {
-    sessionStorage.setItem(STORAGE_KEYS.AUTH_INFO, raw);
-  } catch {}
+  writeDual(STORAGE_KEYS.AUTH_INFO, JSON.stringify(info));
 }
 
 export function getStoredAccounts(): DerivAccount[] {
   if (typeof window === 'undefined') return [];
-  const raw = localStorage.getItem(STORAGE_KEYS.ACCOUNTS);
+  const raw = readDual(STORAGE_KEYS.ACCOUNTS);
   if (!raw) return [];
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw) as DerivAccount[];
+    writeDual(STORAGE_KEYS.ACCOUNTS, raw);
+    return parsed;
   } catch {
     return [];
   }
@@ -142,17 +181,17 @@ export function getStoredAccounts(): DerivAccount[] {
 
 export function storeAccounts(accounts: DerivAccount[]): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
+  writeDual(STORAGE_KEYS.ACCOUNTS, JSON.stringify(accounts));
 }
 
 export function getActiveAccountId(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem(STORAGE_KEYS.ACTIVE_ACCOUNT_ID);
+  return readDual(STORAGE_KEYS.ACTIVE_ACCOUNT_ID);
 }
 
 export function setActiveAccountId(accountId: string, explicitType?: 'demo' | 'real'): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEYS.ACTIVE_ACCOUNT_ID, accountId);
+  writeDual(STORAGE_KEYS.ACTIVE_ACCOUNT_ID, accountId);
   let type = explicitType;
   if (!type) {
     const stored = getStoredAccounts();
@@ -163,44 +202,39 @@ export function setActiveAccountId(accountId: string, explicitType?: 'demo' | 'r
       const isDemo =
         accountId.toUpperCase().startsWith('VRTC') ||
         accountId.toUpperCase().startsWith('V') ||
-        accountId.toUpperCase().startsWith('DOT');
+        accountId.toUpperCase().startsWith('DOT') ||
+        accountId.toUpperCase().startsWith('VRW');
       type = isDemo ? 'demo' : 'real';
     }
   }
-  localStorage.setItem(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE, type);
+  writeDual(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE, type);
 }
 
 export function getActiveAccountType(): 'demo' | 'real' {
   if (typeof window === 'undefined') return 'demo';
-  return (localStorage.getItem(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE) as 'demo' | 'real') || 'demo';
+  return (readDual(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE) as 'demo' | 'real') || 'demo';
 }
 
 export function getManualToken(): string {
   if (typeof window === 'undefined') return '';
-  return localStorage.getItem(STORAGE_KEYS.MANUAL_TOKEN) || '';
+  return readDual(STORAGE_KEYS.MANUAL_TOKEN) || '';
 }
 
 export function setManualToken(token: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEYS.MANUAL_TOKEN, token.trim());
+  writeDual(STORAGE_KEYS.MANUAL_TOKEN, token.trim());
 }
 
 export function clearAllDerivAuth(): void {
   if (typeof window === 'undefined') return;
-  localStorage.removeItem(STORAGE_KEYS.AUTH_INFO);
-  localStorage.removeItem(STORAGE_KEYS.ACCOUNTS);
-  localStorage.removeItem(STORAGE_KEYS.ACTIVE_ACCOUNT_ID);
-  localStorage.removeItem(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE);
-  localStorage.removeItem(STORAGE_KEYS.MANUAL_TOKEN);
-  localStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
-  localStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
-  localStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
-  try {
-    sessionStorage.removeItem(STORAGE_KEYS.AUTH_INFO);
-    sessionStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
-    sessionStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
-    sessionStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
-  } catch {}
+  removeDual(STORAGE_KEYS.AUTH_INFO);
+  removeDual(STORAGE_KEYS.MANUAL_TOKEN);
+  removeDual(STORAGE_KEYS.CSRF_TOKEN);
+  removeDual(STORAGE_KEYS.CODE_VERIFIER);
+  removeDual(STORAGE_KEYS.REDIRECT_URI);
+  removeDual(STORAGE_KEYS.ACCOUNTS);
+  removeDual(STORAGE_KEYS.ACTIVE_ACCOUNT_ID);
+  removeDual(STORAGE_KEYS.ACTIVE_ACCOUNT_TYPE);
 }
 
 /**
@@ -213,19 +247,12 @@ export async function startDerivAuth(config: AuthConfig): Promise<void> {
   const codeVerifier = generateRandomBase64url(48);
   const codeChallenge = await sha256Base64url(codeVerifier);
 
-  // Encode verifier into state so it is 100% preserved through OAuth return query
+  // Encode verifier into state so it survives PWA / cross-domain redirects
   const combinedState = `${csrfToken}.${codeVerifier}`;
 
-  // Store in BOTH localStorage and sessionStorage as local fallback
-  localStorage.setItem(STORAGE_KEYS.CSRF_TOKEN, csrfToken);
-  localStorage.setItem(STORAGE_KEYS.CODE_VERIFIER, codeVerifier);
-  localStorage.setItem(STORAGE_KEYS.REDIRECT_URI, config.redirectUri);
-
-  try {
-    sessionStorage.setItem(STORAGE_KEYS.CSRF_TOKEN, csrfToken);
-    sessionStorage.setItem(STORAGE_KEYS.CODE_VERIFIER, codeVerifier);
-    sessionStorage.setItem(STORAGE_KEYS.REDIRECT_URI, config.redirectUri);
-  } catch {}
+  writeDual(STORAGE_KEYS.CSRF_TOKEN, csrfToken);
+  writeDual(STORAGE_KEYS.CODE_VERIFIER, codeVerifier);
+  writeDual(STORAGE_KEYS.REDIRECT_URI, config.redirectUri);
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -235,10 +262,11 @@ export async function startDerivAuth(config: AuthConfig): Promise<void> {
     state: combinedState,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
-    prompt: 'login', // Forces Deriv to authenticate for this OAuth request and prevent session_home drop
+    prompt: 'login',
   });
 
-  window.location.href = `${DERIV_ENDPOINTS.authBase}/auth?${params.toString()}`;
+  // Same-document navigation keeps Android / desktop PWA session storage
+  window.location.assign(`${DERIV_ENDPOINTS.authBase}/auth?${params.toString()}`);
 }
 
 /**
@@ -261,30 +289,21 @@ export async function exchangeCodeForTokens(
   }
 
   const codeVerifier =
-    codeVerifierFromState ||
-    localStorage.getItem(STORAGE_KEYS.CODE_VERIFIER) ||
-    sessionStorage.getItem(STORAGE_KEYS.CODE_VERIFIER);
+    codeVerifierFromState || readDual(STORAGE_KEYS.CODE_VERIFIER) || '';
 
-  // Deriv requires exact registered redirect URI string used in initial request
+  // Deriv requires the exact registered redirect URI used in the first request
   const effectiveRedirectUri =
     redirectUri ||
-    localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
-    sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
+    readDual(STORAGE_KEYS.REDIRECT_URI) ||
     (typeof import.meta !== 'undefined' && import.meta.env?.['VITE_DERIV_REDIRECT_URI']) ||
     'https://thdpstmatches.vercel.app/';
 
-  // Clean up verifiers
-  localStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
-  localStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
-  localStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
-  try {
-    sessionStorage.removeItem(STORAGE_KEYS.CSRF_TOKEN);
-    sessionStorage.removeItem(STORAGE_KEYS.CODE_VERIFIER);
-    sessionStorage.removeItem(STORAGE_KEYS.REDIRECT_URI);
-  } catch {}
+  removeDual(STORAGE_KEYS.CSRF_TOKEN);
+  removeDual(STORAGE_KEYS.CODE_VERIFIER);
+  removeDual(STORAGE_KEYS.REDIRECT_URI);
 
   if (!codeVerifier) {
-    throw new Error('Code verifier expired or missing. Please try connecting again or use an API Token.');
+    throw new Error('Login session expired. Sign in again, or paste an API token.');
   }
 
   const body = new URLSearchParams({
@@ -815,9 +834,7 @@ export async function handleIncomingOAuth(): Promise<{ handled: boolean; success
   if (code) {
     try {
       const storedRedirect =
-        localStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
-        sessionStorage.getItem(STORAGE_KEYS.REDIRECT_URI) ||
-        'https://thdpstmatches.vercel.app/';
+        readDual(STORAGE_KEYS.REDIRECT_URI) || 'https://thdpstmatches.vercel.app/';
       const authInfo = await exchangeCodeForTokens(code, state, HARDCODED_APP_ID, storedRedirect);
       try {
         if (authInfo.access_token) {

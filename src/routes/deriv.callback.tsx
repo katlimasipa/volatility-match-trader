@@ -9,7 +9,7 @@ import {
   authorizeWithToken,
   type DerivAccount,
 } from "@/lib/deriv-auth";
-import { getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
+import { getDerivClientId, derivRedirectUri, session } from "@/lib/deriv-config";
 
 export const Route = createFileRoute("/deriv/callback")({
   ssr: false,
@@ -113,40 +113,38 @@ function Callback() {
           console.warn("Account list retrieval note:", accErr);
         }
 
-        // Clean query parameters from URL
-        sessionStorage.setItem("v100_user_email", "deriv_trader");
-        localStorage.setItem("v100_user_email", "deriv_trader");
+        session.set("deriv_trader");
         window.history.replaceState({}, document.title, window.location.pathname);
         navigate({ to: "/trade" });
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to complete Deriv sign-in.");
+        setError(err instanceof Error ? err.message : "Could not finish Deriv sign-in.");
       }
     })();
   }, [navigate]);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-black px-6 text-white font-mono">
-      <div className="max-w-md w-full space-y-6 border border-zinc-800 bg-zinc-950 p-6 sm:p-8 text-center rounded-xl">
+    <main className="flex min-h-screen items-center justify-center bg-black px-6 text-white font-sans">
+      <div className="max-w-md w-full space-y-6 border border-zinc-800 bg-zinc-950 p-6 sm:p-8 text-center">
         <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Deriv Auth 2.0</span>
-        <h1 className="text-xl sm:text-2xl tracking-tight">
-          {error ? "Connection Failed" : "Authenticating Account"}
+        <h1 className="font-display text-xl sm:text-2xl tracking-tight">
+          {error ? "Sign-in failed" : "Connecting your account"}
         </h1>
-        <p className="text-xs text-zinc-400 leading-relaxed">
+        <p className="text-xs text-zinc-400 leading-relaxed font-mono">
           {error ?? step}
         </p>
         {error && (
           <div className="pt-4 space-y-3">
             <Link
               to="/trade"
-              className="inline-flex h-11 w-full items-center justify-center bg-teal-600 px-6 text-xs uppercase tracking-wider text-white font-bold hover:bg-teal-500 transition-colors rounded-lg shadow-sm"
+              className="inline-flex h-11 w-full items-center justify-center bg-white px-6 text-xs uppercase tracking-wider text-black font-semibold hover:bg-zinc-200 transition-colors"
             >
-              Enter Terminal &amp; Use API Token
+              Open terminal and use API token
             </Link>
             <Link
               to="/"
-              className="inline-flex h-10 w-full items-center justify-center border border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 hover:text-white transition-colors rounded-lg"
+              className="inline-flex h-10 w-full items-center justify-center border border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 hover:text-white transition-colors"
             >
-              Back to Sign In
+              Back to sign in
             </Link>
           </div>
         )}
@@ -154,4 +152,3 @@ function Callback() {
     </main>
   );
 }
-export default Callback;

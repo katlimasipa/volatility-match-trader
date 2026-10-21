@@ -20,6 +20,7 @@ import {
   handleIncomingOAuth,
   authorizeWithToken,
   getManualToken,
+  isStandaloneIosPwa,
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
@@ -352,6 +353,40 @@ export function TradeTerminal() {
     configuredMarkup,
   };
 
+  const applyBalanceToAccounts = useCallback((loginid: string, balance: number, currency?: string) => {
+    const idNorm = String(loginid).toUpperCase();
+    setAccounts((prev) => {
+      let matched = false;
+      const updated = prev.map((acc) => {
+        if (acc.account_id.toUpperCase() === idNorm) {
+          matched = true;
+          return {
+            ...acc,
+            balance: Number(balance).toFixed(2),
+            currency: currency || acc.currency,
+          };
+        }
+        return acc;
+      });
+      if (!matched) {
+        const isDemo =
+          idNorm.startsWith("VRTC") ||
+          idNorm.startsWith("V") ||
+          idNorm.startsWith("DOT") ||
+          idNorm.startsWith("VRW");
+        updated.push({
+          account_id: loginid,
+          account_type: isDemo ? "demo" : "real",
+          currency: currency || "USD",
+          balance: Number(balance).toFixed(2),
+          status: "active",
+        });
+      }
+      storeAccounts(updated);
+      return updated;
+    });
+  }, []);
+
   // Refresh live balances from Deriv (never keep stale local demo balances)
   const refreshDerivBalances = useCallback(async () => {
     const manualToken = getManualToken();
@@ -361,7 +396,7 @@ export function TradeTerminal() {
 
     try {
       if (tradingRef.current?.isReady()) {
-        await tradingRef.current.refreshBalance();
+        await tradingRef.current.syncBalance(true);
         return;
       }
       const res = await authorizeWithToken(token);
@@ -583,34 +618,8 @@ export function TradeTerminal() {
     tradingRef.current = session;
 
     const unsubBal = session.onBalance((loginid, balance, currency) => {
+      applyBalanceToAccounts(loginid, balance, currency);
       const idNorm = String(loginid).toUpperCase();
-      setAccounts((prev) => {
-        let matched = false;
-        const updated = prev.map((acc) => {
-          if (acc.account_id.toUpperCase() === idNorm) {
-            matched = true;
-            return {
-              ...acc,
-              balance: Number(balance).toFixed(2),
-              currency: currency || acc.currency,
-            };
-          }
-          return acc;
-        });
-        if (!matched) {
-          const isDemo =
-            idNorm.startsWith("VRTC") || idNorm.startsWith("V") || idNorm.startsWith("DOT");
-          updated.push({
-            account_id: loginid,
-            account_type: isDemo ? "demo" : "real",
-            currency: currency || "USD",
-            balance: Number(balance).toFixed(2),
-            status: "active",
-          });
-        }
-        storeAccounts(updated);
-        return updated;
-      });
       // Keep the UI on the account Deriv actually authorized
       setActiveId((cur) => {
         if (cur && cur.toUpperCase() === idNorm) return cur;
@@ -653,14 +662,15 @@ export function TradeTerminal() {
       if (tradingRef.current === session) tradingRef.current = null;
       setTradingReady(false);
     };
-  }, [activeAccount?.account_id, isConnectedToDeriv]);
+  }, [activeAccount?.account_id, isConnectedToDeriv, applyBalanceToAccounts]);
 
   function settleTradeResult(
     p: PendingTrade,
     won: boolean,
     pnl: number,
     resultDigit: number,
-    updateLocalBalance: boolean
+    updateLocalBalance: boolean,
+    balanceAfter?: number
   ) {
     const s = stateRef.current;
 
@@ -700,7 +710,14 @@ export function TradeTerminal() {
         return updated;
       });
     } else {
-      tradingRef.current?.refreshBalance().catch(() => {});
+      const loginid = tradingRef.current?.getAccountId() || s.activeId || activeId;
+      if (loginid && typeof balanceAfter === "number" && Number.isFinite(balanceAfter)) {
+        applyBalanceToAccounts(loginid, balanceAfter);
+      }
+      // Re-read from Deriv so the UI matches the real account after every trade
+      tradingRef.current?.syncBalance(true).catch(() => {
+        refreshDerivBalances();
+      });
     }
 
     const totalPnl = updatedTrades.reduce((acc, t) => acc + t.pnl, 0);
@@ -761,7 +778,14 @@ export function TradeTerminal() {
         const pnl = Number(result.profit);
         const resultDigit =
           typeof result.exitDigit === "number" ? result.exitDigit : result.won ? p.target : -1;
-        settleTradeResult(p, result.won || pnl > 0, pnl, resultDigit, false);
+        settleTradeResult(
+          p,
+          result.won || pnl > 0,
+          pnl,
+          resultDigit,
+          false,
+          result.balanceAfter
+        );
       })
       .catch((err: Error) => {
         pending.current = null;
@@ -983,17 +1007,17 @@ export function TradeTerminal() {
 
   async function handleDirectOAuth() {
     try {
-      if (isRunningStandalone() && isIOS()) {
+      if (isStandaloneIosPwa() || (isRunningStandalone() && isIOS())) {
         setShowConnectModal(true);
         setTokenError(
-          "On iPhone installed apps, use an API token below. Safari and the app do not share login storage."
+          "On the iPhone app, paste an API token below. Safari and the installed app do not share login."
         );
         return;
       }
       if (!isOAuthOriginReady()) {
         setShowConnectModal(true);
         setTokenError(
-          `Auth 2.0 redirect is registered for ${derivRedirectUri()}. Open that URL, or paste an API token here.`
+          `Auth 2.0 works on ${derivRedirectUri()}. Open that link, or paste an API token here.`
         );
         return;
       }
@@ -1002,7 +1026,7 @@ export function TradeTerminal() {
         redirectUri: derivRedirectUri(),
       });
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to start Deriv Auth 2.0");
+      alert(e instanceof Error ? e.message : "Could not start Deriv Auth 2.0");
     }
   }
 
@@ -2193,18 +2217,17 @@ export function TradeTerminal() {
         </div>
       </div>
 
-      {/* 4. Connect Deriv Account & API Token Modal (Guaranteed Permission on iOS PWA) */}
       {showConnectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-md rounded-xl border p-5 sm:p-6 space-y-5 shadow-2xl ${
+          <div className={`w-full max-w-md border p-5 sm:p-6 space-y-5 shadow-2xl ${
             isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
           }`}>
             <div className={`flex items-center justify-between border-b pb-3 ${
               isDark ? "border-zinc-900" : "border-slate-200"
             }`}>
               <div className="space-y-0.5">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Account Permission</span>
-                <h3 className="text-sm font-bold uppercase tracking-wider">Connect Deriv Account</h3>
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Deriv</span>
+                <h3 className="font-display text-sm font-semibold uppercase tracking-wider">Connect account</h3>
               </div>
               <button
                 onClick={() => {
@@ -2212,30 +2235,29 @@ export function TradeTerminal() {
                   setTokenError(null);
                   setTokenSuccess(null);
                 }}
-                className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
+                className="text-xs font-semibold uppercase text-zinc-500 hover:text-white"
               >
                 [X]
               </button>
             </div>
 
-            {/* Option A: Direct API Token (Instant Permission, Guaranteed on iOS PWA) */}
             <form onSubmit={handleAuthorizeWithTokenSubmit} className="space-y-3">
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-teal-400">
-                    Method 1: Deriv API Token (Recommended)
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                    API token
                   </span>
                   <a
                     href="https://app.deriv.com/account/api-token"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-[11px] text-teal-400 hover:underline"
+                    className="text-[11px] text-zinc-400 hover:text-white hover:underline"
                   >
-                    Get Token ↗
+                    Get token ↗
                   </a>
                 </div>
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Best for iOS PWA, mobile & desktop: In Deriv, go to <strong>Account Settings &gt; API Token</strong>, check <strong>Read</strong> and <strong>Trade</strong>, create a token, and paste it below:
+                  Required on the iPhone home-screen app. In Deriv → Settings → API token, enable Read and Trade, then paste it here.
                 </p>
               </div>
 
@@ -2243,21 +2265,21 @@ export function TradeTerminal() {
                 type="text"
                 value={apiTokenInput}
                 onChange={(e) => setApiTokenInput(e.target.value)}
-                placeholder="Paste your Deriv API Token"
-                className={`w-full rounded border px-3 py-2 text-xs font-mono outline-none ${
+                placeholder="Paste your Deriv API token"
+                className={`w-full border px-3 py-2 text-xs font-mono outline-none ${
                   isDark ? "border-zinc-800 bg-black text-white focus:border-zinc-600" : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
                 }`}
                 required
               />
 
               {tokenError && (
-                <p className="text-[11px] text-rose-400 leading-tight">
+                <p className="text-[11px] text-zinc-300 leading-tight">
                   {tokenError}
                 </p>
               )}
 
               {tokenSuccess && (
-                <p className="text-[11px] text-teal-400 font-bold leading-tight">
+                <p className="text-[11px] text-zinc-200 font-semibold leading-tight">
                   {tokenSuccess}
                 </p>
               )}
@@ -2265,9 +2287,9 @@ export function TradeTerminal() {
               <button
                 type="submit"
                 disabled={tokenBusy || !apiTokenInput.trim()}
-                className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors disabled:opacity-40 shadow-sm"
+                className="w-full bg-white py-2.5 text-xs font-semibold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
               >
-                {tokenBusy ? "Authorizing Token with Deriv..." : "Authorize Account"}
+                {tokenBusy ? "Connecting..." : "Connect with token"}
               </button>
             </form>
 
@@ -2277,22 +2299,21 @@ export function TradeTerminal() {
               <div className={`h-px flex-1 ${isDark ? "bg-zinc-800" : "bg-slate-200"}`} />
             </div>
 
-            {/* Option B: Deriv Auth 2.0 PKCE */}
             <div className="space-y-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-zinc-300">
-                Method 2: Deriv Auth 2.0 (Browser OAuth)
+              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                Deriv Auth 2.0
               </span>
               <button
                 type="button"
                 onClick={handleDirectOAuth}
-                className={`w-full rounded border py-2.5 text-xs font-bold uppercase tracking-wider transition-colors ${
+                className={`w-full border py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark ? "border-zinc-700 bg-zinc-900 text-white hover:bg-zinc-800" : "border-slate-300 bg-slate-100 text-slate-900 hover:bg-slate-200"
                 }`}
               >
-                Sign In with Deriv Auth 2.0
+                Sign in with Deriv Auth 2.0
               </button>
               <p className="text-[10px] text-zinc-500 text-center leading-tight">
-                Redirects to Deriv login. If using an installed iOS PWA, API Token (Method 1) is recommended.
+                Works in the browser and Android/desktop PWA on the live site. On iPhone installed apps, use an API token.
               </p>
             </div>
           </div>
