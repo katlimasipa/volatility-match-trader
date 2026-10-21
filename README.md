@@ -10,7 +10,7 @@ Monochrome Deriv Matches bot for **Volatility 100**. It reads the last 1,000 dig
 4. Buy DIGITMATCH using the second-most digit as the barrier (3 runs per cycle).
 5. On a loss, wait and re-analyse. Stop on take profit, stop loss, or end of cycle.
 6. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
-7. **Cross-device alerts** — turn notifications on on each device. When you start the bot (or a trade settles) on one phone/desktop, the others on the same Deriv account get the alert too (app must be open or in the background on that device).
+7. **Cross-device alerts** — turn **NOTIF** on on each device (same Deriv account). Bot start/stop and trade results sync live via Realtime, catch up when you reopen the app, and use Web Push when the app is closed (needs VAPID keys + the SQL migration in `supabase/migrations/`).
 
 ## Auth & PWA
 
@@ -35,6 +35,9 @@ Copy `.env` values as needed:
 - `VITE_DERIV_CLIENT_ID` — Auth 2.0 app / client id
 - `VITE_DERIV_REDIRECT_URI` — exact redirect URI from the Deriv portal
 - Supabase keys (optional email session)
+- `VITE_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push for closed-app alerts
+
+**One-time for closed-app push:** run `supabase/migrations/20261021_push_alerts.sql` in your Supabase SQL editor (Lovable Cloud), and set the VAPID keys on the host (Vercel / Lovable).
 
 ```sh
 npm test

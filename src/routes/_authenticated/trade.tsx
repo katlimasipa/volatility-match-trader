@@ -57,7 +57,13 @@ import {
   initAudioContext,
   isIOSSafariNotPWA,
 } from "@/lib/notifications";
-import { connectAlertSync, disconnectAlertSync, onSyncedAlert } from "@/lib/alert-sync";
+import {
+  catchUpAlerts,
+  connectAlertSync,
+  disconnectAlertSync,
+  onSyncedAlert,
+} from "@/lib/alert-sync";
+import { disableWebPush, enableWebPush } from "@/lib/push-client";
 import {
   isRunningStandalone,
   isIOS,
@@ -251,18 +257,34 @@ function TradeTerminal() {
     return () => unsub();
   }, []);
 
-  // Cross-device alerts: same Deriv account → Realtime room on every open device
+  // Cross-device alerts: same Deriv account → Realtime + catch-up + Web Push
   useEffect(() => {
     const accountId = activeAccount?.account_id || getActiveAccountId();
-    void connectAlertSync(accountId);
+    let cancelled = false;
+
+    void (async () => {
+      await connectAlertSync(accountId);
+      if (cancelled) return;
+      const missed = await catchUpAlerts(accountId);
+      if (cancelled) return;
+      for (const alert of missed) {
+        presentRemoteAlert(alert.title, alert.body, alert.kind);
+      }
+      if (notifsEnabled) {
+        await enableWebPush(accountId);
+      }
+    })();
+
     const unsub = onSyncedAlert((alert) => {
       presentRemoteAlert(alert.title, alert.body, alert.kind);
     });
+
     return () => {
+      cancelled = true;
       unsub();
       void disconnectAlertSync();
     };
-  }, [activeAccount?.account_id]);
+  }, [activeAccount?.account_id, notifsEnabled]);
 
   async function toggleNotifications() {
     initAudioContext();
@@ -275,9 +297,13 @@ function TradeTerminal() {
       if (perm === "granted") {
         setNotifsEnabled(true);
         setNotificationEnabled(true);
-        void connectAlertSync(activeAccount?.account_id || getActiveAccountId());
+        const accountId = activeAccount?.account_id || getActiveAccountId();
+        void connectAlertSync(accountId);
+        const push = await enableWebPush(accountId);
         void dispatchNotification("Notifications Enabled", {
-          body: "Alerts sync across your devices on this Deriv account — bot start, wins, losses, and stops.",
+          body: push.ok
+            ? "Alerts sync across your devices — including when the app is closed (Web Push)."
+            : "Alerts sync on open devices. " + (push.error || "Background push will turn on once keys/tables are configured."),
           skipSync: true,
         });
       } else if (perm === "denied") {
@@ -288,6 +314,7 @@ function TradeTerminal() {
     } else {
       setNotificationEnabled(false);
       setNotifsEnabled(false);
+      void disableWebPush();
     }
   }
 
