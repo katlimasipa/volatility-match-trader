@@ -1155,7 +1155,7 @@ function TradeTerminal() {
         <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-zinc-1000" : "bg-amber-500"}`} />
+            <img src="/app-icon.png" alt="ThDpst Matches" className="h-5 w-5 rounded object-cover" />
             <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
               ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
             </span>

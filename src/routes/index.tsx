@@ -171,7 +171,7 @@ function SignIn() {
         </div>
 
         <div className="space-y-6">
-          <img src="/logo.png" alt="ThDpst Matches" className="h-16 w-auto max-w-[280px] object-contain" />
+          <img src="/logo.png" alt="ThDpst Matches" className="h-16 w-auto max-w-[280px] object-contain invert" />
           <h1 className="font-display text-4xl tracking-tight text-white lg:text-5xl">
             Volatility 100
             <br />
