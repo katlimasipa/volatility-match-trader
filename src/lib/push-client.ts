@@ -131,13 +131,15 @@ export async function disableWebPush(): Promise<void> {
 }
 
 /**
- * Best-effort fan-out to closed / background devices in the same room.
+ * Best-effort fan-out to closed / background devices in joined rooms.
  */
 export async function fanoutRemotePush(opts: {
   roomId: string;
   title: string;
   body: string;
   kind?: string | undefined;
+  alertId?: string | undefined;
+  roomIds?: string[];
   subscriptions?: Array<{
     endpoint: string;
     p256dh: string;
@@ -152,11 +154,16 @@ export async function fanoutRemotePush(opts: {
         title: opts.title,
         body: opts.body,
         ...(opts.kind ? { kind: opts.kind } : {}),
+        ...(opts.alertId ? { alertId: opts.alertId } : {}),
         subscriptions: opts.subscriptions ?? [],
         sourceDeviceId: getDeviceId(),
       },
     });
-    if (res.stale.length > 0) dropPeerPushTargets(opts.roomId, res.stale);
+    if (res.stale.length > 0) {
+      for (const roomId of new Set(opts.roomIds ?? [opts.roomId])) {
+        dropPeerPushTargets(roomId, res.stale);
+      }
+    }
   } catch (err) {
     console.warn("[push-client] fanout failed:", err);
   }

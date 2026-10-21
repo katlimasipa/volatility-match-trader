@@ -46,6 +46,9 @@ import {
   notifyCycleCompleted,
   notifyBotStarted,
   notifyBotStopped,
+  notifyTradeFailed,
+  notifyConnectionLost,
+  notifyConnectionRestored,
   isSoundEnabled,
   setSoundEnabled,
   playAlertSound,
@@ -60,6 +63,7 @@ import {
   connectAlertSync,
   disconnectAlertSync,
   onSyncedAlert,
+  publishSyncedAlert,
 } from "@/lib/alert-sync";
 import { disableWebPush, enableWebPush } from "@/lib/push-client";
 import {
@@ -79,6 +83,13 @@ export const Route = createFileRoute("/_authenticated/trade")({
   }),
   component: TradeTerminal,
 });
+
+function getDeviceLabel(): string {
+  if (isRunningStandalone()) return isIOS() ? "iPhone app" : "installed app";
+  return typeof navigator !== "undefined" && /mobile/i.test(navigator.userAgent)
+    ? "phone browser"
+    : "desktop";
+}
 
 interface TradeRow {
   id: number;
@@ -263,7 +274,7 @@ function TradeTerminal() {
       const missed = await catchUpAlerts(accountId);
       if (cancelled) return;
       for (const alert of missed) {
-        presentRemoteAlert(alert.title, alert.body, alert.kind);
+        presentRemoteAlert(alert.title, alert.body, alert.kind, alert.id);
       }
       if (notifsEnabled) {
         await enableWebPush(accountId);
@@ -271,7 +282,7 @@ function TradeTerminal() {
     })();
 
     const unsub = onSyncedAlert((alert) => {
-      presentRemoteAlert(alert.title, alert.body, alert.kind);
+      presentRemoteAlert(alert.title, alert.body, alert.kind, alert.id);
     });
 
     return () => {
@@ -338,6 +349,7 @@ function TradeTerminal() {
   const lossCooldownTicks = useRef(0);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
+  const connectionLostAlertedRef = useRef(false);
   const handleTickEventRef = useRef(handleTickEvent);
   handleTickEventRef.current = handleTickEvent;
   const [tradingReady, setTradingReady] = useState(false);
@@ -371,6 +383,19 @@ function TradeTerminal() {
     configuredMarkup,
     cycleCount,
   };
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (!stateRef.current.running) return;
+      void publishSyncedAlert(
+        "Bot stopped",
+        `The app was closed on ${getDeviceLabel()} — bot is no longer running.`,
+        "bot_stop",
+      );
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
   const applyBalanceToAccounts = useCallback((loginid: string, balance: number, currency?: string) => {
     const idNorm = String(loginid).toUpperCase();
@@ -652,6 +677,10 @@ function TradeTerminal() {
 
     const unsubStatus = session.onStatus((st, detail) => {
       if (st === "ready") {
+        if (stateRef.current.running && connectionLostAlertedRef.current) {
+          notifyConnectionRestored();
+        }
+        connectionLostAlertedRef.current = false;
         setTradingReady(true);
         const modeLabel = detail === "otp" ? "Auth 2.0" : "authorized";
         setTradingStatusNote(`Live trading ready (${modeLabel})`);
@@ -667,6 +696,12 @@ function TradeTerminal() {
       } else if (st === "error" || st === "offline") {
         setTradingReady(false);
         setTradingStatusNote(detail || "Trading socket offline");
+        if (stateRef.current.running && !connectionLostAlertedRef.current) {
+          connectionLostAlertedRef.current = true;
+          notifyConnectionLost(
+            detail || "The bot is paused while the Deriv connection reconnects.",
+          );
+        }
       }
     });
 
@@ -824,6 +859,7 @@ function TradeTerminal() {
         setBotState("ANALYZING");
         setNote(`Trade notice: ${err.message}. Retrying on next signal...`);
         setTradingStatusNote(err.message);
+        if (stateRef.current.running) notifyTradeFailed(err.message);
       });
   }
 
@@ -930,24 +966,21 @@ function TradeTerminal() {
     setRunCount(0);
     pending.current = null;
     lossCooldownTicks.current = 0;
+    connectionLostAlertedRef.current = false;
     setRunning(true);
+    stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
       `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on Volatility 100 — Run 1...`
     );
-    const deviceLabel = isRunningStandalone()
-      ? isIOS()
-        ? "iPhone app"
-        : "installed app"
-      : typeof navigator !== "undefined" && /mobile/i.test(navigator.userAgent)
-        ? "phone browser"
-        : "desktop";
-    notifyBotStarted(activeAccount.account_id, deviceLabel);
+    notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
 
   function stopBot(message: string) {
     const wasRunning = running || stateRef.current.running;
     setRunning(false);
+    stateRef.current.running = false;
+    connectionLostAlertedRef.current = false;
     setBotState("IDLE");
     setNote(message);
     pending.current = null;

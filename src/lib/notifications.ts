@@ -1,7 +1,7 @@
 /**
  * Cross-Device Notification & Audio Alert Manager
  * Local: Web Notification API, Service Worker, in-app banners, audio.
- * Across devices: Supabase Realtime (same Deriv account / email) via alert-sync.
+ * Across devices: Supabase Realtime across signed-in Deriv account rooms.
  *
  * iOS Notification Strategy:
  * - iOS Safari: No notification API — install as PWA, or use in-app + audio
@@ -15,6 +15,13 @@ const NOTIFICATION_PREF_KEY = 'thdpst_notifications_enabled';
 const SOUND_PREF_KEY = 'thdpst_sound_enabled';
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default' | 'unsupported';
+
+export function shouldThrottle(lastAt: number | null, now: number, windowMs = 60_000): boolean {
+  return lastAt !== null && now - lastAt < windowMs;
+}
+
+let lastTradeFailedAt: number | null = null;
+let lastConnectionLostAt: number | null = null;
 
 // ─── In-App Alert Banner System ───────────────────────────────────────────────
 // For platforms where push notifications are unavailable (iOS Safari, old browsers)
@@ -296,7 +303,7 @@ export interface DispatchNotificationOptions extends NotificationOptions {
 
 /**
  * Show a local OS / in-app notification, and (by default) sync to other devices
- * logged into the same Deriv account or email session.
+ * logged into the same Deriv accounts or email session.
  */
 export async function dispatchNotification(
   title: string,
@@ -311,7 +318,7 @@ export async function dispatchNotification(
 
   const alertType: InAppAlertType =
     title.toLowerCase().includes('won') || title.toLowerCase().includes('profit') || title.toLowerCase().includes('started') ? 'win' :
-    title.toLowerCase().includes('lost') || title.toLowerCase().includes('loss') ? 'loss' :
+    title.toLowerCase().includes('lost') || title.toLowerCase().includes('loss') || title.toLowerCase().includes('failed') ? 'loss' :
     title.toLowerCase().includes('stop') ? 'warning' : 'info';
 
   // Always surface an in-app banner so open tabs see the event
@@ -338,6 +345,10 @@ export async function dispatchNotification(
     try {
       const reg = await navigator.serviceWorker.ready;
       if (reg && 'showNotification' in reg) {
+        if (defaultOpts.tag) {
+          const existing = await reg.getNotifications({ tag: defaultOpts.tag });
+          if (existing.length > 0) return;
+        }
         await reg.showNotification(title, defaultOpts);
         return;
       }
@@ -356,20 +367,58 @@ export async function dispatchNotification(
 /**
  * Handle an alert that arrived from another device (already synced).
  */
-export function presentRemoteAlert(title: string, body: string, kind: AlertKind = 'info') {
-  if (kind === 'win' || kind === 'tp' || kind === 'bot_start') playAlertSound('win');
-  else if (kind === 'loss' || kind === 'sl') playAlertSound('loss');
-  else playAlertSound('alert');
+export function presentRemoteAlert(
+  title: string,
+  body: string,
+  kind: AlertKind = "info",
+  alertId?: string,
+) {
+  if (kind === "win" || kind === "tp" || kind === "bot_start") playAlertSound("win");
+  else if (kind === "loss" || kind === "sl" || kind === "error") playAlertSound("loss");
+  else playAlertSound("alert");
 
   void dispatchNotification(title, {
     body,
-    tag: `remote-${kind}-${Date.now()}`,
+    tag: alertId ? `thdpst-alert-${alertId}` : `remote-${kind}-${Date.now()}`,
     skipSync: true,
     syncKind: kind,
   });
 }
 
 // ─── Specific Trade Alerts ────────────────────────────────────────────────────
+
+export function notifyTradeFailed(message: string) {
+  const now = Date.now();
+  if (shouldThrottle(lastTradeFailedAt, now)) return;
+  lastTradeFailedAt = now;
+  playAlertSound("loss");
+  void dispatchNotification("Trade failed", {
+    body: message,
+    tag: `trade-failed-${now}`,
+    syncKind: "error",
+  });
+}
+
+export function notifyConnectionLost(detail: string) {
+  const now = Date.now();
+  if (shouldThrottle(lastConnectionLostAt, now)) return;
+  lastConnectionLostAt = now;
+  playAlertSound("loss");
+  void dispatchNotification("Bot paused: Deriv connection lost", {
+    body: detail,
+    tag: `connection-lost-${now}`,
+    syncKind: "error",
+  });
+}
+
+export function notifyConnectionRestored() {
+  playAlertSound("alert");
+  void dispatchNotification("Deriv connection restored", {
+    body: "The Deriv trading connection is back online.",
+    tag: `connection-restored-${Date.now()}`,
+    syncKind: "info",
+  });
+}
 
 export function notifyTradeWon(runIndex: number, pnl: number, target: number) {
   playAlertSound('win');
