@@ -383,7 +383,8 @@ export function TradeTerminal() {
           if (saved.length > 0) {
             setAccounts(saved);
             const storedActive = getActiveAccountId();
-            const chosen = saved.find((a) => a.account_id === storedActive) || saved[0];
+            const chosen = saved.find((a) => a.account_id === storedActive) ?? saved[0];
+            if (!chosen) return;
             setActiveId(chosen.account_id);
             setIsConnectedToDeriv(true);
           }
@@ -406,8 +407,8 @@ export function TradeTerminal() {
 
     if (savedAccounts.length > 0) {
       setAccounts(savedAccounts);
-      const chosen = savedAccounts.find((a) => a.account_id === storedActive) || savedAccounts[0];
-      setActiveId(chosen.account_id);
+      const chosen = savedAccounts.find((a) => a.account_id === storedActive) ?? savedAccounts[0];
+      if (chosen) setActiveId(chosen.account_id);
       setIsConnectedToDeriv(Boolean(authInfo || manualToken));
     } else {
       const initialMock: DerivAccount[] = [
@@ -431,7 +432,7 @@ export function TradeTerminal() {
 
     // Listen for live proposal responses from Deriv to sync exact App ID server markup
     ws.registerHandler("proposal", (data) => {
-      const pData = data.proposal as { payout?: number; ask_price?: number };
+      const pData = data['proposal'] as { payout?: number; ask_price?: number };
       if (pData?.payout && pData?.ask_price) {
         const ask = pData.ask_price;
         const payout = pData.payout;
@@ -448,7 +449,7 @@ export function TradeTerminal() {
 
     // Listen for balance updates from Deriv (applies to real accounts, preserves demo trading)
     ws.registerHandler("balance", (data) => {
-      const bData = data.balance as {
+      const bData = data['balance'] as {
         accounts?: Record<string, { balance: number; currency: string }>;
         balance?: number;
         loginid?: string;
@@ -483,7 +484,7 @@ export function TradeTerminal() {
 
     // Listen for tick history and incoming live ticks
     ws.registerHandler("history", (data) => {
-      const history = data.history as { prices?: number[]; times?: number[] };
+      const history = data['history'] as { prices?: number[]; times?: number[] };
       if (history?.prices && history.prices.length > 0) {
         const pList = history.prices;
         const tList = history.times || [];
@@ -495,11 +496,12 @@ export function TradeTerminal() {
         const initialTicks: TickItem[] = [];
         const count = Math.min(15, pList.length);
         for (let i = pList.length - count; i < pList.length; i++) {
-          const timestamp = tList[i] ? new Date(tList[i] * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+          const ts = tList[i];
+          const timestamp = ts ? new Date(ts * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
           initialTicks.unshift({
             time: timestamp,
-            price: pList[i],
-            digit: dList[i],
+            price: pList[i] ?? 0,
+            digit: dList[i] ?? 0,
           });
         }
         setRecentTicks(initialTicks);
@@ -513,7 +515,7 @@ export function TradeTerminal() {
     });
 
     ws.registerHandler("tick", (data) => {
-      const tick = data.tick as { quote?: number; epoch?: number };
+      const tick = data['tick'] as { quote?: number; epoch?: number };
       if (typeof tick?.quote === "number") {
         const q = tick.quote;
         const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
