@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { mergePushTargets } from "@/lib/push-targets";
 
 type PushSubInput = {
   roomId: string;
@@ -15,6 +16,12 @@ type FanoutInput = {
   body: string;
   kind?: string | undefined;
   sourceDeviceId?: string | undefined;
+  subscriptions?: Array<{
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    deviceId: string;
+  }>;
 };
 
 function getVapidConfig() {
@@ -111,7 +118,7 @@ export const fanoutPushAlert = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const vapid = getVapidConfig();
     if (!vapid.publicKey || !vapid.privateKey) {
-      return { ok: false, sent: 0, reason: "vapid_not_configured" as const };
+      return { ok: false, sent: 0, reason: "vapid_not_configured" as const, stale: [] };
     }
 
     let rows: Array<{
@@ -132,28 +139,26 @@ export const fanoutPushAlert = createServerFn({ method: "POST" })
     } catch {
       try {
         const { supabase } = await import("@/integrations/supabase/client");
-        const { data: list } = await supabase
+        const { data: list, error } = await supabase
           .from("push_subscriptions")
           .select("endpoint, p256dh, auth, device_id")
           .eq("room_id", data.roomId);
-        rows = list || [];
+        rows = error ? [] : list || [];
       } catch {
-        return { ok: false, sent: 0, reason: "db_unavailable" as const };
+        rows = [];
       }
     }
 
-    const targets = rows.filter(
-      (r) => !data.sourceDeviceId || r.device_id !== data.sourceDeviceId
-    );
+    const targets = mergePushTargets(rows, data.subscriptions ?? [], data.sourceDeviceId);
     if (targets.length === 0) {
-      return { ok: true, sent: 0, reason: "no_targets" as const };
+      return { ok: true, sent: 0, reason: "no_targets" as const, stale: [] };
     }
 
     let webpush: typeof import("web-push");
     try {
       webpush = await import("web-push");
     } catch {
-      return { ok: false, sent: 0, reason: "web_push_unavailable" as const };
+      return { ok: false, sent: 0, reason: "web_push_unavailable" as const, stale: [] };
     }
 
     webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
@@ -191,7 +196,7 @@ export const fanoutPushAlert = createServerFn({ method: "POST" })
       })
     );
 
-    if (staleEndpoints.length > 0) {
+    if (staleEndpoints.length > 0 && rows.length > 0) {
       try {
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         await supabaseAdmin.from("push_subscriptions").delete().in("endpoint", staleEndpoints);
@@ -200,7 +205,7 @@ export const fanoutPushAlert = createServerFn({ method: "POST" })
       }
     }
 
-    return { ok: true, sent, reason: "sent" as const };
+    return { ok: true, sent, reason: "sent" as const, stale: staleEndpoints };
   });
 
 export const getVapidPublicKey = createServerFn({ method: "GET" }).handler(async () => {

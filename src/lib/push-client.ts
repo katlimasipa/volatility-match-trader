@@ -2,7 +2,13 @@
  * Browser Web Push registration for closed-app / background alerts.
  */
 
-import { getDeviceId, resolveAlertRoomId } from "@/lib/alert-sync";
+import {
+  announcePushSubscription,
+  clearOwnPushSubscription,
+  dropPeerPushTargets,
+  getDeviceId,
+  resolveAlertRoomId,
+} from "@/lib/alert-sync";
 import {
   fanoutPushAlert,
   getVapidPublicKey,
@@ -80,20 +86,25 @@ export async function enableWebPush(accountId?: string | null): Promise<{
       return { ok: false, error: "Browser did not return a valid push subscription." };
     }
 
-    const res = await registerPushSubscription({
-      data: {
-        roomId,
-        deviceId: getDeviceId(),
-        endpoint: json.endpoint,
-        p256dh,
-        auth,
-        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-      },
-    });
+    const subscription = { endpoint: json.endpoint, p256dh, auth };
+    await announcePushSubscription(subscription);
 
-    if (!res.ok) {
-      return { ok: false, error: res.error || "Could not save push subscription." };
+    try {
+      const res = await registerPushSubscription({
+        data: {
+          roomId,
+          deviceId: getDeviceId(),
+          ...subscription,
+          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+        },
+      });
+      if (!res.ok) {
+        console.warn("[push-client] database subscription registration skipped:", res.error);
+      }
+    } catch (err) {
+      console.warn("[push-client] database subscription registration failed:", err);
     }
+
     return { ok: true };
   } catch (err) {
     return {
@@ -104,6 +115,7 @@ export async function enableWebPush(accountId?: string | null): Promise<{
 }
 
 export async function disableWebPush(): Promise<void> {
+  clearOwnPushSubscription();
   if (!isWebPushSupported()) return;
   try {
     const reg = await navigator.serviceWorker.ready;
@@ -126,17 +138,25 @@ export async function fanoutRemotePush(opts: {
   title: string;
   body: string;
   kind?: string | undefined;
+  subscriptions?: Array<{
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    deviceId: string;
+  }>;
 }): Promise<void> {
   try {
-    await fanoutPushAlert({
+    const res = await fanoutPushAlert({
       data: {
         roomId: opts.roomId,
         title: opts.title,
         body: opts.body,
         ...(opts.kind ? { kind: opts.kind } : {}),
+        subscriptions: opts.subscriptions ?? [],
         sourceDeviceId: getDeviceId(),
       },
     });
+    if (res.stale.length > 0) dropPeerPushTargets(opts.roomId, res.stale);
   } catch (err) {
     console.warn("[push-client] fanout failed:", err);
   }
