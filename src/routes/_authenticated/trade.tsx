@@ -205,7 +205,8 @@ function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
-  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED">("BUFFERING");
+  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED" | "CYCLING">("BUFFERING");
+  const [cycleCount, setCycleCount] = useState(0);
   const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing Volatility 100...");
 
   // Backtest / Inspection Modal
@@ -332,6 +333,8 @@ function TradeTerminal() {
   }
 
   const pending = useRef<PendingTrade | null>(null);
+  const pendingSetAt = useRef<number>(0); // timestamp when pending was set, for stuck-trade safety
+  const digitsRef = useRef<number[]>([]); // synchronous market digits buffer, avoids state batching drops
   const lossCooldownTicks = useRef(0);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
@@ -350,6 +353,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     configuredMarkup,
+    cycleCount,
   });
   stateRef.current = {
     running,
@@ -363,6 +367,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     configuredMarkup,
+    cycleCount,
   };
 
   const applyBalanceToAccounts = useCallback((loginid: string, balance: number, currency?: string) => {
@@ -530,6 +535,7 @@ function TradeTerminal() {
         const pList = history.prices;
         const tList = history.times || [];
         const dList = pList.map((p) => lastDigit(p));
+        digitsRef.current = dList;
         setDigits(dList);
         setPrice(pList[pList.length - 1] ?? null);
 
@@ -567,25 +573,20 @@ function TradeTerminal() {
         // Tick stream: prepend latest incoming tick to top
         setRecentTicks((prev) => [{ time: timeStr, price: q, digit: nextDigit }, ...prev.slice(0, 14)]);
 
-        // Digits stream: append in strict incoming chronological sequence
-        let updatedDigits: number[] = [];
-        setDigits((prev) => {
-          const next = [...prev, nextDigit];
-          if (next.length > WINDOW) next.shift();
-          updatedDigits = next;
-          return next;
-        });
+        // Digits stream: append synchronously into ref to avoid state-updater batching issues
+        digitsRef.current.push(nextDigit);
+        if (digitsRef.current.length > WINDOW) {
+          digitsRef.current.shift();
+        }
+        const updatedDigits = [...digitsRef.current];
+        setDigits(updatedDigits);
 
-        // Process trade logic OUTSIDE of setDigits to ensure state updates (balance, trades) are not batched/deferred
-        setTimeout(() => {
-          if (updatedDigits.length > 0) {
-            handleTickEvent(updatedDigits, q, nextDigit);
-          }
-        }, 0);
+        // Process trade event immediately with guaranteed current digits
+        handleTickEvent(updatedDigits, q, nextDigit);
       }
     });
 
-    // Request 1000 ticks: Auth 2.0 public feed uses 1HZ100V; classic uses R_100
+    // Request 1000 ticks: Volatility 100 uses R_100 (classic/options feed)
     const subscribeTicks = async () => {
       const payload = (sym: string) => ({
         ticks_history: sym,
@@ -595,10 +596,10 @@ function TradeTerminal() {
         subscribe: 1,
       });
       try {
-        await ws.send(payload(OPTIONS_SYMBOL));
+        await ws.send(payload(CLASSIC_SYMBOL));
       } catch {
         try {
-          await ws.send(payload(CLASSIC_SYMBOL));
+          await ws.send(payload(OPTIONS_SYMBOL));
         } catch (err) {
           console.error("Ticks subscription error:", err);
           // Last resort: classic Binary public socket
@@ -678,7 +679,7 @@ function TradeTerminal() {
       if (tradingRef.current === session) tradingRef.current = null;
       setTradingReady(false);
     };
-  }, [activeAccount?.account_id, isConnectedToDeriv, applyBalanceToAccounts]);
+  }, [activeAccount?.account_id, applyBalanceToAccounts]);
 
   function settleTradeResult(
     p: PendingTrade,
@@ -756,9 +757,16 @@ function TradeTerminal() {
     }
     if (nextRunCount >= MAX_RUNS) {
       notifyCycleCompleted(MAX_RUNS, totalPnl);
-      return stopBot(
-        `Cycle completed: ${MAX_RUNS} runs finished (Total: ${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)})`
+      // Auto-cycle: reset run count for the next cycle instead of stopping
+      const nextCycle = (stateRef.current.cycleCount || 0) + 1;
+      setCycleCount(nextCycle);
+      setRunCount(0);
+      lossCooldownTicks.current = 0;
+      setBotState("ANALYZING");
+      setNote(
+        `Cycle ${nextCycle} completed (${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}). Auto-starting cycle ${nextCycle + 1} — analyzing market...`
       );
+      return;
     }
 
     if (!won && s.reAnalyzeOnLoss) {
@@ -823,7 +831,18 @@ function TradeTerminal() {
 
     // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
     if (pending.current?.live) {
-      return;
+      // Safety net: if pending has been stuck for >60 seconds, force-clear it
+      const elapsed = Date.now() - pendingSetAt.current;
+      if (elapsed > 60_000) {
+        console.warn('[bot] Force-clearing stuck pending trade after', Math.round(elapsed / 1000), 'seconds');
+        pending.current = null;
+        pendingSetAt.current = 0;
+        setBotState("ANALYZING");
+        setNote("Trade settlement timed out. Resuming analysis...");
+        // Fall through to continue processing
+      } else {
+        return;
+      }
     }
 
     // Never invent a local balance. If a pending trade is not live, the socket dropped —
@@ -855,6 +874,7 @@ function TradeTerminal() {
         setNote(`Loss re-analysis: streaming fresh ticks (${lossCooldownTicks.current} remaining)...`);
         return;
       }
+      setBotState("ANALYZING");
     }
 
     const a = analyze(tickList, s.maxDiff);
@@ -877,6 +897,7 @@ function TradeTerminal() {
         stake: s.stake,
         live: true,
       };
+      pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
         `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
@@ -1036,6 +1057,7 @@ function TradeTerminal() {
       live: true,
     };
     pending.current = p;
+    pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
     setNote(
       `Test run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`

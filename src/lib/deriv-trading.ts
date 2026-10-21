@@ -38,9 +38,9 @@ type BalanceListener = (loginid: string, balance: number, currency: string) => v
 type ContractListener = (result: ContractResult) => void;
 type StatusListener = (status: 'connecting' | 'ready' | 'offline' | 'error', detail?: string) => void;
 
-/** Classic Binary WS expects a numeric app_id; Auth 2.0 client ids are strings. */
-const CLASSIC_WS_APP_IDS = ['1089', getDerivClientId(), HARDCODED_APP_ID].filter(
-  (v, i, a) => Boolean(v) && /^\d+$/.test(v) && a.indexOf(v) === i
+/** Classic Binary WS accepts numeric app_ids or registered client IDs. */
+const CLASSIC_WS_APP_IDS = [getDerivClientId(), '1089', HARDCODED_APP_ID].filter(
+  (v, i, a) => Boolean(v) && a.indexOf(v) === i
 );
 
 function isFakeAccountId(id: string): boolean {
@@ -461,7 +461,7 @@ export class DerivTradingSession {
     const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
     const amount = Math.round(params.stake * 100) / 100;
     const currency = params.currency || this.currency || 'USD';
-    const underlying = this.mode === 'otp' ? OPTIONS_SYMBOL : CLASSIC_SYMBOL;
+    const underlying = CLASSIC_SYMBOL;
 
     const proposalPayload: Record<string, unknown> = {
       proposal: 1,
@@ -472,12 +472,11 @@ export class DerivTradingSession {
       duration: 1,
       duration_unit: 't',
       barrier,
+      symbol: underlying,
     };
 
     if (this.mode === 'otp') {
       proposalPayload['underlying_symbol'] = underlying;
-    } else {
-      proposalPayload['symbol'] = underlying;
     }
 
     let proposalRes: Record<string, unknown>;
