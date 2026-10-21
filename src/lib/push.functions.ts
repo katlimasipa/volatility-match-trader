@@ -15,6 +15,7 @@ type FanoutInput = {
   title: string;
   body: string;
   kind?: string | undefined;
+  alertId?: string | undefined;
   sourceDeviceId?: string | undefined;
   subscriptions?: Array<{
     endpoint: string;
@@ -166,7 +167,9 @@ export const fanoutPushAlert = createServerFn({ method: "POST" })
     const payload = JSON.stringify({
       title: data.title,
       body: data.body || "",
-      tag: `thdpst-${data.kind || "info"}-${Date.now()}`,
+      tag: data.alertId
+        ? `thdpst-alert-${data.alertId}`
+        : `thdpst-${data.kind || "info"}-${Date.now()}`,
       icon: "/app-icon.png",
       badge: "/favicon.png",
       data: { url: "/trade" },

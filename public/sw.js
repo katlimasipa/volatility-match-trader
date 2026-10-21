@@ -147,7 +147,13 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(
-    self.registration.showNotification(payload.title, notificationOptions)
+    self.registration
+      .getNotifications({ tag: notificationOptions.tag })
+      .then((existing) => {
+        if (existing.length > 0) return;
+        return self.registration.showNotification(payload.title, notificationOptions);
+      })
+      .catch(() => self.registration.showNotification(payload.title, notificationOptions)),
   );
 });
 
