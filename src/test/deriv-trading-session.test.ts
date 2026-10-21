@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { DerivTradingSession } from "@/lib/deriv-trading";
+import type { DerivWS } from "@/lib/deriv-ws";
 
 /**
  * Settlement balance math:
@@ -43,4 +45,55 @@ describe("Live trade balance settlement", () => {
     bal = settleBalance(bal, 5, 40);
     expect(bal).toBe(535);
   });
+});
+
+describe("DIGITMATCH proposal payload", () => {
+  it.each(["otp", "classic"] as const)(
+    "uses the %s symbol field and buys the returned proposal",
+    async (mode) => {
+      const sent: Record<string, unknown>[] = [];
+      const fakeWs = {
+        send: vi.fn(async (payload: Record<string, unknown>) => {
+          sent.push(payload);
+          if (payload["proposal"] === 1) {
+            return { proposal: { id: "proposal-id", ask_price: 1 } };
+          }
+          return { buy: {} };
+        }),
+        dispose: vi.fn(),
+      } as unknown as DerivWS;
+      const session = new DerivTradingSession();
+      Object.assign(session as unknown as Record<string, unknown>, {
+        ws: fakeWs,
+        ready: true,
+        mode,
+      });
+
+      await expect(
+        session.buyDigitMatch({ stake: 1, barrierDigit: 7, currency: "USD" }),
+      ).rejects.toThrow("Deriv buy failed");
+
+      const proposal = sent[0];
+      expect(proposal).toMatchObject({
+        proposal: 1,
+        amount: 1,
+        basis: "stake",
+        contract_type: "DIGITMATCH",
+        currency: "USD",
+        duration: 1,
+        duration_unit: "t",
+        barrier: "7",
+      });
+      if (mode === "otp") {
+        expect(proposal).toHaveProperty("underlying_symbol", "R_100");
+        expect(proposal).not.toHaveProperty("symbol");
+      } else {
+        expect(proposal).toHaveProperty("symbol", "R_100");
+        expect(proposal).not.toHaveProperty("underlying_symbol");
+      }
+      expect(sent[1]).toEqual({ buy: "proposal-id", price: 1 });
+
+      session.dispose();
+    },
+  );
 });

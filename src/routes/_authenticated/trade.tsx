@@ -338,6 +338,8 @@ function TradeTerminal() {
   const lossCooldownTicks = useRef(0);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
+  const handleTickEventRef = useRef(handleTickEvent);
+  handleTickEventRef.current = handleTickEvent;
   const [tradingReady, setTradingReady] = useState(false);
   const [tradingStatusNote, setTradingStatusNote] = useState<string | null>(null);
 
@@ -582,7 +584,7 @@ function TradeTerminal() {
         setDigits(updatedDigits);
 
         // Process trade event immediately with guaranteed current digits
-        handleTickEvent(updatedDigits, q, nextDigit);
+        handleTickEventRef.current(updatedDigits, q, nextDigit);
       }
     });
 
@@ -872,7 +874,7 @@ function TradeTerminal() {
 
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
-      const useLive = Boolean(tradingRef.current?.isReady() && isConnectedToDeriv);
+      const useLive = Boolean(tradingRef.current?.isReady());
       if (!useLive) {
         setBotState("ANALYZING");
         setNote(
