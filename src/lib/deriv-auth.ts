@@ -833,14 +833,20 @@ export async function handleIncomingOAuth(): Promise<{ handled: boolean; success
 
   if (code) {
     try {
+      const clientId =
+        (typeof import.meta !== 'undefined' && import.meta.env?.['VITE_DERIV_CLIENT_ID']) ||
+        getSavedAppId() ||
+        HARDCODED_APP_ID;
       const storedRedirect =
-        readDual(STORAGE_KEYS.REDIRECT_URI) || 'https://thdpstmatches.vercel.app/';
-      const authInfo = await exchangeCodeForTokens(code, state, HARDCODED_APP_ID, storedRedirect);
+        readDual(STORAGE_KEYS.REDIRECT_URI) ||
+        (typeof import.meta !== 'undefined' && import.meta.env?.['VITE_DERIV_REDIRECT_URI']) ||
+        'https://thdpstmatches.vercel.app/';
+      const authInfo = await exchangeCodeForTokens(code, state, clientId, storedRedirect);
       try {
         if (authInfo.access_token) {
           await authorizeWithToken(authInfo.access_token);
         } else {
-          await fetchDerivAccounts(authInfo, HARDCODED_APP_ID);
+          await fetchDerivAccounts(authInfo, clientId);
         }
       } catch (accErr) {
         console.warn('Account fetching note:', accErr);

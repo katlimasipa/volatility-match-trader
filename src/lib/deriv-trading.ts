@@ -228,6 +228,14 @@ export class DerivTradingSession {
       if (!rest.success || rest.accounts.length === 0) return null;
 
       storeAccounts(rest.accounts);
+      // Push every account balance into the UI so demo/real both stay current
+      for (const acc of rest.accounts) {
+        const bal = Number(acc.balance);
+        if (Number.isFinite(bal)) {
+          this.emitBalance(acc.account_id, bal, acc.currency || this.currency);
+        }
+      }
+
       const match =
         rest.accounts.find((a) => a.account_id.toUpperCase() === this.accountId!.toUpperCase()) ||
         rest.accounts[0];
@@ -235,7 +243,6 @@ export class DerivTradingSession {
 
       const bal = Number(match.balance);
       if (!Number.isFinite(bal)) return null;
-      this.emitBalance(match.account_id, bal, match.currency || this.currency);
       return bal;
     } catch (err) {
       console.warn('[deriv-trading] REST balance sync failed:', err);
@@ -544,8 +551,10 @@ export class DerivTradingSession {
       this.emitBalance(loginid, roundMoney(this.lastBalance - buyPrice), currency);
     }
 
-    // Confirm debit with Deriv (socket + REST)
+    // Confirm debit with Deriv (socket first, then REST for Auth 2.0)
     await this.syncBalance(false);
+    // Prefer REST after buy so Auth 2.0 accounts match the Deriv website
+    await this.syncBalance(true);
 
     const contractId = buy.contract_id;
     await this.ws.send({

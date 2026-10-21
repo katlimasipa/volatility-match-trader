@@ -183,8 +183,10 @@ export function TradeTerminal() {
   const activeAppId = getDerivClientId();
   const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
 
-  // Derive activeAccount and activeType safely (guaranteed 100% in sync)
-  const activeAccount = accounts.find((a) => a.account_id === activeId) || accounts[0];
+  // Derive activeAccount and activeType (case-insensitive — Deriv loginids vary in casing)
+  const activeAccount =
+    accounts.find((a) => a.account_id.toUpperCase() === String(activeId || "").toUpperCase()) ||
+    accounts[0];
   const activeType: "demo" | "real" = activeAccount?.account_type || "demo";
 
   // Market stream state: strictly chronological ticks and digits
@@ -397,6 +399,8 @@ export function TradeTerminal() {
     try {
       if (tradingRef.current?.isReady()) {
         await tradingRef.current.syncBalance(true);
+        const saved = getStoredAccounts();
+        if (saved.length > 0) setAccounts(saved);
         return;
       }
       const res = await authorizeWithToken(token);
@@ -405,7 +409,9 @@ export function TradeTerminal() {
         storeAccounts(res.accounts);
         const storedActive = getActiveAccountId();
         const chosen =
-          res.accounts.find((a) => a.account_id === storedActive) ||
+          res.accounts.find(
+            (a) => a.account_id.toUpperCase() === String(storedActive || "").toUpperCase()
+          ) ||
           res.accounts.find((a) => a.account_type === "demo") ||
           res.accounts[0];
         if (chosen) {
@@ -715,9 +721,15 @@ export function TradeTerminal() {
         applyBalanceToAccounts(loginid, balanceAfter);
       }
       // Re-read from Deriv so the UI matches the real account after every trade
-      tradingRef.current?.syncBalance(true).catch(() => {
-        refreshDerivBalances();
-      });
+      void (async () => {
+        try {
+          await tradingRef.current?.syncBalance(true);
+        } catch {
+          await refreshDerivBalances();
+        }
+        const saved = getStoredAccounts();
+        if (saved.length > 0) setAccounts(saved);
+      })();
     }
 
     const totalPnl = updatedTrades.reduce((acc, t) => acc + t.pnl, 0);
@@ -804,14 +816,16 @@ export function TradeTerminal() {
       return;
     }
 
-    // Simulated settle on the tick following entry (only when not live-connected)
+    // Never invent a local balance. If a pending trade is not live, the socket dropped —
+    // stop the bot so the next run must reconnect and buy on Deriv again.
     if (pending.current) {
-      const p = pending.current;
+      const orphan = pending.current;
       pending.current = null;
-      const won = currentD === p.target;
-      const { netWinProfit } = calculateMatchesPayout(p.stake, s.configuredMarkup);
-      const pnl = won ? netWinProfit : -p.stake;
-      settleTradeResult(p, won, pnl, currentD, true);
+      setRunning(false);
+      setBotState("IDLE");
+      setNote(
+        `Trade aborted (run ${orphan.runIndex}): trading connection lost. Reconnect Deriv and start again so balances stay real.`
+      );
       return;
     }
 
@@ -838,24 +852,26 @@ export function TradeTerminal() {
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
       const useLive = Boolean(tradingRef.current?.isReady() && isConnectedToDeriv);
+      if (!useLive) {
+        setRunning(false);
+        setBotState("IDLE");
+        setNote(
+          "Trading socket offline. Reconnect Deriv Auth 2.0 or your API token, then start again."
+        );
+        return;
+      }
       pending.current = {
         runIndex: targetRun,
         entry: currentD,
         target: a.second,
         stake: s.stake,
-        live: useLive,
+        live: true,
       };
       setBotState("IN TRADE");
-      if (useLive) {
-        setNote(
-          `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
-        );
-        placeLiveMatch(pending.current);
-      } else {
-        setNote(
-          `Run ${targetRun}/${MAX_RUNS}: Paper trade on digit ${currentD}. Matching target ${a.second}...`
-        );
-      }
+      setNote(
+        `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
+      );
+      placeLiveMatch(pending.current);
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
@@ -1085,7 +1101,7 @@ export function TradeTerminal() {
         >
           <div className={`rounded-lg border px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
             inAppAlert.type === "win"
-              ? isDark ? "border-teal-700 bg-zinc-950 text-teal-300" : "border-teal-500 bg-teal-50 text-teal-900"
+              ? isDark ? "border-zinc-600 bg-zinc-950 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-900"
               : inAppAlert.type === "loss"
               ? isDark ? "border-zinc-800 bg-zinc-950 text-zinc-300" : "border-slate-300 bg-white text-slate-800"
               : isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
@@ -1111,7 +1127,7 @@ export function TradeTerminal() {
         <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Logo */}
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-teal-500" : "bg-amber-500"}`} />
+            <span className={`h-2 w-2 rounded-full ${status === "live" ? "bg-zinc-1000" : "bg-amber-500"}`} />
             <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
               ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
             </span>
@@ -1122,7 +1138,7 @@ export function TradeTerminal() {
             isDark ? "border-zinc-800" : "border-slate-200"
           }`}>
             <div className="flex items-center gap-1.5">
-              <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
               <span className="font-semibold text-zinc-400 uppercase text-[11px]">{botState}</span>
             </div>
             <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
@@ -1130,7 +1146,7 @@ export function TradeTerminal() {
               <span className="text-zinc-500 text-[11px]">P/L</span>
               <span className={`font-semibold num ${
                 totalPnl > 0
-                  ? isDark ? "text-white font-bold" : "text-teal-700 font-bold"
+                  ? isDark ? "text-white font-bold" : "text-zinc-700 font-bold"
                   : totalPnl < 0 ? "text-zinc-400" : isDark ? "text-white" : "text-slate-700"
               }`}>
                 {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
@@ -1147,7 +1163,7 @@ export function TradeTerminal() {
           <div className="hidden lg:flex min-w-0 flex-wrap items-center justify-end gap-2.5">
             {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
-              <span className="h-1.5 w-1.5 rounded-full bg-teal-400" />
+              <span className="h-1.5 w-1.5 rounded-full bg-zinc-300" />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
               <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                 {activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
@@ -1178,11 +1194,11 @@ export function TradeTerminal() {
               title={notifsEnabled ? "Notifications enabled" : "Enable cross-device notifications"}
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
                 notifsEnabled
-                  ? isDark ? "border-teal-700 bg-teal-950/40 text-teal-300 font-bold" : "border-teal-500 bg-teal-50 text-teal-800 font-bold"
+                  ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300 font-bold" : "border-zinc-500 bg-zinc-100 text-zinc-800 font-bold"
                   : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
               }`}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
               <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
             </button>
 
@@ -1204,7 +1220,7 @@ export function TradeTerminal() {
               <button
                 type="button"
                 onClick={handleInstallApp}
-                className="rounded bg-teal-600 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
+                className="rounded bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
               >
                 INSTALL
               </button>
@@ -1247,7 +1263,7 @@ export function TradeTerminal() {
                 <button
                   onClick={startBot}
                   disabled={digits.length < WINDOW}
-                  className="rounded bg-teal-600 px-4 py-2 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="rounded bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
                 </button>
@@ -1266,7 +1282,7 @@ export function TradeTerminal() {
                 onClick={triggerManualTestTrade}
                 disabled={digits.length < WINDOW || pending.current !== null}
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
-                  isDark ? "border-teal-900 bg-teal-950/40 text-teal-300 hover:border-teal-700" : "border-teal-300 bg-teal-50 text-teal-800"
+                  isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600" : "border-zinc-300 bg-zinc-100 text-zinc-800"
                 }`}
               >
                 TEST 1
@@ -1295,7 +1311,7 @@ export function TradeTerminal() {
               }`}
             >
               <span className={`text-[9px] font-bold uppercase ${
-                !activeAccount ? "text-zinc-500" : activeAccount.account_type === "real" ? "text-teal-500" : "text-zinc-500"
+                !activeAccount ? "text-zinc-500" : activeAccount.account_type === "real" ? "text-zinc-400" : "text-zinc-500"
               }`}>
                 {!activeAccount ? "Off" : activeAccount.account_type === "real" ? "Real" : "Demo"}
               </span>
@@ -1323,21 +1339,21 @@ export function TradeTerminal() {
           isDark ? "border-zinc-900 text-zinc-400" : "border-slate-100 text-slate-600"
         }`}>
           <div className="flex items-center gap-1.5">
-            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-teal-400 animate-pulse" : "bg-zinc-500"}`} />
+            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-500"}`} />
             <span className="font-semibold uppercase text-[10px] text-zinc-400">{botState}</span>
             <span className="text-zinc-400 text-[10px]">({runCount}/{MAX_RUNS})</span>
           </div>
 
           <div className="flex items-center gap-1">
             <span className="text-[10px] text-zinc-500 uppercase">P/L:</span>
-            <span className={`font-bold num ${totalPnl > 0 ? "text-teal-600 font-bold" : totalPnl < 0 ? "text-zinc-500" : isDark ? "text-white" : "text-slate-800"}`}>
+            <span className={`font-bold num ${totalPnl > 0 ? "text-zinc-600 font-bold" : totalPnl < 0 ? "text-zinc-500" : isDark ? "text-white" : "text-slate-800"}`}>
               {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
             </span>
           </div>
 
           <div className="flex items-center gap-1 text-[10px]">
             <span className="text-zinc-500">SPREAD:</span>
-            <span className={`font-semibold num ${analysis.diff <= maxDiff ? "text-teal-600 font-bold" : "text-zinc-500"}`}>
+            <span className={`font-semibold num ${analysis.diff <= maxDiff ? "text-zinc-600 font-bold" : "text-zinc-500"}`}>
               {analysis.diff.toFixed(2)}%
             </span>
           </div>
@@ -1358,7 +1374,7 @@ export function TradeTerminal() {
               className={`py-2 text-center rounded-lg transition-all ${
                 mobileTab === tab
                   ? isDark
-                    ? "bg-zinc-800 text-teal-400 font-bold shadow-sm"
+                    ? "bg-zinc-800 text-zinc-300 font-bold shadow-sm"
                     : "bg-slate-900 text-white font-bold shadow-sm"
                   : isDark ? "text-zinc-500 hover:text-zinc-300" : "text-slate-500 hover:text-slate-800"
               }`}
@@ -1384,7 +1400,7 @@ export function TradeTerminal() {
                   <button
                     onClick={resetDemoBalance}
                     title="Sync balance from Deriv"
-                    className="text-[10px] text-teal-500 hover:underline uppercase font-bold"
+                    className="text-[10px] text-zinc-400 hover:underline uppercase font-bold"
                   >
                     SYNC BALANCE
                   </button>
@@ -1432,8 +1448,8 @@ export function TradeTerminal() {
                       className={`flex-1 rounded border py-2 text-xs font-medium uppercase tracking-wider ${
                         tradingReady
                           ? isDark
-                            ? "border-teal-900/60 bg-teal-950/30 text-teal-400"
-                            : "border-teal-200 bg-teal-50 text-teal-700"
+                            ? "border-zinc-700 bg-zinc-900/60 text-zinc-300"
+                            : "border-zinc-200 bg-zinc-100 text-zinc-700"
                           : isDark
                             ? "border-amber-900/60 bg-amber-950/30 text-amber-400"
                             : "border-amber-200 bg-amber-50 text-amber-700"
@@ -1461,7 +1477,7 @@ export function TradeTerminal() {
               ) : (
                 <button
                   onClick={() => setShowConnectModal(true)}
-                  className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
+                  className="w-full rounded bg-white py-2.5 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
                 >
                   CONNECT DERIV ACCOUNT
                 </button>
@@ -1519,8 +1535,8 @@ export function TradeTerminal() {
                       }}
                       className={`w-14 rounded border px-1.5 py-0.5 text-right text-xs font-bold num outline-none ${
                         isDark
-                          ? "border-zinc-800 bg-black text-teal-400 focus:border-zinc-600"
-                          : "border-slate-300 bg-white text-teal-700 focus:border-slate-500"
+                          ? "border-zinc-800 bg-black text-zinc-300 focus:border-zinc-600"
+                          : "border-slate-300 bg-white text-zinc-700 focus:border-slate-500"
                       }`}
                     />
                     <span className="text-zinc-500 text-[10px]">%</span>
@@ -1535,8 +1551,8 @@ export function TradeTerminal() {
                       className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
                         maxDiff === val
                           ? isDark
-                            ? "border-teal-500 bg-teal-500/20 text-teal-300 font-bold"
-                            : "border-teal-600 bg-teal-50 text-teal-800 font-bold"
+                            ? "border-zinc-500 bg-zinc-1000/20 text-zinc-300 font-bold"
+                            : "border-zinc-600 bg-zinc-100 text-zinc-800 font-bold"
                           : isDark
                             ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
                             : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
@@ -1572,7 +1588,7 @@ export function TradeTerminal() {
                     type="checkbox"
                     checked={reAnalyzeOnLoss}
                     onChange={(e) => setReAnalyzeOnLoss(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-teal-600 focus:ring-teal-500"
+                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
                   />
                   <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
                     Re-analyze after loss
@@ -1634,7 +1650,11 @@ export function TradeTerminal() {
                     key={pct}
                     type="button"
                     onClick={() => {
-                      const bal = activeAccount ? Number(activeAccount.balance) || 100 : 100;
+                      const bal = activeAccount ? Number(activeAccount.balance) : 0;
+                      if (!Number.isFinite(bal) || bal <= 0) {
+                        setNote("Balance is 0. Top up demo funds in Deriv, then sync.");
+                        return;
+                      }
                       const calculated = Math.max(0.35, Math.round((bal * (pct / 100)) * 100) / 100);
                       updateStake(calculated);
                     }}
@@ -1658,7 +1678,7 @@ export function TradeTerminal() {
                   }`}>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-zinc-500 font-medium">Potential Payout</span>
-                      <span className={`font-bold num ${isDark ? "text-teal-400" : "text-teal-700"}`}>
+                      <span className={`font-bold num ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
                         ${payoutInfo.clientGrossPayout.toFixed(2)} USD
                       </span>
                     </div>
@@ -1817,7 +1837,7 @@ export function TradeTerminal() {
                     <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                       {price !== null ? price.toFixed(2) : "—"}
                     </div>
-                    <div className={`text-[11px] font-semibold num ${analysis.diff <= maxDiff ? (isDark ? "text-teal-400" : "text-teal-600") : "text-zinc-400"}`}>
+                    <div className={`text-[11px] font-semibold num ${analysis.diff <= maxDiff ? (isDark ? "text-zinc-300" : "text-zinc-600") : "text-zinc-400"}`}>
                       SPREAD Δ {analysis.diff.toFixed(2)}% <span className="text-zinc-600">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
                     </div>
                   </div>
@@ -2016,7 +2036,7 @@ export function TradeTerminal() {
                             </td>
                             <td className={`text-right font-bold ${
                               t.pnl > 0
-                                ? isDark ? "text-white" : "text-teal-700"
+                                ? isDark ? "text-white" : "text-zinc-700"
                                 : "text-zinc-500"
                             }`}>
                               {t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}
@@ -2107,7 +2127,7 @@ export function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">1,000 Ticks</div>
-                  <div className={`font-semibold ${digits.length >= WINDOW ? "text-teal-500" : "text-amber-500"}`}>
+                  <div className={`font-semibold ${digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}>
                     {digits.length >= WINDOW ? "VERIFIED" : `${digits.length}/${WINDOW}`}
                   </div>
                 </div>
@@ -2145,7 +2165,7 @@ export function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Feed Status</div>
-                  <div className="font-semibold text-teal-600 uppercase">{status}</div>
+                  <div className="font-semibold text-zinc-600 uppercase">{status}</div>
                 </div>
               </div>
 
@@ -2168,7 +2188,7 @@ export function TradeTerminal() {
               href="https://architeq.co.za"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-bold text-teal-500 hover:text-teal-400 hover:underline transition-colors"
+              className="font-bold text-zinc-400 hover:text-zinc-300 hover:underline transition-colors"
             >
               Architeq Web Agency ↗
             </a>
@@ -2195,7 +2215,7 @@ export function TradeTerminal() {
               type="button"
               onClick={startBot}
               disabled={digits.length < WINDOW}
-              className="flex-1 h-12 rounded-xl bg-teal-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="flex-1 h-12 rounded-xl bg-white px-4 text-xs font-bold uppercase tracking-wider text-black shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? "bg-white" : "bg-amber-300"}`} />
               {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
@@ -2219,7 +2239,7 @@ export function TradeTerminal() {
             disabled={digits.length < WINDOW || pending.current !== null}
             title="Run 1 test trade"
             className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-40 ${
-              isDark ? "border-teal-900 bg-teal-950/50 text-teal-300" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
+              isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
             TEST 1
@@ -2340,7 +2360,7 @@ export function TradeTerminal() {
               isDark ? "border-zinc-900" : "border-slate-200"
             }`}>
               <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-teal-400" />
+                <span className="h-2 w-2 rounded-full bg-zinc-300" />
                 <span className="text-xs font-bold uppercase tracking-wider">Terminal Settings</span>
               </div>
               <button
@@ -2376,11 +2396,11 @@ export function TradeTerminal() {
                 onClick={toggleNotifications}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
                   notifsEnabled
-                    ? isDark ? "border-teal-700 bg-teal-950/50 text-teal-300" : "border-teal-500 bg-teal-50 text-teal-800"
+                    ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-800"
                     : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
                 }`}
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-teal-400 animate-pulse" : "bg-zinc-600"}`} />
+                <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
                 NOTIF: {notifsEnabled ? "ON" : "OFF"}
               </button>
 
@@ -2425,7 +2445,7 @@ export function TradeTerminal() {
                   setShowMobileMenu(false);
                   handleInstallApp();
                 }}
-                className="w-full rounded bg-teal-600 py-3 text-xs font-bold uppercase tracking-wider text-white shadow-sm"
+                className="w-full rounded bg-white py-3 text-xs font-bold uppercase tracking-wider text-black shadow-sm"
               >
                 INSTALL APP ON HOME SCREEN
               </button>
@@ -2439,7 +2459,7 @@ export function TradeTerminal() {
                 setShowConnectModal(true);
               }}
               className={`w-full rounded border py-2.5 text-xs font-bold uppercase tracking-wider ${
-                isDark ? "border-teal-900 text-teal-400 bg-teal-950/20" : "border-teal-300 text-teal-800 bg-teal-50"
+                isDark ? "border-zinc-700 text-zinc-300 bg-zinc-900/40" : "border-zinc-300 text-zinc-800 bg-zinc-100"
               }`}
             >
               CONNECT DERIV ACCOUNT / TOKEN
@@ -2467,7 +2487,7 @@ export function TradeTerminal() {
                 href="https://architeq.co.za"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-teal-500 hover:text-teal-400 font-bold hover:underline"
+                className="text-zinc-400 hover:text-zinc-300 font-bold hover:underline"
               >
                 Architeq Web Agency ↗
               </a>
@@ -2556,13 +2576,13 @@ export function TradeTerminal() {
               To install ThDpst Matches as a full-screen app on your iPhone or iPad home screen:
             </p>
             <ol className="space-y-2.5 text-xs text-zinc-300 list-decimal list-inside leading-relaxed">
-              <li>Tap the <span className="font-semibold text-teal-400">Share</span> button in Safari's bottom toolbar.</li>
-              <li>Scroll down and select <span className="font-semibold text-teal-400">Add to Home Screen</span>.</li>
-              <li>Tap <span className="font-semibold text-teal-400">Add</span> in the top-right corner.</li>
+              <li>Tap the <span className="font-semibold text-zinc-300">Share</span> button in Safari's bottom toolbar.</li>
+              <li>Scroll down and select <span className="font-semibold text-zinc-300">Add to Home Screen</span>.</li>
+              <li>Tap <span className="font-semibold text-zinc-300">Add</span> in the top-right corner.</li>
             </ol>
             <button
               onClick={() => setShowIOSInstallGuide(false)}
-              className="w-full rounded bg-teal-600 py-2.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors shadow-sm"
+              className="w-full rounded bg-white py-2.5 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
             >
               GOT IT
             </button>

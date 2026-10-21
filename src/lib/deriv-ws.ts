@@ -13,7 +13,8 @@ interface PendingRequest {
 }
 
 export const DERIV_PUBLIC_WS_URL = getDerivWsUrl();
-export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(getDerivClientId() || '1089')}`;
+/** Classic Binary WS requires a numeric app_id — Auth 2.0 client ids are strings. */
+export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=1089`;
 
 export class DerivWS {
   private ws: WebSocket | null = null;
@@ -81,7 +82,7 @@ export class DerivWS {
           if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
           this.reconnectTimeout = setTimeout(() => {
             const primary = getDerivWsUrl();
-            const fallback = `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(getDerivClientId() || '1089')}`;
+            const fallback = DERIV_FALLBACK_WS_URL;
             if (this.url.startsWith('wss://api.derivws.com')) {
               this.url = fallback;
             } else {

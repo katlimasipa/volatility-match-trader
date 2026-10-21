@@ -190,7 +190,7 @@ function SignIn() {
             href="https://architeq.co.za"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-teal-400 hover:text-teal-300 hover:underline font-semibold"
+            className="text-zinc-400 hover:text-white hover:underline font-semibold"
           >
             Built by Architeq Web Agency ↗
           </a>
@@ -214,14 +214,14 @@ function SignIn() {
 
           {/* Deriv Auth 2.0 & Direct Permission Access */}
           {oauthLoading ? (
-            <div className="rounded-xl border border-teal-500/50 bg-zinc-950 p-6 text-center space-y-4 shadow-xl">
-              <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-teal-400 border-t-transparent" />
+            <div className="rounded-xl border border-zinc-700 bg-zinc-950 p-6 text-center space-y-4">
+              <div className="inline-block h-8 w-8 animate-spin rounded-full border-2 border-white border-t-transparent" />
               <div className="space-y-1">
-                <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-teal-400">
-                  Connecting Deriv Account...
+                <h3 className="font-mono text-sm font-bold uppercase tracking-wider text-white">
+                  Connecting Deriv…
                 </h3>
                 <p className="font-mono text-xs text-zinc-400">
-                  Exchanging authorization credentials and syncing trading accounts...
+                  Exchanging Auth 2.0 credentials and loading your accounts.
                 </p>
               </div>
             </div>
@@ -242,7 +242,7 @@ function SignIn() {
                 setShowTokenInput(!showTokenInput);
                 setTokenError(null);
               }}
-              className="w-full border border-zinc-800 bg-zinc-900/60 py-2.5 font-mono text-xs uppercase tracking-wider text-teal-400 hover:border-zinc-700 hover:text-teal-300 transition-colors"
+              className="w-full border border-zinc-800 bg-zinc-900/60 py-2.5 font-mono text-xs uppercase tracking-wider text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors"
             >
               {showTokenInput ? "Hide token login" : "Use API token (iPhone app / backup)"}
             </button>
@@ -258,7 +258,7 @@ function SignIn() {
                       href="https://app.deriv.com/account/api-token"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="font-mono text-[10px] text-teal-400 hover:underline"
+                      className="font-mono text-[10px] text-zinc-400 hover:text-white hover:underline"
                     >
                       Create token ↗
                     </a>
@@ -278,7 +278,7 @@ function SignIn() {
                 />
 
                 {tokenError && (
-                  <p className="font-mono text-[11px] text-rose-400 leading-tight">
+                  <p className="font-mono text-[11px] text-zinc-300 leading-tight">
                     {tokenError}
                   </p>
                 )}
@@ -286,9 +286,9 @@ function SignIn() {
                 <button
                   type="submit"
                   disabled={tokenBusy || !apiToken.trim()}
-                  className="w-full rounded bg-teal-600 py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-white hover:bg-teal-500 transition-colors disabled:opacity-40"
+                  className="w-full rounded bg-white py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
                 >
-                  {tokenBusy ? "Authorizing Account..." : "Grant Access & Enter"}
+                  {tokenBusy ? "Authorizing…" : "Connect & enter"}
                 </button>
               </form>
             )}
@@ -371,7 +371,7 @@ function SignIn() {
               href="https://architeq.co.za"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-teal-400 hover:text-teal-300 hover:underline font-bold"
+              className="text-zinc-300 hover:text-white hover:underline font-bold"
             >
               Architeq Web Agency ↗
             </a>
