@@ -5,7 +5,7 @@ export const DEFAULT_APP_ID = '34JeA7thqzN4l0B8LCC6A';
 
 // Deriv Auth 2.0 (OAuth 2.0 + PKCE).
 export const getDerivClientId = (): string => {
-  return import.meta.env.VITE_DERIV_CLIENT_ID || getSavedAppId() || DEFAULT_APP_ID;
+  return import.meta.env['VITE_DERIV_CLIENT_ID'] || getSavedAppId() || DEFAULT_APP_ID;
 };
 
 export const DERIV_AUTH_URL = 'https://auth.deriv.com/oauth2/auth';
@@ -30,8 +30,8 @@ export function getAppIdMarkup(appId?: string): number {
       if (!isNaN(parsed) && parsed >= 0) return parsed;
     }
   }
-  if (import.meta.env.VITE_DERIV_APP_MARKUP) {
-    const envMarkup = parseFloat(import.meta.env.VITE_DERIV_APP_MARKUP);
+  if (import.meta.env['VITE_DERIV_APP_MARKUP']) {
+    const envMarkup = parseFloat(import.meta.env['VITE_DERIV_APP_MARKUP']);
     if (!isNaN(envMarkup) && envMarkup >= 0) return envMarkup;
   }
   if (id && REGISTERED_APP_MARKUPS[id] !== undefined) {

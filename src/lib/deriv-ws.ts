@@ -100,7 +100,7 @@ export class DerivWS {
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data) as Record<string, unknown>;
-          const reqId = typeof data.req_id === 'number' ? data.req_id : null;
+          const reqId = typeof data['req_id'] === 'number' ? data['req_id'] : null;
 
           // Settle pending one-off request
           if (reqId !== null && this.pendingRequests.has(reqId)) {

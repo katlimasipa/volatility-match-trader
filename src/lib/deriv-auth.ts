@@ -309,7 +309,7 @@ export async function exchangeCodeForTokens(
 export async function authorizeWithToken(token: string): Promise<{
   success: boolean;
   accounts: DerivAccount[];
-  activeAccount?: DerivAccount;
+  activeAccount?: DerivAccount | undefined;
   error?: string;
 }> {
   const cleanToken = token.trim();
