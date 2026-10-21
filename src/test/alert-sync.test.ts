@@ -1,5 +1,10 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { getDeviceId, resolveAlertRoomId, resolveAlertRoomIds } from "@/lib/alert-sync";
+import {
+  countLinkedPushDevices,
+  getDeviceId,
+  resolveAlertRoomId,
+  resolveAlertRoomIds,
+} from "@/lib/alert-sync";
 import { setActiveAccountId, storeAccounts } from "@/lib/deriv-auth";
 import { shouldThrottle } from "@/lib/notifications";
 
@@ -79,6 +84,51 @@ describe("Cross-device alert rooms", () => {
     localStorage.setItem("thdpst_alert_room", "custom room");
 
     expect(resolveAlertRoomIds("CR12345")).toEqual(["custom_room"]);
+  });
+
+  it("counts peer push endpoints once across resolved account rooms", () => {
+    storeAccounts([
+      { account_id: "VRTC12345", account_type: "demo", currency: "USD", balance: "0" },
+      { account_id: "CR12345", account_type: "real", currency: "USD", balance: "0" },
+    ]);
+    setActiveAccountId("CR12345", "real");
+
+    const seenAt = Date.now();
+    const sharedEndpoint = {
+      endpoint: "https://push.example/shared",
+      p256dh: "p256dh",
+      auth: "auth",
+      deviceId: "iphone",
+      seenAt,
+    };
+    localStorage.setItem(
+      "thdpst_peer_push_deriv-CR12345",
+      JSON.stringify([
+        sharedEndpoint,
+        {
+          endpoint: "https://push.example/phone",
+          p256dh: "p256dh",
+          auth: "auth",
+          deviceId: "phone",
+          seenAt,
+        },
+      ]),
+    );
+    localStorage.setItem(
+      "thdpst_peer_push_deriv-VRTC12345",
+      JSON.stringify([
+        sharedEndpoint,
+        {
+          endpoint: "https://push.example/tablet",
+          p256dh: "p256dh",
+          auth: "auth",
+          deviceId: "tablet",
+          seenAt,
+        },
+      ]),
+    );
+
+    expect(countLinkedPushDevices()).toBe(3);
   });
 
   it("falls back to email session when no account", () => {

@@ -150,8 +150,10 @@ self.addEventListener('push', (event) => {
     self.registration
       .getNotifications({ tag: notificationOptions.tag })
       .then((existing) => {
-        if (existing.length > 0) return;
-        return self.registration.showNotification(payload.title, notificationOptions);
+        return self.registration.showNotification(payload.title, {
+          ...notificationOptions,
+          renotify: existing.length === 0,
+        });
       })
       .catch(() => self.registration.showNotification(payload.title, notificationOptions)),
   );
