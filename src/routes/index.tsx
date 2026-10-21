@@ -1,14 +1,11 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { session, getDerivClientId, derivRedirectUri, isOAuthOriginReady } from "@/lib/deriv-config";
+import { session, getDerivClientId, derivRedirectUri } from "@/lib/deriv-config";
 import {
   startDerivAuth,
   handleIncomingOAuth,
-  authorizeWithToken,
-  isStandaloneIosPwa,
 } from "@/lib/deriv-auth";
-import { isIOS, isRunningStandalone } from "@/lib/pwa";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -29,11 +26,7 @@ function SignIn() {
   const [msg, setMsg] = useState<string | null>(null);
   const [oauthLoading, setOauthLoading] = useState(false);
 
-  // Deriv direct token access (guaranteed to work on iOS PWA without redirect issues)
-  const [showTokenInput, setShowTokenInput] = useState(false);
-  const [apiToken, setApiToken] = useState("");
-  const [tokenBusy, setTokenBusy] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
+  // Deriv direct token access is removed in favor of Deriv Auth 2.0 PKCE exclusively
 
   useEffect(() => {
     // 1. Detect incoming OAuth callback immediately
@@ -59,7 +52,7 @@ function SignIn() {
             navigate({ to: "/trade" });
             return;
           } else if (res.error) {
-            setMsg(`Deriv authentication notice: ${res.error}. You can also use your API Token below.`);
+            setMsg(`Deriv authentication notice: ${res.error}.`);
           }
         }
       });
@@ -109,21 +102,6 @@ function SignIn() {
   };
 
   const onConnectDeriv = async () => {
-    // iOS home-screen apps open OAuth in Safari and cannot return into the PWA
-    if (isStandaloneIosPwa() || (isRunningStandalone() && isIOS())) {
-      setShowTokenInput(true);
-      setMsg(
-        "On the iPhone app, paste a Deriv API token below (Read + Trade). Auth 2.0 login opens in Safari and cannot return here."
-      );
-      return;
-    }
-    if (!isOAuthOriginReady()) {
-      setShowTokenInput(true);
-      setMsg(
-        `Auth 2.0 login works on ${derivRedirectUri()}. Open that link, or paste an API token below.`
-      );
-      return;
-    }
     setBusy(true);
     setMsg("Opening Deriv Auth 2.0...");
     try {
@@ -134,28 +112,6 @@ function SignIn() {
     } catch (e) {
       setBusy(false);
       setMsg(e instanceof Error ? e.message : "Could not start Deriv login.");
-    }
-  };
-
-  const handleAuthorizeToken = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!apiToken.trim()) return;
-
-    setTokenBusy(true);
-    setTokenError(null);
-
-    try {
-      const res = await authorizeWithToken(apiToken.trim());
-      if (res.success) {
-        session.set("deriv_trader");
-        navigate({ to: "/trade" });
-      } else {
-        setTokenError(res.error || "Failed to authorize token with Deriv.");
-      }
-    } catch (err) {
-      setTokenError(err instanceof Error ? err.message : "Authorization error.");
-    } finally {
-      setTokenBusy(false);
     }
   };
 
@@ -236,68 +192,11 @@ function SignIn() {
                 Sign In with Deriv Auth 2.0
               </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setShowTokenInput(!showTokenInput);
-                setTokenError(null);
-              }}
-              className="w-full border border-zinc-800 bg-zinc-900/60 py-2.5 font-mono text-xs uppercase tracking-wider text-zinc-300 hover:border-zinc-700 hover:text-white transition-colors"
-            >
-              {showTokenInput ? "Hide token login" : "Use API token (iPhone app / backup)"}
-            </button>
-
-            {showTokenInput && (
-              <form onSubmit={handleAuthorizeToken} className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 space-y-3">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
-                      Deriv API token
-                    </span>
-                    <a
-                      href="https://app.deriv.com/account/api-token"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-[10px] text-zinc-400 hover:text-white hover:underline"
-                    >
-                      Create token ↗
-                    </a>
-                  </div>
-                  <p className="font-mono text-[10px] text-zinc-500 leading-tight">
-                    Required on the iPhone home-screen app. In Deriv, open Settings → API token, enable Read and Trade, then paste it here.
-                  </p>
-                </div>
-
-                <input
-                  type="text"
-                  placeholder="Paste your Deriv API token here"
-                  value={apiToken}
-                  onChange={(e) => setApiToken(e.target.value)}
-                  className="w-full rounded border border-zinc-800 bg-black px-3 py-2 font-mono text-xs text-white placeholder-zinc-700 outline-none focus:border-zinc-600"
-                  required
-                />
-
-                {tokenError && (
-                  <p className="font-mono text-[11px] text-zinc-300 leading-tight">
-                    {tokenError}
-                  </p>
-                )}
-
-                <button
-                  type="submit"
-                  disabled={tokenBusy || !apiToken.trim()}
-                  className="w-full rounded bg-white py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
-                >
-                  {tokenBusy ? "Authorizing…" : "Connect & enter"}
-                </button>
-              </form>
-            )}
-
-            <p className="text-center font-mono text-[10px] text-zinc-500">
-              Access your Deriv Demo & Real accounts with automated execution
-            </p>
-            {msg && <p className="font-mono text-xs text-zinc-400 text-center">{msg}</p>}
-          </div>
+              <p className="text-center font-mono text-[10px] text-zinc-500">
+                Access your Deriv Demo & Real accounts with automated execution
+              </p>
+              {msg && <p className="font-mono text-xs text-zinc-400 text-center">{msg}</p>}
+            </div>
           )}
 
           <div className="flex items-center gap-3">

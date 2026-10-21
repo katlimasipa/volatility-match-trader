@@ -91,7 +91,7 @@ function Callback() {
       const state = searchParams.get("state") || hashParams.get("state");
 
       if (!code || !state) {
-        setError("Missing authorization code or state parameter. Please try connecting again or use an API Token.");
+        setError("Missing authorization code or state parameter. Please try connecting again.");
         return;
       }
 
@@ -135,10 +135,10 @@ function Callback() {
         {error && (
           <div className="pt-4 space-y-3">
             <Link
-              to="/trade"
+              to="/"
               className="inline-flex h-11 w-full items-center justify-center bg-white px-6 text-xs uppercase tracking-wider text-black font-semibold hover:bg-zinc-200 transition-colors"
             >
-              Open terminal and use API token
+              Try Deriv Auth 2.0 again
             </Link>
             <Link
               to="/"

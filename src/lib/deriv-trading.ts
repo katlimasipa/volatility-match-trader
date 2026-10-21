@@ -265,7 +265,7 @@ export class DerivTradingSession {
 
     const token = await resolveTradingToken();
     if (!token) {
-      this.emitStatus('error', 'No Deriv token. Sign in with Auth 2.0 or paste an API token.');
+      this.emitStatus('error', 'No Deriv authorization. Please sign in with Deriv Auth 2.0.');
       return false;
     }
 

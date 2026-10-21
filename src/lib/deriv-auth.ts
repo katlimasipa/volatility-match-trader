@@ -84,8 +84,6 @@ export async function sha256Base64url(input: string): Promise<string> {
 
 /**
  * Dual-write helpers so Auth 2.0 survives PWA reloads and Safari ITP quirks.
- * iOS home-screen apps still cannot share storage with Safari after OAuth —
- * for those, paste an API / Auth 2.0 token instead.
  */
 function readDual(key: string): string | null {
   if (typeof window === 'undefined') return null;
@@ -303,7 +301,7 @@ export async function exchangeCodeForTokens(
   removeDual(STORAGE_KEYS.REDIRECT_URI);
 
   if (!codeVerifier) {
-    throw new Error('Login session expired. Sign in again, or paste an API token.');
+    throw new Error('Login session expired. Please sign in again.');
   }
 
   const body = new URLSearchParams({
@@ -749,7 +747,7 @@ export async function authorizeWithToken(token: string): Promise<{
     error:
       classic.error ||
       restFallback.error ||
-      'Could not authorize this token. Use Deriv Auth 2.0 or an API token with Read + Trade.',
+      'Could not authorize session. Please sign in again with Deriv Auth 2.0.',
   };
 }
 

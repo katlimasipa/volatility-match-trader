@@ -7,7 +7,6 @@ import {
   getDerivWsUrl,
   getAppIdMarkup,
   setAppIdMarkup,
-  isOAuthOriginReady,
 } from "@/lib/deriv-config";
 import {
   startDerivAuth,
@@ -20,7 +19,6 @@ import {
   handleIncomingOAuth,
   authorizeWithToken,
   getManualToken,
-  isStandaloneIosPwa,
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
@@ -145,12 +143,8 @@ function TradeTerminal() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isConnectedToDeriv, setIsConnectedToDeriv] = useState(false);
 
-  // Deriv connection modal (OAuth + Direct API Token authorization)
+  // Deriv connection modal (Auth 2.0 PKCE)
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [apiTokenInput, setApiTokenInput] = useState("");
-  const [tokenBusy, setTokenBusy] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
-  const [tokenSuccess, setTokenSuccess] = useState<string | null>(null);
 
   // In-app alert banner
   const [inAppAlert, setInAppAlert] = useState<{ id: number; title: string; body: string; type: string } | null>(null);
@@ -656,7 +650,7 @@ function TradeTerminal() {
     const unsubStatus = session.onStatus((st, detail) => {
       if (st === "ready") {
         setTradingReady(true);
-        const modeLabel = detail === "otp" ? "Auth 2.0" : detail === "classic" ? "API token" : detail || "authorized";
+        const modeLabel = detail === "otp" ? "Auth 2.0" : "authorized";
         setTradingStatusNote(`Live trading ready (${modeLabel})`);
         setIsConnectedToDeriv(true);
         const authorizedId = session.getAccountId();
@@ -872,7 +866,7 @@ function TradeTerminal() {
         setRunning(false);
         setBotState("IDLE");
         setNote(
-          "Trading socket offline. Reconnect Deriv Auth 2.0 or your API token, then start again."
+          "Trading socket offline. Reconnect Deriv Auth 2.0, then start again."
         );
         return;
       }
@@ -910,7 +904,7 @@ function TradeTerminal() {
     if (!isConnectedToDeriv || !tradingReady) {
       setShowConnectModal(true);
       setNote(
-        "Connect Deriv Auth 2.0 or an API token so trades hit your account and the balance updates."
+        "Connect Deriv Auth 2.0 so trades hit your account and the balance updates."
       );
       return;
     }
@@ -1051,58 +1045,12 @@ function TradeTerminal() {
 
   async function handleDirectOAuth() {
     try {
-      if (isStandaloneIosPwa() || (isRunningStandalone() && isIOS())) {
-        setShowConnectModal(true);
-        setTokenError(
-          "On the iPhone app, paste an API token below. Safari and the installed app do not share login."
-        );
-        return;
-      }
-      if (!isOAuthOriginReady()) {
-        setShowConnectModal(true);
-        setTokenError(
-          `Auth 2.0 works on ${derivRedirectUri()}. Open that link, or paste an API token here.`
-        );
-        return;
-      }
       await startDerivAuth({
         clientId: getDerivClientId(),
         redirectUri: derivRedirectUri(),
       });
     } catch (e) {
       alert(e instanceof Error ? e.message : "Could not start Deriv Auth 2.0");
-    }
-  }
-
-  async function handleAuthorizeWithTokenSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!apiTokenInput.trim()) return;
-
-    setTokenBusy(true);
-    setTokenError(null);
-    setTokenSuccess(null);
-
-    try {
-      const res = await authorizeWithToken(apiTokenInput.trim());
-      if (res.success) {
-        setIsConnectedToDeriv(true);
-        setAccounts(res.accounts);
-        if (res.activeAccount) {
-          setActiveId(res.activeAccount.account_id);
-        }
-        setTokenSuccess("Successfully authorized and connected Deriv account!");
-        setTimeout(() => {
-          setShowConnectModal(false);
-          setTokenSuccess(null);
-          setApiTokenInput("");
-        }, 1200);
-      } else {
-        setTokenError(res.error || "Failed to authorize token.");
-      }
-    } catch (err) {
-      setTokenError(err instanceof Error ? err.message : "Authorization error.");
-    } finally {
-      setTokenBusy(false);
     }
   }
 
@@ -1499,7 +1447,7 @@ function TradeTerminal() {
                     onClick={() => setShowConnectModal(true)}
                     className="w-full text-center text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors uppercase tracking-wider"
                   >
-                    Change Account / API Token
+                    Change Account
                   </button>
                 </div>
               ) : (
@@ -2290,8 +2238,6 @@ function TradeTerminal() {
               <button
                 onClick={() => {
                   setShowConnectModal(false);
-                  setTokenError(null);
-                  setTokenSuccess(null);
                 }}
                 className="text-xs font-semibold uppercase text-zinc-500 hover:text-white"
               >
@@ -2299,79 +2245,26 @@ function TradeTerminal() {
               </button>
             </div>
 
-            <form onSubmit={handleAuthorizeWithTokenSubmit} className="space-y-3">
+            <div className="space-y-4">
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                    API token
-                  </span>
-                  <a
-                    href="https://app.deriv.com/account/api-token"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-zinc-400 hover:text-white hover:underline"
-                  >
-                    Get token ↗
-                  </a>
-                </div>
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
+                  Deriv Auth 2.0
+                </span>
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Required on the iPhone home-screen app. In Deriv → Settings → API token, enable Read and Trade, then paste it here.
+                  Authenticate securely via Deriv Auth 2.0 PKCE. All trading permissions and demo/real accounts will be loaded automatically.
                 </p>
               </div>
 
-              <input
-                type="text"
-                value={apiTokenInput}
-                onChange={(e) => setApiTokenInput(e.target.value)}
-                placeholder="Paste your Deriv API token"
-                className={`w-full border px-3 py-2 text-xs font-mono outline-none ${
-                  isDark ? "border-zinc-800 bg-black text-white focus:border-zinc-600" : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
-                }`}
-                required
-              />
-
-              {tokenError && (
-                <p className="text-[11px] text-zinc-300 leading-tight">
-                  {tokenError}
-                </p>
-              )}
-
-              {tokenSuccess && (
-                <p className="text-[11px] text-zinc-200 font-semibold leading-tight">
-                  {tokenSuccess}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={tokenBusy || !apiTokenInput.trim()}
-                className="w-full bg-white py-2.5 text-xs font-semibold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors disabled:opacity-40"
-              >
-                {tokenBusy ? "Connecting..." : "Connect with token"}
-              </button>
-            </form>
-
-            <div className="flex items-center gap-3">
-              <div className={`h-px flex-1 ${isDark ? "bg-zinc-800" : "bg-slate-200"}`} />
-              <span className="text-[10px] uppercase tracking-widest text-zinc-500">OR</span>
-              <div className={`h-px flex-1 ${isDark ? "bg-zinc-800" : "bg-slate-200"}`} />
-            </div>
-
-            <div className="space-y-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                Deriv Auth 2.0
-              </span>
               <button
                 type="button"
                 onClick={handleDirectOAuth}
-                className={`w-full border py-2.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                  isDark ? "border-zinc-700 bg-zinc-900 text-white hover:bg-zinc-800" : "border-slate-300 bg-slate-100 text-slate-900 hover:bg-slate-200"
-                }`}
+                className="w-full bg-white py-3 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm"
               >
                 Sign in with Deriv Auth 2.0
               </button>
+
               <p className="text-[10px] text-zinc-500 text-center leading-tight">
-                Works in the browser and Android/desktop PWA on the live site. On iPhone installed apps, use an API token.
+                Redirects to Deriv login. Demo and real accounts will be synchronized immediately upon return.
               </p>
             </div>
           </div>
@@ -2490,7 +2383,7 @@ function TradeTerminal() {
                 isDark ? "border-zinc-700 text-zinc-300 bg-zinc-900/40" : "border-zinc-300 text-zinc-800 bg-zinc-100"
               }`}
             >
-              CONNECT DERIV ACCOUNT / TOKEN
+              CONNECT DERIV ACCOUNT
             </button>
 
             {/* Exit Button */}
