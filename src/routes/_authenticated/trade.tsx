@@ -70,7 +70,7 @@ import {
   onInstallableChange,
   triggerInstallPrompt,
 } from "@/lib/pwa";
-import { calculateMatchesPayout } from "@/lib/payout";
+import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/payout";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({

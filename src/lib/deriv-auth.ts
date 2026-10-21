@@ -15,7 +15,7 @@ export interface AuthInfo {
   expires_in: number;
   expires_at: number;
   scope: string;
-  refresh_token?: string;
+  refresh_token?: string | undefined;
 }
 
 export interface DerivAccount {
@@ -698,7 +698,7 @@ export async function authorizeWithToken(token: string): Promise<{
         expires_in: 7200,
         expires_at: Math.floor(Date.now() / 1000) + 7200,
         scope: 'trade account_manage',
-        refresh_token: getStoredAuthInfo()?.refresh_token,
+        ...(getStoredAuthInfo()?.refresh_token ? { refresh_token: getStoredAuthInfo()!.refresh_token } : {}),
       });
       const active =
         rest.accounts.find((a) => a.account_id === getActiveAccountId()) ||

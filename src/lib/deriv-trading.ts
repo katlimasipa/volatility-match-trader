@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Live Deriv trading session: Auth 2.0 OTP WebSocket or classic authorize,
  * balance subscription, DIGITMATCH proposal + buy, and contract settlement.
  */
@@ -23,9 +23,9 @@ export interface ContractResult {
   profit: number;
   payout: number;
   buyPrice: number;
-  exitDigit?: number;
+  exitDigit?: number | undefined;
   status: string;
-  balanceAfter?: number;
+  balanceAfter?: number | undefined;
 }
 
 export interface BuyMatchParams {

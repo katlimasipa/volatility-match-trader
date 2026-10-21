@@ -73,7 +73,10 @@ export async function enableWebPush(accountId?: string | null): Promise<{
     }
 
     const json = sub.toJSON();
-    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+    const keys = json.keys;
+    const p256dh = keys ? keys["p256dh"] : undefined;
+    const auth = keys ? keys["auth"] : undefined;
+    if (!json.endpoint || !p256dh || !auth) {
       return { ok: false, error: "Browser did not return a valid push subscription." };
     }
 
@@ -82,8 +85,8 @@ export async function enableWebPush(accountId?: string | null): Promise<{
         roomId,
         deviceId: getDeviceId(),
         endpoint: json.endpoint,
-        p256dh: json.keys.p256dh,
-        auth: json.keys.auth,
+        p256dh,
+        auth,
         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
       },
     });
@@ -122,7 +125,7 @@ export async function fanoutRemotePush(opts: {
   roomId: string;
   title: string;
   body: string;
-  kind?: string;
+  kind?: string | undefined;
 }): Promise<void> {
   try {
     await fanoutPushAlert({
@@ -130,7 +133,7 @@ export async function fanoutRemotePush(opts: {
         roomId: opts.roomId,
         title: opts.title,
         body: opts.body,
-        kind: opts.kind,
+        ...(opts.kind ? { kind: opts.kind } : {}),
         sourceDeviceId: getDeviceId(),
       },
     });

@@ -6,15 +6,15 @@ type PushSubInput = {
   endpoint: string;
   p256dh: string;
   auth: string;
-  userAgent?: string;
+  userAgent?: string | undefined;
 };
 
 type FanoutInput = {
   roomId: string;
   title: string;
   body: string;
-  kind?: string;
-  sourceDeviceId?: string;
+  kind?: string | undefined;
+  sourceDeviceId?: string | undefined;
 };
 
 function getVapidConfig() {
