@@ -72,7 +72,14 @@ import {
   onInstallableChange,
   triggerInstallPrompt,
 } from "@/lib/pwa";
-import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/payout";
+import {
+  calculateMatchesPayout,
+  DERIV_MATCH_BASE_PAYOUT_RATIO,
+  getStoredMatchRatio,
+  ratioFromContract,
+  scalePayoutFromRatio,
+  setStoredMatchRatio,
+} from "@/lib/payout";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
@@ -172,6 +179,9 @@ function TradeTerminal() {
     accounts.find((a) => a.account_id.toUpperCase() === String(activeId || "").toUpperCase()) ||
     accounts[0];
   const activeType: "demo" | "real" = activeAccount?.account_type || "demo";
+  const [storedPayoutRatio, setStoredPayoutRatio] = useState<number | null>(() =>
+    getStoredMatchRatio(activeAccount?.account_id || activeId)
+  );
 
   // Market stream state: strictly chronological ticks and digits
   const [digits, setDigits] = useState<number[]>([]);
@@ -184,6 +194,11 @@ function TradeTerminal() {
   const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [stake, setStake] = useState<number>(1);
+  const [liveQuote, setLiveQuote] = useState<{ stake: number; payout: number; at: number } | null>(
+    null
+  );
+  const [quoteRefresh, setQuoteRefresh] = useState(0);
+  const liveQuoteAccountIdRef = useRef<string | null>(null);
   const [stakeInput, setStakeInput] = useState<string>("1");
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
   const [tp, setTp] = useState<number>(15);
@@ -191,6 +206,15 @@ function TradeTerminal() {
   const [sl, setSl] = useState<number>(5);
   const [slInput, setSlInput] = useState<string>("5");
   const [centerTab, setCenterTab] = useState<"trade_log" | "session_history">("trade_log");
+
+  useEffect(() => {
+    setStoredPayoutRatio(getStoredMatchRatio(activeAccount?.account_id || activeId));
+  }, [activeAccount?.account_id, activeId]);
+
+  useEffect(() => {
+    liveQuoteAccountIdRef.current = null;
+    setLiveQuote(null);
+  }, [activeAccount?.account_id, activeAccount?.currency, stake]);
 
   function updateStake(val: number, strVal?: string) {
     setStake(val);
@@ -349,6 +373,7 @@ function TradeTerminal() {
   const lossCooldownTicks = useRef(0);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
+  const quoteBarrierDigitRef = useRef(5);
   const connectionLostAlertedRef = useRef(false);
   const handleTickEventRef = useRef(handleTickEvent);
   handleTickEventRef.current = handleTickEvent;
@@ -383,6 +408,17 @@ function TradeTerminal() {
     configuredMarkup,
     cycleCount,
   };
+
+  const saveMatchRatioForAccount = useCallback((accountId: string, ratio: number) => {
+    setStoredMatchRatio(accountId, ratio);
+    const selectedAccountId = stateRef.current.activeId || getActiveAccountId();
+    if (
+      !selectedAccountId ||
+      selectedAccountId.toUpperCase() === accountId.toUpperCase()
+    ) {
+      setStoredPayoutRatio(ratio);
+    }
+  }, []);
 
   useEffect(() => {
     const handlePageHide = () => {
@@ -841,6 +877,18 @@ function TradeTerminal() {
         if (pending.current?.live && pending.current.runIndex === p.runIndex) {
           pending.current = null;
         }
+        if (result.won && result.payout > 0) {
+          const buyPrice =
+            Number.isFinite(result.buyPrice) && result.buyPrice > 0
+              ? result.buyPrice
+              : p.stake;
+          const ratio = ratioFromContract(buyPrice, result.payout);
+          const accountId = session.getAccountId();
+          if (ratio !== null && accountId) {
+            saveMatchRatioForAccount(accountId, ratio);
+          }
+        }
+        setQuoteRefresh((current) => current + 1);
         const pnl = Number(result.profit);
         const resultDigit =
           typeof result.exitDigit === "number" ? result.exitDigit : result.won ? p.target : -1;
@@ -855,6 +903,7 @@ function TradeTerminal() {
       })
       .catch((err: Error) => {
         pending.current = null;
+        setQuoteRefresh((current) => current + 1);
         lossCooldownTicks.current = 3;
         setBotState("ANALYZING");
         setNote(`Trade notice: ${err.message}. Retrying on next signal...`);
@@ -874,6 +923,7 @@ function TradeTerminal() {
         console.warn('[bot] Force-clearing stuck pending trade after', Math.round(elapsed / 1000), 'seconds');
         pending.current = null;
         pendingSetAt.current = 0;
+        setQuoteRefresh((current) => current + 1);
         setBotState("ANALYZING");
         setNote("Trade settlement timed out. Resuming analysis...");
         // Fall through to continue processing
@@ -1013,6 +1063,13 @@ function TradeTerminal() {
     let wins = 0;
     let losses = 0;
     let pnl = 0;
+    const payoutRatio = getStoredMatchRatio(
+      activeAccount?.account_id || activeId || getActiveAccountId()
+    );
+    const winProfit =
+      payoutRatio !== null
+        ? scalePayoutFromRatio(stake, payoutRatio).profit
+        : calculateMatchesPayout(stake, configuredMarkup).netWinProfit;
 
     for (let i = 0; i < windowDigits.length - 1; i++) {
       if (windowDigits[i] === a.most) {
@@ -1020,7 +1077,7 @@ function TradeTerminal() {
         const nextDigit = windowDigits[i + 1];
         if (nextDigit === a.second) {
           wins++;
-          pnl += calculateMatchesPayout(stake, configuredMarkup).netWinProfit;
+          pnl += winProfit;
         } else {
           losses++;
           pnl -= stake;
@@ -1102,6 +1159,62 @@ function TradeTerminal() {
   }
 
   const analysis = analyze(digits, maxDiff);
+  quoteBarrierDigitRef.current = analysis.second ?? 5;
+  const quoteAccountId = activeAccount?.account_id || activeId || getActiveAccountId();
+  const quoteCurrency = activeAccount?.currency || "USD";
+
+  useEffect(() => {
+    if (!tradingReady || stake <= 0 || pending.current !== null) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const quoteSession = tradingRef.current;
+      if (!quoteSession?.isReady() || pending.current !== null) return;
+      const connectedAccountId = quoteSession.getAccountId();
+      if (
+        quoteAccountId &&
+        connectedAccountId?.toUpperCase() !== quoteAccountId.toUpperCase()
+      ) {
+        return;
+      }
+
+      void quoteSession
+        .quoteDigitMatch({
+          stake,
+          barrierDigit: quoteBarrierDigitRef.current,
+          currency: quoteCurrency,
+        })
+        .then((quote) => {
+          if (cancelled) return;
+          const accountId = quoteAccountId || connectedAccountId;
+          liveQuoteAccountIdRef.current = accountId;
+          setLiveQuote({ stake, payout: quote.payout, at: Date.now() });
+          const ratio = ratioFromContract(quote.askPrice, quote.payout);
+          if (ratio !== null && accountId) {
+            saveMatchRatioForAccount(accountId, ratio);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            liveQuoteAccountIdRef.current = null;
+            setLiveQuote(null);
+          }
+        });
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    stake,
+    tradingReady,
+    quoteAccountId,
+    quoteCurrency,
+    quoteRefresh,
+    saveMatchRatioForAccount,
+  ]);
+
   const currentDigit = digits[digits.length - 1];
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0).length;
@@ -1694,7 +1807,30 @@ function TradeTerminal() {
 
               {/* Live Deriv Matches Payout Breakdown with App ID Configured Markup */}
               {(() => {
-                const payoutInfo = calculateMatchesPayout(stake, configuredMarkup);
+                const currentLiveQuote =
+                  liveQuote?.stake === stake &&
+                  liveQuoteAccountIdRef.current?.toUpperCase() === quoteAccountId?.toUpperCase()
+                    ? liveQuote
+                    : null;
+                const ratioPayout =
+                  storedPayoutRatio !== null
+                    ? scalePayoutFromRatio(stake, storedPayoutRatio)
+                    : null;
+                const estimate = calculateMatchesPayout(stake, configuredMarkup);
+                const payout =
+                  currentLiveQuote?.payout ??
+                  ratioPayout?.payout ??
+                  estimate.clientGrossPayout;
+                const profit =
+                  currentLiveQuote !== null
+                    ? currentLiveQuote.payout - stake
+                    : ratioPayout?.profit ?? estimate.netWinProfit;
+                const payoutLabel = currentLiveQuote
+                  ? "Live Deriv quote"
+                  : ratioPayout
+                    ? "Based on your last Deriv quote"
+                    : "Estimate";
+                const effectiveMultiplier = stake > 0 ? payout / stake : 0;
                 return (
                   <div className={`mt-3 rounded-lg border p-3 space-y-2 ${
                     isDark ? "border-zinc-800/80 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
@@ -1702,23 +1838,23 @@ function TradeTerminal() {
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-zinc-500 font-medium">Potential Payout</span>
                       <span className={`font-bold num ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
-                        ${payoutInfo.clientGrossPayout.toFixed(2)} USD
+                        ${payout.toFixed(2)} USD
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-zinc-500 font-medium">Net Profit / Win</span>
                       <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                        +${payoutInfo.netWinProfit.toFixed(2)} USD
+                        +${profit.toFixed(2)} USD
                         <span className="ml-1 text-[10px] text-zinc-500 font-normal">
-                          (+{((payoutInfo.netWinProfit / (stake || 1)) * 100).toFixed(0)}%)
+                          (+{((profit / (stake || 1)) * 100).toFixed(0)}%)
                         </span>
                       </span>
                     </div>
                     <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
                       isDark ? "border-zinc-800/60" : "border-slate-200"
                     }`}>
-                      <span>Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}</span>
-                      <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
+                      <span>{payoutLabel}</span>
+                      <span>Effective: {effectiveMultiplier.toFixed(2)}x</span>
                     </div>
                   </div>
                 );

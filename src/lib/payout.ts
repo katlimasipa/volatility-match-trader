@@ -12,6 +12,61 @@ import { getAppIdMarkup } from "./deriv-config";
  */
 export const DERIV_MATCH_BASE_PAYOUT_RATIO = 100 / 11.2; // 8.92857142857
 
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export function scalePayoutFromRatio(
+  stake: number,
+  ratio: number
+): { payout: number; profit: number } {
+  const payout = roundMoney(stake * ratio);
+  return { payout, profit: roundMoney(payout - stake) };
+}
+
+export function ratioFromContract(buyPrice: number, payout: number): number | null {
+  if (
+    !Number.isFinite(buyPrice) ||
+    !Number.isFinite(payout) ||
+    buyPrice <= 0 ||
+    payout <= 0
+  ) {
+    return null;
+  }
+  return payout / buyPrice;
+}
+
+function matchRatioStorageKey(accountId: string | null | undefined): string | null {
+  const normalizedAccountId = accountId?.trim().toUpperCase();
+  return normalizedAccountId ? `thdpst_match_ratio_${normalizedAccountId}` : null;
+}
+
+export function getStoredMatchRatio(accountId: string | null | undefined): number | null {
+  const key = matchRatioStorageKey(accountId);
+  if (!key || typeof window === "undefined") return null;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === null) return null;
+    const ratio = Number(stored);
+    return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredMatchRatio(
+  accountId: string | null | undefined,
+  ratio: number
+): void {
+  const key = matchRatioStorageKey(accountId);
+  if (!key || typeof window === "undefined" || !Number.isFinite(ratio) || ratio <= 0) return;
+  try {
+    window.localStorage.setItem(key, String(ratio));
+  } catch {
+    // Ignore storage failures; a live quote is still available in memory.
+  }
+}
+
 export function calculateMatchesPayout(
   stake: number,
   markupPercent: number = getAppIdMarkup()

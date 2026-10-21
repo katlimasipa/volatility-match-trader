@@ -469,18 +469,15 @@ export class DerivTradingSession {
     });
   }
 
-  /**
-   * Place a 1-tick DIGITMATCH contract on Volatility 100.
-   */
-  async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
-    if (!this.ws || !this.ready) {
-      throw new Error('Trading session is not ready. Connect Deriv first.');
-    }
-
+  private buildMatchProposal(params: {
+    stake: number;
+    barrierDigit: number;
+    currency?: string;
+  }): Record<string, unknown> {
     const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
     const amount = Math.round(params.stake * 100) / 100;
     const currency = params.currency || this.currency || 'USD';
-    const proposalPayload: Record<string, unknown> = {
+    return {
       proposal: 1,
       amount,
       basis: 'stake',
@@ -493,8 +490,57 @@ export class DerivTradingSession {
         ? { underlying_symbol: CLASSIC_SYMBOL }
         : { symbol: CLASSIC_SYMBOL }),
     };
+  }
 
-    const proposalRes = await this.ws.send(proposalPayload);
+  async quoteDigitMatch(params: {
+    stake: number;
+    barrierDigit: number;
+    currency?: string;
+  }): Promise<{ askPrice: number; payout: number }> {
+    if (!this.ws || !this.ready) {
+      throw new Error('Trading session is not ready. Connect Deriv first.');
+    }
+
+    const amount = Math.round(params.stake * 100) / 100;
+    const proposalRes = await this.ws.send<{
+      proposal?: {
+        ask_price?: number | string;
+        payout?: number | string;
+      };
+      error?: { message?: string };
+    }>(this.buildMatchProposal(params));
+    const proposal = proposalRes['proposal'];
+    if (!proposal) {
+      throw new Error(proposalRes.error?.message || 'Deriv did not return a DIGITMATCH quote.');
+    }
+
+    if (proposal.payout === undefined || proposal.payout === null) {
+      throw new Error('Deriv did not return a payout for DIGITMATCH.');
+    }
+    const payout = Number(proposal.payout);
+    const askPrice = Number(proposal.ask_price ?? amount);
+    if (!Number.isFinite(payout)) {
+      throw new Error('Deriv returned an invalid payout for DIGITMATCH.');
+    }
+    if (!Number.isFinite(askPrice)) {
+      throw new Error('Deriv returned an invalid ask price for DIGITMATCH.');
+    }
+
+    return { askPrice, payout };
+  }
+
+  /**
+   * Place a 1-tick DIGITMATCH contract on Volatility 100.
+   */
+  async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
+    if (!this.ws || !this.ready) {
+      throw new Error('Trading session is not ready. Connect Deriv first.');
+    }
+
+    const amount = Math.round(params.stake * 100) / 100;
+    const currency = params.currency || this.currency || 'USD';
+    const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
+    const proposalRes = await this.ws.send(this.buildMatchProposal(params));
 
     const proposal = proposalRes['proposal'] as {
       id?: string;

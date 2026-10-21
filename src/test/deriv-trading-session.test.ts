@@ -97,3 +97,69 @@ describe("DIGITMATCH proposal payload", () => {
     },
   );
 });
+
+describe("DIGITMATCH quote", () => {
+  it.each(["otp", "classic"] as const)(
+    "uses the %s symbol field and returns the proposal values without buying",
+    async (mode) => {
+      const sent: Record<string, unknown>[] = [];
+      const fakeWs = {
+        send: vi.fn(async (payload: Record<string, unknown>) => {
+          sent.push(payload);
+          return { proposal: { ask_price: "2.50", payout: "16.68" } };
+        }),
+        dispose: vi.fn(),
+      } as unknown as DerivWS;
+      const session = new DerivTradingSession();
+      Object.assign(session as unknown as Record<string, unknown>, {
+        ws: fakeWs,
+        ready: true,
+        mode,
+      });
+
+      await expect(
+        session.quoteDigitMatch({ stake: 2.5, barrierDigit: 4, currency: "USD" }),
+      ).resolves.toEqual({ askPrice: 2.5, payout: 16.68 });
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({
+        proposal: 1,
+        amount: 2.5,
+        basis: "stake",
+        contract_type: "DIGITMATCH",
+        currency: "USD",
+        duration: 1,
+        duration_unit: "t",
+        barrier: "4",
+      });
+      if (mode === "otp") {
+        expect(sent[0]).toHaveProperty("underlying_symbol", "R_100");
+        expect(sent[0]).not.toHaveProperty("symbol");
+      } else {
+        expect(sent[0]).toHaveProperty("symbol", "R_100");
+        expect(sent[0]).not.toHaveProperty("underlying_symbol");
+      }
+
+      session.dispose();
+    },
+  );
+
+  it("rejects a quote with no payout", async () => {
+    const fakeWs = {
+      send: vi.fn(async () => ({ proposal: { ask_price: "1.00" } })),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "otp",
+    });
+
+    await expect(
+      session.quoteDigitMatch({ stake: 1, barrierDigit: 5 }),
+    ).rejects.toThrow("Deriv did not return a payout");
+
+    session.dispose();
+  });
+});
