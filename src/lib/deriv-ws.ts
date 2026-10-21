@@ -12,6 +12,11 @@ interface PendingRequest {
   reject: (err: Error) => void;
 }
 
+interface DerivWSOptions {
+  autoReconnect?: boolean;
+  onClose?: () => void;
+}
+
 export const DERIV_PUBLIC_WS_URL = getDerivWsUrl();
 /** Classic Binary WS requires a numeric app_id — Auth 2.0 client ids are strings. */
 export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=1089`;
@@ -30,13 +35,21 @@ export class DerivWS {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private onStatusChange: ((status: 'connecting' | 'live' | 'offline') => void) | null = null;
   private url: string;
+  private autoReconnect: boolean;
+  private onCloseCallback: (() => void) | null;
   private isDisposed = false;
   private isConnecting = false;
   private openWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
 
-  constructor(url?: string, onStatusChange?: (status: 'connecting' | 'live' | 'offline') => void) {
+  constructor(
+    url?: string,
+    onStatusChange?: (status: 'connecting' | 'live' | 'offline') => void,
+    options: DerivWSOptions = {}
+  ) {
     this.url = url || getDerivWsUrl();
     this.onStatusChange = onStatusChange || null;
+    this.autoReconnect = options.autoReconnect ?? true;
+    this.onCloseCallback = options.onClose || null;
     this.connect();
   }
 
@@ -77,12 +90,13 @@ export class DerivWS {
         this.isConnecting = false;
         this.stopPing();
         this.onStatusChange?.('offline');
+        this.onCloseCallback?.();
 
         const waiters = [...this.openWaiters];
         this.openWaiters = [];
         waiters.forEach((w) => w.reject(new Error('WebSocket closed before opening')));
 
-        if (!this.isDisposed) {
+        if (!this.isDisposed && this.autoReconnect) {
           if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
           this.reconnectTimeout = setTimeout(() => {
             const primary = getDerivWsUrl();
@@ -139,7 +153,7 @@ export class DerivWS {
     } catch {
       this.isConnecting = false;
       this.onStatusChange?.('offline');
-      if (!this.isDisposed) {
+      if (!this.isDisposed && this.autoReconnect) {
         this.reconnectTimeout = setTimeout(() => this.connect(), 3000);
       }
     }

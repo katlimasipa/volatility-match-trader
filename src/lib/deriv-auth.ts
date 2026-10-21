@@ -260,7 +260,6 @@ export async function startDerivAuth(config: AuthConfig): Promise<void> {
     state: combinedState,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
-    prompt: 'login',
   });
 
   // Same-document navigation keeps Android / desktop PWA session storage

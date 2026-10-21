@@ -15,7 +15,7 @@ import {
   type DerivAccount,
 } from './deriv-auth';
 import { getDerivClientId } from './deriv-config';
-import { CLASSIC_SYMBOL, OPTIONS_SYMBOL } from './matches';
+import { CLASSIC_SYMBOL } from './matches';
 
 export interface ContractResult {
   contractId: number;
@@ -117,6 +117,7 @@ export class DerivTradingSession {
   private ws: DerivWS | null = null;
   private mode: 'otp' | 'classic' | null = null;
   private accountId: string | null = null;
+  private lastAccount: DerivAccount | null = null;
   private currency = 'USD';
   private disposed = false;
   private balanceListeners = new Set<BalanceListener>();
@@ -129,6 +130,7 @@ export class DerivTradingSession {
   private ready = false;
   private lastBalance: number | null = null;
   private balancePollTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   onBalance(listener: BalanceListener): () => void {
     this.balanceListeners.add(listener);
@@ -258,6 +260,7 @@ export class DerivTradingSession {
     }
 
     this.disconnectSocket();
+    this.lastAccount = account;
     this.accountId = account.account_id;
     this.currency = account.currency || 'USD';
     this.ready = false;
@@ -269,23 +272,27 @@ export class DerivTradingSession {
       return false;
     }
 
-    // Try Deriv WebSocket v3 authorize first (supports DIGITMATCH natively)
-    const classicUrls = new Set<string>();
-    for (const appId of CLASSIC_WS_APP_IDS.length ? CLASSIC_WS_APP_IDS : ['1089']) {
-      classicUrls.add(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
-      classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
-    }
-    for (const url of classicUrls) {
-      const ok = await this.openSocket(url, 'classic', true, token);
-      if (ok) return true;
-    }
+    const connectOtp = async () => {
+      const otpUrl = await fetchAuthenticatedWsUrl(account.account_id, token);
+      return otpUrl ? this.openSocket(otpUrl, 'otp', false) : false;
+    };
 
-    // Fallback: Auth 2.0 OTP authenticated socket
-    const otpUrl = await fetchAuthenticatedWsUrl(account.account_id, token);
-    if (otpUrl) {
-      const ok = await this.openSocket(otpUrl, 'otp', false);
-      if (ok) return true;
-    }
+    const connectClassic = async () => {
+      const classicUrls = new Set<string>();
+      for (const appId of CLASSIC_WS_APP_IDS.length ? CLASSIC_WS_APP_IDS : ['1089']) {
+        classicUrls.add(`wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+        classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
+      }
+      for (const url of classicUrls) {
+        if (await this.openSocket(url, 'classic', true, token)) return true;
+      }
+      return false;
+    };
+
+    const isClassicToken = looksLikeClassicApiToken(token);
+    if (!isClassicToken && (await connectOtp())) return true;
+    if (await connectClassic()) return true;
+    if (isClassicToken && (await connectOtp())) return true;
 
     this.emitStatus('error', 'Could not open an authorized Deriv trading connection.');
     return false;
@@ -299,7 +306,21 @@ export class DerivTradingSession {
   ): Promise<boolean> {
     let ws: DerivWS | null = null;
     try {
-      ws = new DerivWS(url);
+      ws = new DerivWS(url, undefined, {
+        autoReconnect: false,
+        onClose: () => {
+          if (this.disposed || this.ws !== ws) return;
+          this.ready = false;
+          this.emitStatus('offline', 'Trading connection lost — reconnecting...');
+          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (!this.disposed && this.lastAccount) {
+              void this.connect(this.lastAccount);
+            }
+          }, 2000);
+        },
+      });
       await ws.waitForOpen(12000);
 
       if (authorizeFirst && token) {
@@ -459,8 +480,6 @@ export class DerivTradingSession {
     const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
     const amount = Math.round(params.stake * 100) / 100;
     const currency = params.currency || this.currency || 'USD';
-    const underlying = CLASSIC_SYMBOL;
-
     const proposalPayload: Record<string, unknown> = {
       proposal: 1,
       amount,
@@ -470,50 +489,12 @@ export class DerivTradingSession {
       duration: 1,
       duration_unit: 't',
       barrier,
-      symbol: underlying,
+      ...(this.mode === 'otp'
+        ? { underlying_symbol: CLASSIC_SYMBOL }
+        : { symbol: CLASSIC_SYMBOL }),
     };
 
-    if (this.mode === 'otp') {
-      proposalPayload['underlying_symbol'] = underlying;
-    }
-
-    let proposalRes: Record<string, unknown>;
-    try {
-      proposalRes = await this.ws.send(proposalPayload);
-    } catch {
-      const alt: Record<string, unknown> = {
-        proposal: 1,
-        amount,
-        basis: 'stake',
-        contract_type: 'DIGITMATCH',
-        currency,
-        duration: 1,
-        duration_unit: 't',
-        barrier,
-      };
-      if (this.mode === 'otp') {
-        alt['underlying_symbol'] = CLASSIC_SYMBOL;
-        alt['symbol'] = CLASSIC_SYMBOL;
-      } else {
-        alt['underlying_symbol'] = OPTIONS_SYMBOL;
-        alt['symbol'] = OPTIONS_SYMBOL;
-      }
-      try {
-        proposalRes = await this.ws.send(alt);
-      } catch {
-        proposalRes = await this.ws.send({
-          proposal: 1,
-          amount,
-          basis: 'stake',
-          contract_type: 'DIGITMATCH',
-          currency,
-          duration: 1,
-          duration_unit: 't',
-          barrier,
-          symbol: CLASSIC_SYMBOL,
-        });
-      }
-    }
+    const proposalRes = await this.ws.send(proposalPayload);
 
     const proposal = proposalRes['proposal'] as {
       id?: string;
@@ -622,6 +603,10 @@ export class DerivTradingSession {
   }
 
   private disconnectSocket() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopBalancePoll();
     if (this.ws) {
       this.ws.dispose();
