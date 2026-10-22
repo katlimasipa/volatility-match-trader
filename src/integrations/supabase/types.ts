@@ -14,6 +14,36 @@ export type Database = {
   }
   public: {
     Tables: {
+      bot_alerts: {
+        Row: {
+          body: string
+          created_at: string
+          device_id: string
+          id: string
+          kind: string
+          room_id: string
+          title: string
+        }
+        Insert: {
+          body?: string
+          created_at?: string
+          device_id?: string
+          id?: string
+          kind?: string
+          room_id: string
+          title: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          device_id?: string
+          id?: string
+          kind?: string
+          room_id?: string
+          title?: string
+        }
+        Relationships: []
+      }
       deriv_connections: {
         Row: {
           access_token: string
@@ -53,6 +83,39 @@ export type Database = {
           created_at?: string
           email?: string | null
           id?: string
+        }
+        Relationships: []
+      }
+      push_subscriptions: {
+        Row: {
+          auth: string
+          device_id: string
+          endpoint: string
+          id: string
+          p256dh: string
+          room_id: string
+          updated_at: string
+          user_agent: string | null
+        }
+        Insert: {
+          auth: string
+          device_id?: string
+          endpoint: string
+          id?: string
+          p256dh: string
+          room_id: string
+          updated_at?: string
+          user_agent?: string | null
+        }
+        Update: {
+          auth?: string
+          device_id?: string
+          endpoint?: string
+          id?: string
+          p256dh?: string
+          room_id?: string
+          updated_at?: string
+          user_agent?: string | null
         }
         Relationships: []
       }
