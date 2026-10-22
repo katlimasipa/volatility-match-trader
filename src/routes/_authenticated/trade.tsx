@@ -1291,27 +1291,34 @@ function TradeTerminal() {
     <div className={`min-h-screen font-sans antialiased transition-colors overflow-x-hidden ${
       isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
     }`}>
-      {/* Floating In-App Alert Toast (Cross-device feedback) */}
+      {/* Floating In-App Alert Toast (Docked above mobile bottom bar, bottom-right on desktop) */}
       {inAppAlert && (
         <aside
           role="status"
           aria-live="polite"
-          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-md animate-in fade-in slide-in-from-top-4 duration-200 lg:top-auto lg:bottom-6 lg:left-auto lg:right-6 lg:translate-x-0 lg:w-80 lg:slide-in-from-right-4"
+          style={{ bottom: "calc(max(env(safe-area-inset-bottom, 0px), 0.75rem) + 4.75rem)" }}
+          className="fixed left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-md animate-in fade-in slide-in-from-bottom-3 duration-200 lg:top-auto lg:bottom-6 lg:left-auto lg:right-6 lg:translate-x-0 lg:w-80 lg:slide-in-from-right-4"
         >
-          <div className={`rounded-lg border px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
+          <div className={`rounded-xl border px-4 py-3 shadow-2xl flex items-center justify-between gap-3 backdrop-blur-md ${
             inAppAlert.type === "win"
-              ? isDark ? "border-emerald-500/60 bg-zinc-950 text-emerald-400" : "border-emerald-500 bg-emerald-50 text-emerald-700"
+              ? isDark ? "border-emerald-500/60 bg-zinc-950/95 text-emerald-400" : "border-emerald-500 bg-emerald-50/95 text-emerald-800 shadow-emerald-950/10"
               : inAppAlert.type === "loss"
-              ? isDark ? "border-red-500/60 bg-zinc-950 text-red-400" : "border-red-500 bg-red-50 text-red-700"
-              : isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+              ? isDark ? "border-red-500/60 bg-zinc-950/95 text-red-400" : "border-red-500 bg-red-50/95 text-red-800 shadow-red-950/10"
+              : isDark ? "border-zinc-800 bg-zinc-950/95 text-white" : "border-slate-300 bg-white/95 text-slate-900 shadow-slate-950/10"
           }`}>
-            <div className="space-y-0.5">
-              <div className="text-xs font-bold uppercase tracking-wider">{inAppAlert.title}</div>
-              <div className="text-[11px] opacity-80 leading-snug">{inAppAlert.body}</div>
+            <div className="space-y-0.5 min-w-0 flex-1">
+              <div className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <span className={`h-2 w-2 rounded-full ${
+                  inAppAlert.type === "win" ? "bg-emerald-400" : inAppAlert.type === "loss" ? "bg-rose-500" : "bg-sky-400"
+                }`} />
+                <span className="truncate">{inAppAlert.title}</span>
+              </div>
+              <div className="text-[11px] opacity-90 leading-snug break-words">{inAppAlert.body}</div>
             </div>
             <button
               onClick={() => setInAppAlert(null)}
-              className="text-xs font-bold opacity-60 hover:opacity-100 p-1"
+              aria-label="Dismiss alert"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2 -my-2 text-xs font-bold opacity-60 hover:opacity-100 transition-opacity"
             >
               [X]
             </button>
@@ -1320,16 +1327,25 @@ function TradeTerminal() {
       )}
 
       {/* 1. Header Bar: Responsive for Mobile, Tablet & Desktop */}
-      <header className={`border-b safe-top px-3 sm:px-6 py-2.5 sm:py-3 transition-colors sticky top-0 z-30 ${
-        isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
-      }`}>
+      <header
+        style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 0.625rem)" }}
+        className={`border-b px-3 sm:px-6 pb-2.5 sm:pb-3 transition-colors sticky top-0 z-30 ${
+          isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
+        }`}
+      >
         <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
-          {/* Logo */}
+          {/* Logo & Market Badge */}
           <div className="flex items-center gap-2 shrink-0">
             <img src="/app-icon.png" alt="ThDpst Matches" className="h-5 w-5 rounded object-cover" />
             <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
-              ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// {currentMarket.displayName}</span>
+              ThDpst Matches
             </span>
+            <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded border transition-colors ${
+              isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-slate-100 text-slate-700"
+            }`}>
+              {currentMarket.id}
+            </span>
+            <span className="hidden md:inline font-normal text-zinc-500 text-xs">// {currentMarket.displayName}</span>
           </div>
 
           {/* Desktop Bot Telemetry Pill (lg screens only) */}
@@ -1337,16 +1353,20 @@ function TradeTerminal() {
             isDark ? "border-zinc-800" : "border-slate-200"
           }`}>
             <div className="flex items-center gap-1.5">
-              <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
-              <span className="font-semibold text-zinc-400 uppercase text-[11px]">{botState}</span>
+              <span className={`h-1.5 w-1.5 rounded-full ${
+                running ? (isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse") : (isDark ? "bg-zinc-600" : "bg-slate-400")
+              }`} />
+              <span className={`font-semibold uppercase text-[11px] ${isDark ? "text-zinc-300" : "text-slate-800"}`}>{botState}</span>
             </div>
             <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
             <div className="flex items-center gap-1">
               <span className="text-zinc-500 text-[11px]">P/L</span>
               <span className={`font-semibold num ${
                 totalPnl > 0
-                  ? "text-emerald-500 font-bold"
-                  : totalPnl < 0 ? "text-red-500 font-bold" : isDark ? "text-white" : "text-slate-700"
+                  ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                  : totalPnl < 0
+                  ? isDark ? "text-rose-400 font-bold" : "text-rose-600 font-bold"
+                  : isDark ? "text-white" : "text-slate-800"
               }`}>
                 {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
               </span>
@@ -1354,7 +1374,7 @@ function TradeTerminal() {
             <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
             <div className="flex items-center gap-1">
               <span className="text-zinc-500 text-[11px]">TRADES</span>
-              <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-700"}`}>{trades.length}</span>
+              <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-800"}`}>{trades.length}</span>
             </div>
           </div>
 
@@ -1362,7 +1382,9 @@ function TradeTerminal() {
           <div className="hidden lg:flex min-w-0 flex-wrap items-center justify-end gap-2.5">
             {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
-              <span className="h-1.5 w-1.5 rounded-full bg-zinc-300" />
+              <span className={`h-1.5 w-1.5 rounded-full ${
+                isConnectedToDeriv ? (isDark ? "bg-emerald-400" : "bg-emerald-600") : "bg-amber-400"
+              }`} />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
               <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                 {activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
@@ -1397,7 +1419,11 @@ function TradeTerminal() {
                   : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
               }`}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
+              <span className={`h-1.5 w-1.5 rounded-full ${
+                notifsEnabled
+                  ? isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse"
+                  : isDark ? "bg-zinc-600" : "bg-slate-400"
+              }`} />
               <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
             </button>
 
@@ -1535,24 +1561,36 @@ function TradeTerminal() {
 
         {/* Mobile Telemetry Sub-bar (< lg screens, Dedicated Strip, Guaranteed Zero Overlap) */}
         <div className={`lg:hidden border-t mt-2 pt-1.5 flex items-center justify-between text-[11px] ${
-          isDark ? "border-zinc-900 text-zinc-400" : "border-slate-100 text-slate-600"
+          isDark ? "border-zinc-900 text-zinc-400" : "border-slate-200 text-slate-700"
         }`}>
           <div className="flex items-center gap-1.5">
-            <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-500"}`} />
-            <span className="font-semibold uppercase text-[10px] text-zinc-400">{botState}</span>
-            <span className="text-zinc-400 text-[10px]">({runCount}/{cycleRuns})</span>
+            <span className={`h-1.5 w-1.5 rounded-full ${
+              running ? (isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse") : (isDark ? "bg-zinc-600" : "bg-slate-400")
+            }`} />
+            <span className={`font-semibold uppercase text-[10px] ${isDark ? "text-zinc-300" : "text-slate-900"}`}>{botState}</span>
+            <span className="text-[10px] opacity-75">({runCount}/{cycleRuns})</span>
           </div>
 
           <div className="flex items-center gap-1">
-            <span className="text-[10px] text-zinc-500 uppercase">P/L:</span>
-            <span className={`font-bold num ${totalPnl > 0 ? "text-emerald-500 font-bold" : totalPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-800"}`}>
+            <span className="text-[10px] uppercase opacity-75">P/L:</span>
+            <span className={`font-bold num ${
+              totalPnl > 0
+                ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                : totalPnl < 0
+                ? isDark ? "text-rose-400 font-bold" : "text-rose-600 font-bold"
+                : isDark ? "text-white" : "text-slate-900"
+            }`}>
               {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
             </span>
           </div>
 
           <div className="flex items-center gap-1 text-[10px]">
-            <span className="text-zinc-500">SPREAD:</span>
-            <span className={`font-semibold num ${analysis.diff <= maxDiff ? "text-zinc-600 font-bold" : "text-zinc-500"}`}>
+            <span className="opacity-75">SPREAD:</span>
+            <span className={`font-semibold num ${
+              analysis.diff <= maxDiff
+                ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                : isDark ? "text-zinc-400" : "text-slate-600"
+            }`}>
               {analysis.diff.toFixed(2)}%
             </span>
           </div>
@@ -1560,7 +1598,7 @@ function TradeTerminal() {
       </header>
 
       {/* 2. Main Content Container (Padded bottom on mobile for sticky bottom bar) */}
-      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-28 lg:pb-6">
+      <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-36 lg:pb-6">
         {/* Mobile Segmented Control Tab Switcher (< lg screens) */}
         <div className={`lg:hidden mb-4 grid grid-cols-4 gap-1 p-1 rounded-xl border text-[11px] font-bold uppercase tracking-wider ${
           isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
@@ -2044,22 +2082,52 @@ function TradeTerminal() {
                 isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
               }`}>
                 {/* Header */}
-                <div className="flex items-start justify-between">
-                  <div>
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 block">
                       LAST DIGIT
                     </span>
+                    {/* Quick Market Toggle Pills */}
+                    <div className={`inline-flex rounded border p-0.5 ${
+                      isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                    }`}>
+                      {MARKET_LIST.map((m) => {
+                        const isSelected = marketSymbol === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            disabled={running}
+                            onClick={() => handleSelectMarket(m.id)}
+                            className={`rounded py-0.5 px-2 text-[10px] font-bold uppercase transition-colors flex items-center gap-1 ${
+                              isSelected
+                                ? isDark
+                                  ? "bg-zinc-800 text-white shadow-sm"
+                                  : "bg-white text-slate-900 shadow-sm"
+                                : "text-zinc-500 hover:text-white disabled:opacity-40"
+                            }`}
+                          >
+                            <span className={`h-1 w-1 rounded-full ${isSelected ? "bg-emerald-400" : "bg-zinc-600"}`} />
+                            {m.id}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                   <div className="text-right space-y-0.5">
                     <span className="text-[11px] font-semibold text-zinc-500">
-                      {currentMarket.classicSymbol}
+                      {currentMarket.displayName}
                     </span>
                     <div className="text-[10px] text-zinc-500">PRICE</div>
                     <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
                       {price !== null ? price.toFixed(currentMarket.pipDecimals) : "—"}
                     </div>
-                    <div className={`text-[11px] font-semibold num ${analysis.diff <= maxDiff ? (isDark ? "text-zinc-300" : "text-zinc-600") : "text-zinc-400"}`}>
-                      SPREAD Δ {analysis.diff.toFixed(2)}% <span className="text-zinc-600">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
+                    <div className={`text-[11px] font-semibold num ${
+                      analysis.diff <= maxDiff
+                        ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                        : isDark ? "text-zinc-400" : "text-slate-600"
+                    }`}>
+                      SPREAD Δ {analysis.diff.toFixed(2)}% <span className="opacity-60">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
                     </div>
                   </div>
                 </div>
@@ -2417,11 +2485,16 @@ function TradeTerminal() {
         </footer>
       </main>
 
-      {/* 3. Mobile Sticky Bottom Action Bar (Thumb-Friendly Single Row) */}
-      <div className={`lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t safe-bottom backdrop-blur-md transition-colors ${
-        isDark ? "border-zinc-900 bg-black/95 text-white" : "border-slate-200 bg-white/95 text-slate-900 shadow-2xl"
-      }`}>
-        <div className="px-3 py-2 flex items-center gap-2">
+      {/* 3. Mobile Sticky Bottom Action Bar (Thumb-Friendly Single Row with Safe Area Protection) */}
+      <div
+        style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 0.75rem)" }}
+        className={`lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t backdrop-blur-md transition-colors ${
+          isDark
+            ? "border-zinc-900 bg-black/95 text-white shadow-2xl"
+            : "border-slate-200 bg-white/95 text-slate-900 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]"
+        }`}
+      >
+        <div className="px-3 pt-2.5 pb-1 flex items-center gap-2">
           {running ? (
             <button
               type="button"
@@ -2436,9 +2509,11 @@ function TradeTerminal() {
               type="button"
               onClick={startBot}
               disabled={digits.length < WINDOW}
-              className="flex-1 h-12 rounded-xl bg-white px-4 text-xs font-bold uppercase tracking-wider text-black shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className={`flex-1 h-12 rounded-xl px-4 text-xs font-bold uppercase tracking-wider shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
+                isDark ? "bg-white text-black hover:bg-zinc-200" : "bg-slate-900 text-white hover:bg-slate-800"
+              }`}
             >
-              <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? "bg-white" : "bg-amber-300"}`} />
+              <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? (isDark ? "bg-black" : "bg-emerald-400") : "bg-amber-300"}`} />
               {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
             </button>
           )}
@@ -2519,9 +2594,12 @@ function TradeTerminal() {
       {/* 5. Mobile Menu & Settings Drawer (< lg screens) */}
       {showMobileMenu && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 backdrop-blur-sm lg:hidden">
-          <div className={`w-full max-w-lg rounded-t-2xl border-t p-5 space-y-4 shadow-2xl safe-bottom animate-in slide-in-from-bottom duration-200 ${
-            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
-          }`}>
+          <div
+            style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 1.25rem)" }}
+            className={`w-full max-w-lg rounded-t-2xl border-t p-5 pt-4 space-y-4 shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[90vh] overflow-y-auto ${
+              isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+            }`}
+          >
             <div className={`flex items-center justify-between border-b pb-3 ${
               isDark ? "border-zinc-900" : "border-slate-200"
             }`}>
@@ -2600,7 +2678,11 @@ function TradeTerminal() {
                     : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
                 }`}
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${notifsEnabled ? "bg-zinc-300 animate-pulse" : "bg-zinc-600"}`} />
+                <span className={`h-1.5 w-1.5 rounded-full ${
+                notifsEnabled
+                  ? isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse"
+                  : isDark ? "bg-zinc-600" : "bg-slate-400"
+              }`} />
                 NOTIF: {notifsEnabled ? "ON" : "OFF"}
               </button>
 
