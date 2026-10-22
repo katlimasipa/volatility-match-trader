@@ -22,18 +22,24 @@ import {
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
-import { DerivTradingSession, type ContractResult } from "@/lib/deriv-trading";
+import { DerivTradingSession, isDerivLimitError, type ContractResult } from "@/lib/deriv-trading";
 import {
   analyze,
   lastDigit,
   shouldEnter,
   MAX_DIFF,
   MAX_RUNS,
-  SYMBOL,
-  CLASSIC_SYMBOL,
-  OPTIONS_SYMBOL,
   WINDOW,
+  MARKETS,
+  MARKET_LIST,
+  getMarketConfig,
+  type MarketSymbol,
 } from "@/lib/matches";
+import {
+  startBotKeepalive,
+  stopBotKeepalive,
+  requestScreenWakeLock,
+} from "@/lib/bot-keepalive";
 import {
   isNotificationSupported,
   isNotificationEnabled,
@@ -77,8 +83,8 @@ import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/pay
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
-      { title: "ThDpst Matches // Volatility 100" },
-      { name: "description", content: "Deriv Matches smart trader bot for Volatility 100." },
+      { title: "ThDpst Matches // Volatility Trader" },
+      { name: "description", content: "Deriv Matches smart trader bot for Volatility 100 & Volatility 10." },
     ],
   }),
   component: TradeTerminal,
@@ -167,6 +173,16 @@ function TradeTerminal() {
   const activeAppId = getDerivClientId();
   const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
 
+  // Market Selection state (Volatility 100 Index / Volatility 10 Index)
+  const [marketSymbol, setMarketSymbol] = useState<MarketSymbol>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("thdpst_market_symbol");
+      if (saved === "R_10" || saved === "R_100") return saved;
+    }
+    return "R_100";
+  });
+  const currentMarket = getMarketConfig(marketSymbol);
+
   // Derive activeAccount and activeType (case-insensitive — Deriv loginids vary in casing)
   const activeAccount =
     accounts.find((a) => a.account_id.toUpperCase() === String(activeId || "").toUpperCase()) ||
@@ -188,10 +204,10 @@ function TradeTerminal() {
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
-  const [tp, setTp] = useState<number>(15);
-  const [tpInput, setTpInput] = useState<string>("15");
-  const [sl, setSl] = useState<number>(5);
-  const [slInput, setSlInput] = useState<string>("5");
+  const [tp, setTp] = useState<number>(50);
+  const [tpInput, setTpInput] = useState<string>("50");
+  const [sl, setSl] = useState<number>(50);
+  const [slInput, setSlInput] = useState<string>("50");
   const [centerTab, setCenterTab] = useState<"trade_log" | "session_history">("trade_log");
 
   function updateStake(val: number, strVal?: string) {
@@ -214,13 +230,31 @@ function TradeTerminal() {
     setMaxDiffInput(strVal !== undefined ? strVal : String(val));
   }
 
+  function handleSelectMarket(m: MarketSymbol) {
+    if (m === marketSymbol) return;
+    if (running) {
+      alert("Please stop the bot before switching markets.");
+      return;
+    }
+    setMarketSymbol(m);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("thdpst_market_symbol", m);
+    }
+    digitsRef.current = [];
+    setDigits([]);
+    setRecentTicks([]);
+    setPrice(null);
+    setBotState("BUFFERING");
+    setNote(`Switching to ${MARKETS[m].displayName}. Buffering last 1,000 market ticks...`);
+  }
+
   // Execution state
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED" | "CYCLING">("BUFFERING");
   const [cycleCount, setCycleCount] = useState(0);
-  const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing Volatility 100...");
+  const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing market...");
 
   // Backtest / Inspection Modal
   const [backtest, setBacktest] = useState<BacktestSummary | null>(null);
@@ -349,6 +383,8 @@ function TradeTerminal() {
   const pendingSetAt = useRef<number>(0); // timestamp when pending was set, for stuck-trade safety
   const digitsRef = useRef<number[]>([]); // synchronous market digits buffer, avoids state batching drops
   const lossCooldownTicks = useRef(0);
+  const lastTickAt = useRef<number>(Date.now());
+  const keepaliveCleanupRef = useRef<(() => void) | null>(null);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
   const connectionLostAlertedRef = useRef(false);
@@ -372,6 +408,8 @@ function TradeTerminal() {
     cycleCount,
     cycleRuns,
     stopOnWin,
+    riskTab,
+    marketSymbol,
   });
   stateRef.current = {
     running,
@@ -388,6 +426,8 @@ function TradeTerminal() {
     cycleCount,
     cycleRuns,
     stopOnWin,
+    riskTab,
+    marketSymbol,
   };
 
   useEffect(() => {
@@ -540,6 +580,7 @@ function TradeTerminal() {
 
   // Connect to Deriv WebSocket tick feed & balance stream using configured App ID
   useEffect(() => {
+    const marketInfo = getMarketConfig(marketSymbol);
     const wsUrl = getDerivWsUrl(activeAppId);
     const ws = new DerivWS(wsUrl, (s) => setStatus(s));
     wsRef.current = ws;
@@ -567,10 +608,11 @@ function TradeTerminal() {
       if (history?.prices && history.prices.length > 0) {
         const pList = history.prices;
         const tList = history.times || [];
-        const dList = pList.map((p) => lastDigit(p));
+        const dList = pList.map((p) => lastDigit(p, marketInfo.pipDecimals));
         digitsRef.current = dList;
         setDigits(dList);
         setPrice(pList[pList.length - 1] ?? null);
+        lastTickAt.current = Date.now();
 
         // Prepopulate tick stream strictly in chronological order (newest first for table)
         const initialTicks: TickItem[] = [];
@@ -587,9 +629,9 @@ function TradeTerminal() {
         setRecentTicks(initialTicks);
 
         const a = analyze(dList);
-        setBotState("IDLE");
+        setBotState((cur) => (cur === "BUFFERING" ? "IDLE" : cur));
         setNote(
-          `1,000 ticks analyzed on Volatility 100: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`
+          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`
         );
       }
     });
@@ -599,7 +641,8 @@ function TradeTerminal() {
       if (typeof tick?.quote === "number") {
         const q = tick.quote;
         const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
-        const nextDigit = lastDigit(q);
+        const nextDigit = lastDigit(q, marketInfo.pipDecimals);
+        lastTickAt.current = Date.now();
 
         setPrice(q);
 
@@ -619,7 +662,7 @@ function TradeTerminal() {
       }
     });
 
-    // Request 1000 ticks: Volatility 100 uses R_100 (classic/options feed)
+    // Request 1000 ticks: uses selected market symbol (classic/options feed)
     const subscribeTicks = async () => {
       const payload = (sym: string) => ({
         ticks_history: sym,
@@ -629,17 +672,17 @@ function TradeTerminal() {
         subscribe: 1,
       });
       try {
-        await ws.send(payload(CLASSIC_SYMBOL));
+        await ws.send(payload(marketInfo.classicSymbol));
       } catch {
         try {
-          await ws.send(payload(OPTIONS_SYMBOL));
+          await ws.send(payload(marketInfo.optionsSymbol));
         } catch (err) {
           console.error("Ticks subscription error:", err);
           // Last resort: classic Binary public socket
           try {
             ws.updateUrl(`wss://ws.derivws.com/websockets/v3?app_id=1089`);
             await ws.waitForOpen(8000);
-            await ws.send(payload(CLASSIC_SYMBOL));
+            await ws.send(payload(marketInfo.classicSymbol));
           } catch (fallbackErr) {
             console.error("Classic ticks fallback failed:", fallbackErr);
           }
@@ -652,7 +695,7 @@ function TradeTerminal() {
       ws.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeAppId, marketSymbol]);
 
   // Authorized trading socket (balance + live DIGITMATCH buys) for the active account
   useEffect(() => {
@@ -790,17 +833,37 @@ function TradeTerminal() {
     const nextRunCount = s.runCount + 1;
     setRunCount(nextRunCount);
 
-    if (totalPnl >= s.tp) {
-      notifyTakeProfit(totalPnl);
-      return stopBot(`Take Profit reached (+$${totalPnl.toFixed(2)})`);
+    if (s.riskTab === "pnl") {
+      if (s.tp > 0 && totalPnl >= s.tp) {
+        notifyTakeProfit(totalPnl);
+        const nextCycle = (stateRef.current.cycleCount || 0) + 1;
+        setCycleCount(nextCycle);
+        setRunCount(0);
+        lossCooldownTicks.current = 0;
+        setBotState("ANALYZING");
+        setNote(
+          `Take Profit target (+$${totalPnl.toFixed(2)}) reached! Auto-starting cycle ${nextCycle + 1}. Bot stays running...`
+        );
+        return;
+      }
+      if (s.sl > 0 && totalPnl <= -s.sl) {
+        notifyStopLoss(totalPnl);
+        const nextCycle = (stateRef.current.cycleCount || 0) + 1;
+        setCycleCount(nextCycle);
+        setRunCount(0);
+        lossCooldownTicks.current = 15;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(
+          `Stop Loss threshold (-$${Math.abs(totalPnl).toFixed(2)}) reached. Entering 15-tick protection cooldown and analyzing ${currentMarket.displayName}. Bot stays running...`
+        );
+        return;
+      }
     }
-    if (totalPnl <= -s.sl) {
-      notifyStopLoss(totalPnl);
-      return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
-    }
+
     if (won && s.stopOnWin) {
       return stopBot(`First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`);
     }
+
     if (nextRunCount >= s.cycleRuns) {
       notifyCycleCompleted(s.cycleRuns, totalPnl);
       // Auto-cycle: reset run count for the next cycle instead of stopping
@@ -845,6 +908,7 @@ function TradeTerminal() {
         stake: p.stake,
         barrierDigit: p.target,
         currency,
+        symbol: stateRef.current.marketSymbol || currentMarket.id,
       })
       .then((result: ContractResult) => {
         if (pending.current?.live && pending.current.runIndex === p.runIndex) {
@@ -864,9 +928,15 @@ function TradeTerminal() {
       })
       .catch((err: Error) => {
         pending.current = null;
-        lossCooldownTicks.current = 3;
-        setBotState("ANALYZING");
-        setNote(`Trade notice: ${err.message}. Retrying on next signal...`);
+        pendingSetAt.current = 0;
+        const limitHit = isDerivLimitError(err);
+        lossCooldownTicks.current = limitHit ? 20 : 5;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(
+          limitHit
+            ? `Deriv limit exceeded. Waiting for open contracts to settle (${lossCooldownTicks.current} ticks) before the next buy...`
+            : `Trade notice: ${err.message}. Waiting ${lossCooldownTicks.current} ticks before retry...`,
+        );
         setTradingStatusNote(err.message);
         if (stateRef.current.running) notifyTradeFailed(err.message);
       });
@@ -876,19 +946,19 @@ function TradeTerminal() {
     const s = stateRef.current;
 
     // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
-    if (pending.current?.live) {
-      // Safety net: if pending has been stuck for >60 seconds, force-clear it
+    if (pending.current?.live || tradingRef.current?.isBuyInFlight()) {
+      // Safety net: if pending has been stuck for >60 seconds AND no buy is in flight
       const elapsed = Date.now() - pendingSetAt.current;
-      if (elapsed > 60_000) {
+      if (elapsed > 60_000 && !tradingRef.current?.isBuyInFlight()) {
         console.warn('[bot] Force-clearing stuck pending trade after', Math.round(elapsed / 1000), 'seconds');
         pending.current = null;
         pendingSetAt.current = 0;
-        setBotState("ANALYZING");
-        setNote("Trade settlement timed out. Resuming analysis...");
-        // Fall through to continue processing
-      } else {
+        lossCooldownTicks.current = 5;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote("Trade settlement timed out. Cooling down before the next entry...");
         return;
       }
+      return;
     }
 
     // Clear any stale non-live pending trade and continue scanning
@@ -897,6 +967,13 @@ function TradeTerminal() {
     }
 
     if (!s.running) return;
+
+    if (lossCooldownTicks.current > 0) {
+      lossCooldownTicks.current -= 1;
+      setBotState("LOSS RE-ANALYSIS");
+      setNote(`Cooling down before next entry (${lossCooldownTicks.current} ticks remaining)...`);
+      return;
+    }
 
     if (tickList.length < WINDOW) {
       setBotState("BUFFERING");
@@ -919,12 +996,18 @@ function TradeTerminal() {
 
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
-      const useLive = Boolean(tradingRef.current?.isReady());
+      const session = tradingRef.current;
+      const useLive = Boolean(session?.isReady());
       if (!useLive) {
         setBotState("ANALYZING");
         setNote(
           "Waiting for Deriv trading connection before entering trade..."
         );
+        return;
+      }
+      if (session?.isBuyInFlight()) {
+        setBotState("IN TRADE");
+        setNote("Waiting for the current Deriv contract to settle...");
         return;
       }
       pending.current = {
@@ -937,7 +1020,7 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Run ${targetRun}/${s.cycleRuns}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
+        `Run ${targetRun}/${s.cycleRuns}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
@@ -955,7 +1038,7 @@ function TradeTerminal() {
     initAudioContext();
     if (digits.length < WINDOW) {
       setNote(
-        `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks must be analyzed before entering a trade.`
+        `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`
       );
       return;
     }
@@ -973,20 +1056,27 @@ function TradeTerminal() {
     }
     setTrades([]);
     setRunCount(0);
+    setCycleCount(0);
     pending.current = null;
     lossCooldownTicks.current = 0;
     connectionLostAlertedRef.current = false;
+    if (typeof window !== "undefined") {
+      localStorage.setItem("deriv_bot_is_running", "true");
+    }
     setRunning(true);
     stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
-      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on Volatility 100 — Run 1...`
+      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — Run 1...`
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
 
   function stopBot(message: string) {
     const wasRunning = running || stateRef.current.running;
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("deriv_bot_is_running");
+    }
     setRunning(false);
     stateRef.current.running = false;
     connectionLostAlertedRef.current = false;
@@ -1002,6 +1092,7 @@ function TradeTerminal() {
     stopBot("Session reset.");
     setTrades([]);
     setRunCount(0);
+    setCycleCount(0);
   }
 
   // Pull the latest balance from Deriv (demo top-ups happen in Deriv, not locally)
@@ -1009,6 +1100,82 @@ function TradeTerminal() {
     refreshDerivBalances();
     setNote("Synced balance from Deriv. Top up demo funds in your Deriv account if needed.");
   }
+
+  // Desktop PWA & Background Tab Keepalive Engine
+  useEffect(() => {
+    if (running) {
+      keepaliveCleanupRef.current = startBotKeepalive(() => {
+        // Background Web Worker heartbeat (fires unthrottled every 1s)
+        const now = Date.now();
+        // 1. Recover stalled tick feed (>8s)
+        if (now - lastTickAt.current > 8000) {
+          if (wsRef.current) {
+            wsRef.current.send({ ping: 1 }).catch(() => {
+              wsRef.current?.reconnect();
+            });
+          }
+        }
+        // 2. Recover trading session readiness
+        if (tradingRef.current && !tradingRef.current.isReady() && activeAccount) {
+          tradingRef.current.connect(activeAccount).catch(() => {});
+        }
+      });
+    } else {
+      if (keepaliveCleanupRef.current) {
+        keepaliveCleanupRef.current();
+        keepaliveCleanupRef.current = null;
+      }
+      stopBotKeepalive();
+    }
+
+    return () => {
+      if (keepaliveCleanupRef.current) {
+        keepaliveCleanupRef.current();
+        keepaliveCleanupRef.current = null;
+      }
+      stopBotKeepalive();
+    };
+  }, [running, activeAccount]);
+
+  // Screen Wake Lock & Socket Re-activation on visibility restore or focus
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        if (stateRef.current.running) {
+          void requestScreenWakeLock();
+        }
+        if (wsRef.current) {
+          wsRef.current.send({ ping: 1 }).catch(() => {
+            wsRef.current?.reconnect();
+          });
+        }
+        if (tradingRef.current && !tradingRef.current.isReady() && activeAccount) {
+          tradingRef.current.connect(activeAccount).catch(() => {});
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("focus", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("focus", handleVisibility);
+    };
+  }, [activeAccount]);
+
+  // Auto-resume running state from localStorage if restored
+  useEffect(() => {
+    const wasRunning = typeof window !== "undefined" && localStorage.getItem("deriv_bot_is_running") === "true";
+    if (wasRunning && !running && digits.length >= WINDOW && tradingReady && isConnectedToDeriv) {
+      console.log("[bot] Auto-resuming bot from persistent running state...");
+      setRunning(true);
+      stateRef.current.running = true;
+      setBotState("ANALYZING");
+      setNote(
+        `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`
+      );
+    }
+  }, [digits.length, tradingReady, isConnectedToDeriv, running, activeAccount?.account_id, currentMarket.displayName]);
 
   function runBacktest1000Ticks() {
     if (digits.length < WINDOW) {
@@ -1161,7 +1328,7 @@ function TradeTerminal() {
           <div className="flex items-center gap-2 shrink-0">
             <img src="/app-icon.png" alt="ThDpst Matches" className="h-5 w-5 rounded object-cover" />
             <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
-              ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// Volatility 100</span>
+              ThDpst Matches <span className="hidden md:inline font-normal text-zinc-500">// {currentMarket.displayName}</span>
             </span>
           </div>
 
@@ -1525,15 +1692,41 @@ function TradeTerminal() {
               </span>
 
               <div className="space-y-1.5">
-                <label className="text-xs text-zinc-500">Contract & Market</label>
-                <div className={`rounded border px-3 py-2 text-xs font-semibold flex items-center justify-between ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-white" : "border-slate-300 bg-slate-50 text-slate-900"
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-zinc-500">Contract & Market</label>
+                  <span className="text-[10px] text-zinc-500">Matches (DIGITMATCH)</span>
+                </div>
+                <div className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                 }`}>
-                  <span>Matches · Volatility 100</span>
-                  <span className="text-zinc-500 text-[10px]">Vol 100</span>
+                  {MARKET_LIST.map((m) => {
+                    const isSelected = marketSymbol === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={running}
+                        onClick={() => handleSelectMarket(m.id)}
+                        className={`rounded py-1.5 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                          isSelected
+                            ? isDark
+                              ? "bg-zinc-800 text-white shadow-sm"
+                              : "bg-white text-slate-900 shadow-sm"
+                            : "text-zinc-500 hover:text-white disabled:opacity-40"
+                        }`}
+                      >
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            isSelected ? "bg-emerald-400" : "bg-zinc-600"
+                          }`}
+                        />
+                        <span>{m.shortName}</span>
+                      </button>
+                    );
+                  })}
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}%.
+                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}% on {currentMarket.displayName} ({currentMarket.pipDecimals} decimals).
                 </p>
               </div>
 
@@ -1859,11 +2052,11 @@ function TradeTerminal() {
                   </div>
                   <div className="text-right space-y-0.5">
                     <span className="text-[11px] font-semibold text-zinc-500">
-                      {SYMBOL}
+                      {currentMarket.classicSymbol}
                     </span>
                     <div className="text-[10px] text-zinc-500">PRICE</div>
                     <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                      {price !== null ? price.toFixed(2) : "—"}
+                      {price !== null ? price.toFixed(currentMarket.pipDecimals) : "—"}
                     </div>
                     <div className={`text-[11px] font-semibold num ${analysis.diff <= maxDiff ? (isDark ? "text-zinc-300" : "text-zinc-600") : "text-zinc-400"}`}>
                       SPREAD Δ {analysis.diff.toFixed(2)}% <span className="text-zinc-600">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
@@ -1967,7 +2160,7 @@ function TradeTerminal() {
                             {tick.time}
                           </td>
                           <td className={`py-1 font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
-                            {tick.price.toFixed(2)}
+                            {tick.price.toFixed(currentMarket.pipDecimals)}
                           </td>
                           <td className="py-1 text-right font-bold">
                             <span className={`inline-block px-1.5 py-0.2 rounded text-[11px] ${
@@ -2185,7 +2378,7 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Symbol</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{SYMBOL}</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{currentMarket.classicSymbol}</div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Duration</div>
@@ -2344,6 +2537,40 @@ function TradeTerminal() {
               </button>
             </div>
 
+            {/* Market Index Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-zinc-500">Market Index</label>
+              <div className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+              }`}>
+                {MARKET_LIST.map((m) => {
+                  const isSelected = marketSymbol === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={running}
+                      onClick={() => handleSelectMarket(m.id)}
+                      className={`rounded py-2 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                        isSelected
+                          ? isDark
+                            ? "bg-zinc-800 text-white shadow-sm"
+                            : "bg-white text-slate-900 shadow-sm"
+                          : "text-zinc-500 hover:text-white disabled:opacity-40"
+                      }`}
+                    >
+                      <span
+                        className={`h-1.5 w-1.5 rounded-full ${
+                          isSelected ? "bg-emerald-400" : "bg-zinc-600"
+                        }`}
+                      />
+                      <span>{m.displayName}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Switch Account */}
             <div className="space-y-1.5">
               <label className="text-xs text-zinc-500">Switch Account</label>
@@ -2490,7 +2717,7 @@ function TradeTerminal() {
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Calculated across the latest {backtest.totalTicks} real market ticks of Volatility 100 Index using the Deriv Matches strategy (spread ≤ {maxDiff}%, enter on most appearing digit, target second most appearing digit):
+              Calculated across the latest {backtest.totalTicks} real market ticks of {currentMarket.displayName} using the Deriv Matches strategy (spread ≤ {maxDiff}%, enter on most appearing digit, target second most appearing digit):
             </p>
 
             <div className={`grid grid-cols-2 gap-4 rounded border p-4 num ${

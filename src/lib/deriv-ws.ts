@@ -35,6 +35,7 @@ export class DerivWS {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private onStatusChange: ((status: 'connecting' | 'live' | 'offline') => void) | null = null;
   private url: string;
+  private customUrl: string | undefined;
   private autoReconnect: boolean;
   private onCloseCallback: (() => void) | null;
   private isDisposed = false;
@@ -46,6 +47,7 @@ export class DerivWS {
     onStatusChange?: (status: 'connecting' | 'live' | 'offline') => void,
     options: DerivWSOptions = {}
   ) {
+    this.customUrl = url;
     this.url = url || getDerivWsUrl();
     this.onStatusChange = onStatusChange || null;
     this.autoReconnect = options.autoReconnect ?? true;
@@ -54,6 +56,7 @@ export class DerivWS {
   }
 
   public updateUrl(url: string): void {
+    this.customUrl = url;
     this.url = url;
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.reconnect();
@@ -99,12 +102,16 @@ export class DerivWS {
         if (!this.isDisposed && this.autoReconnect) {
           if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
           this.reconnectTimeout = setTimeout(() => {
-            const primary = getDerivWsUrl();
-            const fallback = DERIV_FALLBACK_WS_URL;
-            if (this.url.startsWith('wss://api.derivws.com')) {
-              this.url = fallback;
+            if (this.customUrl) {
+              this.url = this.customUrl;
             } else {
-              this.url = primary;
+              const primary = getDerivWsUrl();
+              const fallback = DERIV_FALLBACK_WS_URL;
+              if (this.url.startsWith('wss://api.derivws.com')) {
+                this.url = fallback;
+              } else {
+                this.url = primary;
+              }
             }
             this.connect();
           }, 2500);

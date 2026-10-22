@@ -8,6 +8,10 @@ import {
   SYMBOL,
   CLASSIC_SYMBOL,
   OPTIONS_SYMBOL,
+  MARKETS,
+  MARKET_LIST,
+  getMarketConfig,
+  marketTradeSymbols,
 } from "@/lib/matches";
 
 const build = (counts: number[]) => counts.flatMap((c, d) => new Array(c).fill(d));
@@ -21,6 +25,35 @@ describe("Volatility 100 Matches strategy", () => {
     expect(lastDigit(1234.57)).toBe(7);
     expect(lastDigit(9876.10)).toBe(0);
     expect(lastDigit(9876.19)).toBe(9);
+  });
+
+  it("supports Volatility 10 Index with 3 pip decimals and correct symbols", () => {
+    const v10 = MARKETS.R_10;
+    expect(v10.id).toBe("R_10");
+    expect(v10.displayName).toBe("Volatility 10 Index");
+    expect(v10.classicSymbol).toBe("R_10");
+    expect(v10.optionsSymbol).toBe("1HZ10V");
+    expect(v10.pipDecimals).toBe(3);
+
+    expect(lastDigit(6543.218, v10.pipDecimals)).toBe(8);
+    expect(lastDigit(6543.210, v10.pipDecimals)).toBe(0);
+    expect(lastDigit(6543.219, v10.pipDecimals)).toBe(9);
+    expect(lastDigit(6543.21, v10.pipDecimals)).toBe(0);
+
+    expect(getMarketConfig("R_10").classicSymbol).toBe("R_10");
+    expect(getMarketConfig("1HZ10V").classicSymbol).toBe("R_10");
+    expect(getMarketConfig("R_100").classicSymbol).toBe("R_100");
+    expect(getMarketConfig().classicSymbol).toBe("R_100");
+    expect(MARKET_LIST.map((m) => m.id)).toEqual(["R_100", "R_10"]);
+
+    expect(marketTradeSymbols(v10, "classic")).toEqual({
+      preferred: "R_10",
+      fallback: "1HZ10V",
+    });
+    expect(marketTradeSymbols(v10, "otp")).toEqual({
+      preferred: "1HZ10V",
+      fallback: "R_10",
+    });
   });
 
   it("identifies most and second most appearing digits", () => {

@@ -10,8 +10,8 @@ import {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Matches // Volatility 100 Trader" },
-      { name: "description", content: "Monochrome Deriv Matches strategy terminal for Volatility 100." },
+      { title: "Matches // Volatility Trader" },
+      { name: "description", content: "Monochrome Deriv Matches strategy terminal for Volatility 100 and Volatility 10." },
     ],
   }),
   component: SignIn,
@@ -122,14 +122,14 @@ function SignIn() {
         <div className="flex items-center gap-3">
           <img src="/app-icon.png" alt="Icon" className="h-8 w-8 rounded-full border border-zinc-800" />
           <span className="text-xs uppercase tracking-[0.25em] text-zinc-400">
-            DERIV // VOLATILITY 100
+            DERIV // VOL 100 & VOL 10
           </span>
         </div>
 
         <div className="space-y-6">
           <img src="/logo.png" alt="ThDpst Matches" className="h-16 w-auto max-w-[280px] object-contain invert" />
           <h1 className="font-display text-4xl tracking-tight text-white lg:text-5xl">
-            Volatility 100
+            Volatility 100 & 10
             <br />
             <span className="text-zinc-300">Matches terminal</span>
           </h1>

@@ -15,7 +15,7 @@ import {
   type DerivAccount,
 } from './deriv-auth';
 import { getDerivClientId } from './deriv-config';
-import { CLASSIC_SYMBOL } from './matches';
+import { getMarketConfig, marketTradeSymbols } from './matches';
 
 export interface ContractResult {
   contractId: number;
@@ -32,6 +32,7 @@ export interface BuyMatchParams {
   stake: number;
   barrierDigit: number;
   currency: string;
+  symbol?: string;
 }
 
 type BalanceListener = (loginid: string, balance: number, currency: string) => void;
@@ -49,6 +50,17 @@ function isFakeAccountId(id: string): boolean {
 
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err ?? '');
+}
+
+export function isDerivLimitError(err: unknown): boolean {
+  return /limit exceeded|rate limit|too many requests|max(imum)? (number of )?contracts/i.test(
+    errorMessage(err),
+  );
 }
 
 /**
@@ -128,6 +140,7 @@ export class DerivTradingSession {
     { stake: number; barrier: number; resolve: (r: ContractResult) => void; reject: (e: Error) => void }
   >();
   private ready = false;
+  private buyInFlight = false;
   private lastBalance: number | null = null;
   private balancePollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,6 +162,10 @@ export class DerivTradingSession {
 
   isReady(): boolean {
     return this.ready && !this.disposed;
+  }
+
+  isBuyInFlight(): boolean {
+    return this.buyInFlight;
   }
 
   getMode(): 'otp' | 'classic' | null {
@@ -469,18 +486,13 @@ export class DerivTradingSession {
     });
   }
 
-  /**
-   * Place a 1-tick DIGITMATCH contract on Volatility 100.
-   */
-  async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
-    if (!this.ws || !this.ready) {
-      throw new Error('Trading session is not ready. Connect Deriv first.');
-    }
-
-    const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
-    const amount = Math.round(params.stake * 100) / 100;
-    const currency = params.currency || this.currency || 'USD';
-    const proposalPayload: Record<string, unknown> = {
+  private proposalPayload(
+    amount: number,
+    currency: string,
+    barrier: string,
+    underlying: string,
+  ): Record<string, unknown> {
+    return {
       proposal: 1,
       amount,
       basis: 'stake',
@@ -490,84 +502,164 @@ export class DerivTradingSession {
       duration_unit: 't',
       barrier,
       ...(this.mode === 'otp'
-        ? { underlying_symbol: CLASSIC_SYMBOL }
-        : { symbol: CLASSIC_SYMBOL }),
+        ? { underlying_symbol: underlying }
+        : { symbol: underlying }),
     };
+  }
 
-    const proposalRes = await this.ws.send(proposalPayload);
+  /**
+   * Drop leftover proposal/open-contract subscriptions so Deriv stops counting them
+   * against the shared buy/proposal limit.
+   */
+  async recoverFromContractLimit(): Promise<void> {
+    if (!this.ws || !this.ready) return;
+    try {
+      await this.ws.send({ forget_all: 'proposal' });
+    } catch {}
+    try {
+      await this.ws.send({ forget_all: 'proposal_open_contract' });
+    } catch {}
+    try {
+      await this.ws.send({ portfolio: 1 });
+    } catch {}
+  }
 
-    const proposal = proposalRes['proposal'] as {
-      id?: string;
-      ask_price?: number | string;
-      payout?: number | string;
-    };
-    if (!proposal?.id) {
-      const errMsg =
-        (proposalRes?.['error'] as { message?: string })?.message ||
-        'Deriv did not return a proposal id for DIGITMATCH.';
-      throw new Error(errMsg);
+  /**
+   * Place a 1-tick DIGITMATCH contract on the selected market (Volatility 100 or Volatility 10).
+   */
+  async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
+    if (this.buyInFlight) {
+      throw new Error('A trade is already in flight. Waiting for settlement.');
     }
 
-    const ask = Number(proposal.ask_price ?? amount);
-    const buyRes = await this.ws.send<{
-      buy?: {
-        contract_id?: number;
-        buy_price?: number | string;
-        balance_after?: number | string;
+    if (!this.ws || !this.ready) {
+      if (this.lastAccount) {
+        console.log('[deriv-trading] Trading session not ready on buyDigitMatch, fast-reconnecting...');
+        await this.connect(this.lastAccount).catch(() => {});
+      }
+      if (!this.ws || !this.ready) {
+        throw new Error('Trading session is not ready. Connect Deriv first.');
+      }
+    }
+
+    this.buyInFlight = true;
+    const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
+    const amount = Math.round(params.stake * 100) / 100;
+    const currency = params.currency || this.currency || 'USD';
+    const market = getMarketConfig(params.symbol);
+    const { preferred, fallback } = marketTradeSymbols(market, this.mode);
+    const symbols = preferred === fallback ? [preferred] : [preferred, fallback];
+
+    try {
+      let proposalRes: Record<string, unknown> | null = null;
+      let lastErr: Error | null = null;
+
+      for (const underlying of symbols) {
+        try {
+          const res = await this.ws.send(this.proposalPayload(amount, currency, barrier, underlying));
+          const proposal = res['proposal'] as { id?: string } | undefined;
+          if (proposal?.id) {
+            proposalRes = res;
+            break;
+          }
+          lastErr = new Error(
+            (res?.['error'] as { message?: string })?.message ||
+              'Deriv did not return a proposal id for DIGITMATCH.',
+          );
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error(errorMessage(err));
+          if (isDerivLimitError(err)) {
+            await this.recoverFromContractLimit();
+            throw lastErr;
+          }
+          if (underlying === preferred && symbols.length > 1) {
+            continue;
+          }
+          throw lastErr;
+        }
+      }
+
+      const proposal = proposalRes?.['proposal'] as {
+        id?: string;
+        ask_price?: number | string;
+        payout?: number | string;
       };
-    }>({
-      buy: proposal.id,
-      price: ask,
-    });
+      if (!proposal?.id) {
+        throw lastErr || new Error('Deriv did not return a proposal id for DIGITMATCH.');
+      }
 
-    const buy = buyRes?.buy;
-    if (!buy?.contract_id) {
-      const errMsg =
-        (buyRes as Record<string, unknown>)?.['error']
-          ? ((buyRes as Record<string, unknown>)['error'] as { message?: string })?.message
-          : 'Deriv buy failed — no contract id returned.';
-      throw new Error(errMsg || 'Deriv buy failed — no contract id returned.');
-    }
-
-    const loginid = this.accountId;
-    const buyPrice = Number(buy.buy_price ?? ask);
-    if (buy.balance_after !== undefined && buy.balance_after !== null && loginid) {
-      this.emitBalance(loginid, Number(buy.balance_after), currency);
-    } else if (loginid && this.lastBalance !== null) {
-      this.emitBalance(loginid, roundMoney(this.lastBalance - buyPrice), currency);
-    }
-
-    // Confirm debit with Deriv (socket first, then REST for Auth 2.0)
-    await this.syncBalance(false);
-    // Prefer REST after buy so Auth 2.0 accounts match the Deriv website
-    await this.syncBalance(true);
-
-    const contractId = buy.contract_id;
-    await this.ws.send({
-      proposal_open_contract: 1,
-      contract_id: contractId,
-      subscribe: 1,
-    });
-
-    return new Promise<ContractResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.openContracts.delete(contractId);
-        reject(new Error('Timed out waiting for contract settlement.'));
-      }, 45000);
-
-      this.openContracts.set(contractId, {
-        stake: amount,
-        barrier: Number(barrier),
-        resolve: (result) => {
-          clearTimeout(timer);
-          resolve(result);
-        },
-        reject: (err) => {
-          clearTimeout(timer);
-          reject(err);
-        },
+      const ask = Number(proposal.ask_price ?? amount);
+      const buyRes = await this.ws.send<{
+        buy?: {
+          contract_id?: number;
+          buy_price?: number | string;
+          balance_after?: number | string;
+        };
+      }>({
+        buy: proposal.id,
+        price: ask,
       });
-    });
+
+      const buy = buyRes?.buy;
+      if (!buy?.contract_id) {
+        const errMsg =
+          (buyRes as Record<string, unknown>)?.['error']
+            ? ((buyRes as Record<string, unknown>)['error'] as { message?: string })?.message
+            : 'Deriv buy failed — no contract id returned.';
+        const fail = new Error(errMsg || 'Deriv buy failed — no contract id returned.');
+        if (isDerivLimitError(fail)) {
+          await this.recoverFromContractLimit();
+        }
+        throw fail;
+      }
+
+      const loginid = this.accountId;
+      const buyPrice = Number(buy.buy_price ?? ask);
+      if (buy.balance_after !== undefined && buy.balance_after !== null && loginid) {
+        this.emitBalance(loginid, Number(buy.balance_after), currency);
+      } else if (loginid && this.lastBalance !== null) {
+        this.emitBalance(loginid, roundMoney(this.lastBalance - buyPrice), currency);
+      }
+
+      // Socket balance only here — REST after every buy was hitting Deriv's request limit.
+      await this.refreshBalance();
+
+      const contractId = buy.contract_id;
+      await this.ws.send({
+        proposal_open_contract: 1,
+        contract_id: contractId,
+        subscribe: 1,
+      });
+
+      return await new Promise<ContractResult>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.openContracts.delete(contractId);
+          this.ws?.send({ forget_all: 'proposal_open_contract' }).catch(() => {});
+          reject(new Error('Timed out waiting for contract settlement.'));
+        }, 45000);
+
+        this.openContracts.set(contractId, {
+          stake: amount,
+          barrier: Number(barrier),
+          resolve: (result) => {
+            clearTimeout(timer);
+            this.ws?.send({ forget_all: 'proposal_open_contract' }).catch(() => {});
+            resolve(result);
+          },
+          reject: (err) => {
+            clearTimeout(timer);
+            reject(err);
+          },
+        });
+      });
+    } catch (err) {
+      if (isDerivLimitError(err)) {
+        await this.recoverFromContractLimit();
+      }
+      throw err;
+    } finally {
+      this.buyInFlight = false;
+    }
   }
 
   async refreshBalance(): Promise<void> {

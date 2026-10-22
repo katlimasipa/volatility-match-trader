@@ -1,5 +1,56 @@
-// Matches strategy analysis for Volatility 100.
-// Classic Binary API uses R_100; Auth 2.0 Options API uses 1HZ100V.
+// Matches strategy analysis for Volatility 100 and Volatility 10.
+// Classic Binary API uses R_100 / R_10; Auth 2.0 Options API uses 1HZ100V / 1HZ10V.
+
+export type MarketSymbol = "R_100" | "R_10";
+
+export interface MarketConfig {
+  id: MarketSymbol;
+  displayName: string;
+  shortName: string;
+  classicSymbol: string;
+  optionsSymbol: string;
+  pipDecimals: number;
+}
+
+export const MARKETS: Record<MarketSymbol, MarketConfig> = {
+  R_100: {
+    id: "R_100",
+    displayName: "Volatility 100 Index",
+    shortName: "Vol 100",
+    classicSymbol: "R_100",
+    optionsSymbol: "1HZ100V",
+    pipDecimals: 2,
+  },
+  R_10: {
+    id: "R_10",
+    displayName: "Volatility 10 Index",
+    shortName: "Vol 10",
+    classicSymbol: "R_10",
+    optionsSymbol: "1HZ10V",
+    pipDecimals: 3,
+  },
+};
+
+export const MARKET_LIST: MarketConfig[] = [MARKETS.R_100, MARKETS.R_10];
+
+export function getMarketConfig(symbol?: string): MarketConfig {
+  if (symbol === "R_10" || symbol === "1HZ10V") {
+    return MARKETS.R_10;
+  }
+  return MARKETS.R_100;
+}
+
+/** Preferred Deriv symbol for the active connection, plus a fallback for the other API. */
+export function marketTradeSymbols(
+  market: MarketConfig,
+  mode: "otp" | "classic" | null,
+): { preferred: string; fallback: string } {
+  if (mode === "otp") {
+    return { preferred: market.optionsSymbol, fallback: market.classicSymbol };
+  }
+  return { preferred: market.classicSymbol, fallback: market.optionsSymbol };
+}
+
 export const CLASSIC_SYMBOL = "R_100";
 export const OPTIONS_SYMBOL = "1HZ100V";
 /** @deprecated Prefer CLASSIC_SYMBOL / OPTIONS_SYMBOL by connection mode */
@@ -11,7 +62,7 @@ export const MAX_RUNS = 3; // exactly 3 runs per cycle
 export const WINDOW = 1000;
 
 /**
- * Extract the last digit from a price quote using pip decimal precision (2 decimals for Volatility 100).
+ * Extract the last digit from a price quote using pip decimal precision (2 decimals for Vol 100, 3 for Vol 10).
  */
 export function lastDigit(quote: number, decimals = PIP_DECIMALS): number {
   const s = quote.toFixed(decimals);

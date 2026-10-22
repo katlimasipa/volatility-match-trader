@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DerivTradingSession } from "@/lib/deriv-trading";
+import { DerivTradingSession, isDerivLimitError } from "@/lib/deriv-trading";
 import type { DerivWS } from "@/lib/deriv-ws";
 
 /**
@@ -85,7 +85,7 @@ describe("DIGITMATCH proposal payload", () => {
         barrier: "7",
       });
       if (mode === "otp") {
-        expect(proposal).toHaveProperty("underlying_symbol", "R_100");
+        expect(proposal).toHaveProperty("underlying_symbol", "1HZ100V");
         expect(proposal).not.toHaveProperty("symbol");
       } else {
         expect(proposal).toHaveProperty("symbol", "R_100");
@@ -96,4 +96,130 @@ describe("DIGITMATCH proposal payload", () => {
       session.dispose();
     },
   );
+
+  it("proposes Volatility 10 on the Options symbol when using Auth 2.0", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        if (payload["proposal"] === 1) {
+          return { proposal: { id: "proposal-id", ask_price: 1 } };
+        }
+        return { buy: {} };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "otp",
+    });
+
+    await expect(
+      session.buyDigitMatch({ stake: 1, barrierDigit: 4, currency: "USD", symbol: "R_10" }),
+    ).rejects.toThrow("Deriv buy failed");
+
+    expect(sent[0]).toHaveProperty("underlying_symbol", "1HZ10V");
+    session.dispose();
+  });
+
+  it("retries the classic Volatility 10 symbol if the Options proposal is rejected", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        if (payload["proposal"] === 1 && payload["symbol"] === "R_10") {
+          return { proposal: { id: "proposal-id", ask_price: 1 } };
+        }
+        if (payload["proposal"] === 1) {
+          throw new Error("Invalid symbol");
+        }
+        return { buy: {} };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "classic",
+    });
+
+    await expect(
+      session.buyDigitMatch({ stake: 1, barrierDigit: 4, currency: "USD", symbol: "R_10" }),
+    ).rejects.toThrow("Deriv buy failed");
+
+    expect(sent[0]).toHaveProperty("symbol", "R_10");
+    session.dispose();
+  });
+
+  it("does not start a second buy while one is in flight", async () => {
+    let releaseProposal: (() => void) | undefined;
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        if (payload["proposal"] === 1) {
+          await new Promise<void>((resolve) => {
+            releaseProposal = resolve;
+          });
+          return { proposal: { id: "proposal-id", ask_price: 1 } };
+        }
+        return { buy: {} };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "classic",
+    });
+
+    const first = session.buyDigitMatch({ stake: 1, barrierDigit: 1, currency: "USD" });
+    await Promise.resolve();
+    expect(session.isBuyInFlight()).toBe(true);
+    await expect(
+      session.buyDigitMatch({ stake: 1, barrierDigit: 2, currency: "USD" }),
+    ).rejects.toThrow("already in flight");
+
+    releaseProposal?.();
+    await expect(first).rejects.toThrow("Deriv buy failed");
+    session.dispose();
+  });
+});
+
+describe("Deriv limit errors", () => {
+  it("detects Limit exceeded messages from Deriv", () => {
+    expect(isDerivLimitError(new Error("Limit exceeded"))).toBe(true);
+    expect(isDerivLimitError(new Error("Rate limit exceeded"))).toBe(true);
+    expect(isDerivLimitError(new Error("Invalid symbol"))).toBe(false);
+  });
+
+  it("forgets leftover proposals when Deriv reports Limit exceeded", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        if (payload["proposal"] === 1) {
+          throw new Error("Limit exceeded");
+        }
+        return {};
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "classic",
+    });
+
+    await expect(
+      session.buyDigitMatch({ stake: 1, barrierDigit: 7, currency: "USD" }),
+    ).rejects.toThrow("Limit exceeded");
+
+    expect(sent.some((p) => p["forget_all"] === "proposal")).toBe(true);
+    expect(sent.some((p) => p["forget_all"] === "proposal_open_contract")).toBe(true);
+    session.dispose();
+  });
 });
