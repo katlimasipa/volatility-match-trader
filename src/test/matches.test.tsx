@@ -4,7 +4,6 @@ import {
   lastDigit,
   shouldEnter,
   MAX_DIFF,
-  MAX_RUNS,
   SYMBOL,
   CLASSIC_SYMBOL,
   OPTIONS_SYMBOL,
@@ -144,7 +143,4 @@ describe("Volatility 100 Matches strategy", () => {
     expect(shouldEnter(a, a.most)).toBe(false);
   });
 
-  it("enforces max 3 runs per cycle", () => {
-    expect(MAX_RUNS).toBe(3);
-  });
 });

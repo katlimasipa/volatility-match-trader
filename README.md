@@ -7,11 +7,11 @@ Monochrome Deriv Matches bot for **Volatility 100**, **Volatility 10**, and thei
 1. Connect with **Deriv Auth 2.0** (or paste an API token on the iPhone home-screen app).
 2. Select a standard or 1-second Volatility 100/10 index and buffer its own 1,000 ticks before trading that same symbol.
 3. Find the most and second-most common digits. Enter only when their difference is ≤ 0.3%.
-4. Buy DIGITMATCH using the second-most digit as the barrier (3 runs per cycle).
-5. On a loss, wait and re-analyse. Stop on take profit, stop loss, or end of cycle.
+4. Buy DIGITMATCH using the second-most digit as the barrier.
+5. On a loss, wait and re-analyse. Stop when take profit or stop loss is reached.
 6. Optionally enable 1.5× martingale: the next stake increases after each loss and returns to the base stake after a win. It increases risk and cannot guarantee recovery.
-6. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
-7. **Cross-device alerts** — turn **NOTIF** on on each device (same Deriv account). Bot start/stop and trade results sync live via Realtime, catch up when you reopen the app, and use Web Push when the app is closed (needs VAPID keys + the SQL migration in `supabase/migrations/`).
+7. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
+8. **Cross-device alerts** — turn **NOTIF** on on each device (same Deriv account). Bot start/stop and trade results sync live via Realtime, catch up when you reopen the app, and use Web Push when the app is closed (needs VAPID keys + the SQL migration in `supabase/migrations/`).
 
 ## Auth & PWA
 
@@ -50,7 +50,7 @@ npm run build
 - Window: last **1,000** ticks
 - Spread: most − second-most ≤ **0.3%** (configurable)
 - Entry digit = most common; match barrier = second most
-- **3** runs per cycle; re-analyse after a loss
+- Re-analyse after a loss; stop at the configured take-profit or stop-loss target
 
 ## Stack
 

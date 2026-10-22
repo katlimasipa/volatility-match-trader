@@ -17,7 +17,7 @@ const PEER_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 type PushSubscriptionInfo = Pick<PushTarget, "endpoint" | "p256dh" | "auth">;
 
 export type AlertKind =
-  "bot_start" | "bot_stop" | "win" | "loss" | "tp" | "sl" | "cycle" | "error" | "info";
+  "bot_start" | "bot_stop" | "win" | "loss" | "tp" | "sl" | "error" | "info";
 
 export interface SyncedAlert {
   id: string;

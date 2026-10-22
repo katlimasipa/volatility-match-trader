@@ -456,15 +456,6 @@ export function notifyStopLoss(totalPnl: number) {
   });
 }
 
-export function notifyCycleCompleted(runCount: number, totalPnl: number) {
-  playAlertSound('alert');
-  void dispatchNotification(`Cycle Completed (${runCount} Runs)`, {
-    body: `Total Session Net: ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)} USD.`,
-    tag: `cycle-completed-${Date.now()}`,
-    syncKind: 'cycle',
-  });
-}
-
 export function notifyBotStarted(accountId: string, deviceLabel?: string) {
   playAlertSound('alert');
   const where = deviceLabel || 'another device';

@@ -28,7 +28,6 @@ import {
   lastDigit,
   shouldEnter,
   MAX_DIFF,
-  MAX_RUNS,
   WINDOW,
   MARTINGALE_MULTIPLIER,
   calculateMartingaleStake,
@@ -51,7 +50,6 @@ import {
   notifyTradeLost,
   notifyTakeProfit,
   notifyStopLoss,
-  notifyCycleCompleted,
   notifyBotStarted,
   notifyBotStopped,
   notifyTradeFailed,
@@ -278,11 +276,9 @@ function TradeTerminal() {
   const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
-  const [cycleRuns, setCycleRuns] = useState<number>(MAX_RUNS); // trades per cycle (user configurable)
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
-  const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
   const [tp, setTp] = useState<number>(50);
   const [tpInput, setTpInput] = useState<string>("50");
   const [sl, setSl] = useState<number>(50);
@@ -334,8 +330,7 @@ function TradeTerminal() {
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
-  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED" | "CYCLING">("BUFFERING");
-  const [cycleCount, setCycleCount] = useState(0);
+  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS">("BUFFERING");
   const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing market...");
 
   // Backtest / Inspection Modal
@@ -489,10 +484,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     configuredMarkup,
-    cycleCount,
-    cycleRuns,
     stopOnWin,
-    riskTab,
     marketSymbol,
   });
   stateRef.current = {
@@ -508,10 +500,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     configuredMarkup,
-    cycleCount,
-    cycleRuns,
     stopOnWin,
-    riskTab,
     marketSymbol,
   };
 
@@ -938,63 +927,35 @@ function TradeTerminal() {
     const nextRunCount = s.runCount + 1;
     setRunCount(nextRunCount);
 
-    if (s.riskTab === "pnl") {
-      if (s.tp > 0 && totalPnl >= s.tp) {
-        notifyTakeProfit(totalPnl);
-        const nextCycle = (stateRef.current.cycleCount || 0) + 1;
-        setCycleCount(nextCycle);
-        setRunCount(0);
-        lossCooldownTicks.current = 0;
-        setBotState("ANALYZING");
-        setNote(
-          `Take Profit target (+$${totalPnl.toFixed(2)}) reached! Auto-starting cycle ${nextCycle + 1}. Bot stays running...`
-        );
-        return;
-      }
-      if (s.sl > 0 && totalPnl <= -s.sl) {
-        notifyStopLoss(totalPnl);
-        const nextCycle = (stateRef.current.cycleCount || 0) + 1;
-        setCycleCount(nextCycle);
-        setRunCount(0);
-        lossCooldownTicks.current = 15;
-        setBotState("LOSS RE-ANALYSIS");
-        setNote(
-          `Stop Loss threshold (-$${Math.abs(totalPnl).toFixed(2)}) reached. Entering 15-tick protection cooldown and analyzing ${currentMarket.displayName}. Bot stays running...`
-        );
-        return;
-      }
+    if (s.tp > 0 && totalPnl >= s.tp) {
+      notifyTakeProfit(totalPnl);
+      return stopBot(
+        `Take Profit reached (+$${totalPnl.toFixed(2)}). Bot stopped.`,
+      );
+    }
+    if (s.sl > 0 && totalPnl <= -s.sl) {
+      notifyStopLoss(totalPnl);
+      return stopBot(
+        `Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)}). Bot stopped.`,
+      );
     }
 
     if (won && s.stopOnWin) {
       return stopBot(`First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`);
     }
 
-    if (nextRunCount >= s.cycleRuns) {
-      notifyCycleCompleted(s.cycleRuns, totalPnl);
-      // Auto-cycle: reset run count for the next cycle instead of stopping
-      const nextCycle = (stateRef.current.cycleCount || 0) + 1;
-      setCycleCount(nextCycle);
-      setRunCount(0);
-      lossCooldownTicks.current = 0;
-      setBotState("ANALYZING");
-      setNote(
-        `Cycle ${nextCycle} completed (${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}). Auto-starting cycle ${nextCycle + 1} — analyzing market...`
-      );
-      return;
-    }
-
     if (!won && s.reAnalyzeOnLoss) {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Run ${p.runIndex}/${s.cycleRuns} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
+        `Trade #${p.runIndex} lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
       );
       return;
     }
 
     setBotState("ANALYZING");
     setNote(
-      `Run ${p.runIndex}/${s.cycleRuns} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
+      `Trade #${p.runIndex} ${won ? "won" : "lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing for trade #${nextRunCount + 1}...`
     );
   }
 
@@ -1140,7 +1101,7 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Run ${targetRun}/${s.cycleRuns}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`
+        `Trade #${targetRun}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
@@ -1156,6 +1117,15 @@ function TradeTerminal() {
 
   function startBot() {
     initAudioContext();
+    const currentSessionPnl = trades.reduce((total, trade) => total + trade.pnl, 0);
+    if (tp > 0 && currentSessionPnl >= tp) {
+      setNote("Take Profit is already reached for this session. Save or reset the session before restarting.");
+      return;
+    }
+    if (sl > 0 && currentSessionPnl <= -sl) {
+      setNote("Stop Loss is already reached for this session. Save or reset the session before restarting.");
+      return;
+    }
     if (digits.length < WINDOW) {
       setNote(
         `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`
@@ -1174,9 +1144,6 @@ function TradeTerminal() {
       setNote("No Deriv account selected. Connect Deriv first.");
       return;
     }
-    setTrades([]);
-    setRunCount(0);
-    setCycleCount(0);
     pending.current = null;
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
@@ -1188,7 +1155,7 @@ function TradeTerminal() {
     stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
-      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — Run 1...`
+      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
@@ -1211,6 +1178,10 @@ function TradeTerminal() {
 
   function saveCurrentSession() {
     if (trades.length === 0) return;
+    if (running) {
+      setNote("Stop the bot before saving and clearing this session.");
+      return;
+    }
 
     const wins = trades.filter((trade) => trade.pnl > 0).length;
     const losses = trades.filter((trade) => trade.pnl < 0).length;
@@ -1234,6 +1205,9 @@ function TradeTerminal() {
     }
 
     setSavedSessions(nextHistory);
+    setTrades([]);
+    setRunCount(0);
+    lossStreakRef.current = 0;
     setExpandedHistoryId(snapshot.id);
     setCenterTab("session_history");
     setNote("Session saved to this device's history.");
@@ -1243,7 +1217,6 @@ function TradeTerminal() {
     stopBot("Session reset.");
     setTrades([]);
     setRunCount(0);
-    setCycleCount(0);
     lossStreakRef.current = 0;
   }
 
@@ -1401,7 +1374,7 @@ function TradeTerminal() {
       return;
     }
     const a = analyze(digits, maxDiff);
-    const targetRun = (runCount % cycleRuns) + 1;
+    const targetRun = runCount + 1;
     const testStake = calculateMartingaleStake(
       stake,
       lossStreakRef.current,
@@ -1425,7 +1398,7 @@ function TradeTerminal() {
     pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
     setNote(
-      `Test run ${targetRun}/${cycleRuns}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
+      `Test trade #${targetRun}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
     );
     placeLiveMatch(p);
   }
@@ -1732,7 +1705,7 @@ function TradeTerminal() {
               running ? (isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse") : (isDark ? "bg-zinc-600" : "bg-slate-400")
             }`} />
             <span className={`font-semibold uppercase text-[10px] ${isDark ? "text-zinc-300" : "text-slate-900"}`}>{botState}</span>
-            <span className="text-[10px] opacity-75">({runCount}/{cycleRuns})</span>
+            <span className="text-[10px] opacity-75">({runCount} trades)</span>
           </div>
 
           <div className="flex items-center gap-1">
@@ -2055,63 +2028,37 @@ function TradeTerminal() {
                 </p>
               </div>
 
-              {/* Cycle Limit & Stake */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-xs text-zinc-500">Cycle Limit</label>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[1, 3, 5, 10].map((n) => (
-                      <button
-                        key={n}
-                        type="button"
-                        onClick={() => setCycleRuns(n)}
-                        className={`rounded border py-2 text-xs font-semibold num transition-colors ${
-                          cycleRuns === n
-                            ? isDark
-                              ? "border-zinc-600 bg-zinc-800 text-white"
-                              : "border-slate-400 bg-slate-900 text-white"
-                            : isDark
-                              ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700"
-                              : "border-slate-200 bg-slate-100 text-slate-600 hover:border-slate-300"
-                        }`}
-                      >
-                        {n}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs text-zinc-500">Stake (USD)</label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={stakeInput}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === "" || /^\d*\.?\d*$/.test(val)) {
-                        setStakeInput(val);
-                        const num = parseFloat(val);
-                        if (!isNaN(num) && num > 0) {
-                          setStake(num);
-                        }
+              {/* Stake */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">Stake (USD)</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={stakeInput}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                      setStakeInput(val);
+                      const num = parseFloat(val);
+                      if (!isNaN(num) && num > 0) {
+                        setStake(num);
                       }
-                    }}
-                    onBlur={() => {
-                      const num = parseFloat(stakeInput);
-                      if (isNaN(num) || num < 0.35) {
-                        updateStake(0.35);
-                      } else {
-                        updateStake(num);
-                      }
-                    }}
-                    className={`w-full rounded border px-3 py-2 text-sm font-semibold num outline-none ${
-                      isDark
-                        ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
-                        : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
-                    }`}
-                  />
-                </div>
+                    }
+                  }}
+                  onBlur={() => {
+                    const num = parseFloat(stakeInput);
+                    if (isNaN(num) || num < 0.35) {
+                      updateStake(0.35);
+                    } else {
+                      updateStake(num);
+                    }
+                  }}
+                  className={`w-full rounded border px-3 py-2 text-sm font-semibold num outline-none ${
+                    isDark
+                      ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
+                      : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
+                  }`}
+                />
               </div>
 
               {/* Stake Quick Percentages based on Auto-updating Balance */}
@@ -2150,36 +2097,7 @@ function TradeTerminal() {
                 RISK
               </span>
 
-              {/* Tabs */}
-              <div className={`flex rounded border p-0.5 ${
-                isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
-              }`}>
-                <button
-                  type="button"
-                  onClick={() => setRiskTab("pnl")}
-                  className={`flex-1 rounded py-1.5 text-xs font-semibold transition-colors ${
-                    riskTab === "pnl"
-                      ? isDark ? "bg-zinc-800 text-white shadow-sm" : "bg-white text-slate-900 shadow-sm"
-                      : "text-zinc-500 hover:text-white"
-                  }`}
-                >
-                  Profit / Loss
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRiskTab("count")}
-                  className={`flex-1 rounded py-1.5 text-xs font-semibold transition-colors ${
-                    riskTab === "count"
-                      ? isDark ? "bg-zinc-800 text-white shadow-sm" : "bg-white text-slate-900 shadow-sm"
-                      : "text-zinc-500 hover:text-white"
-                  }`}
-                >
-                  Trade count
-                </button>
-              </div>
-
-              {riskTab === "pnl" ? (
-                <div className="grid grid-cols-2 gap-3 pt-1">
+              <div className="grid grid-cols-2 gap-3 pt-1">
                   <div className="space-y-1">
                     <label className="text-[11px] text-zinc-500">Take Profit ($)</label>
                     <input
@@ -2244,12 +2162,7 @@ function TradeTerminal() {
                       }`}
                     />
                   </div>
-                </div>
-              ) : (
-                <div className="py-2 text-xs text-zinc-500">
-                  Cycle Trade Limit: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{cycleRuns} runs per cycle</span>
-                </div>
-              )}
+              </div>
             </section>
           </aside>
 
@@ -2461,8 +2374,8 @@ function TradeTerminal() {
                   <button
                     type="button"
                     onClick={saveCurrentSession}
-                    disabled={trades.length === 0}
-                    title="Save a copy of this session on this device"
+                    disabled={running || trades.length === 0}
+                    title={running ? "Stop the bot before saving and clearing this session" : "Save session and clear current trades"}
                     className={"rounded border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " + (isDark
                       ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
                       : "border-slate-300 bg-white text-slate-700 hover:text-slate-900")}
@@ -2541,7 +2454,7 @@ function TradeTerminal() {
                         No saved sessions yet.
                       </p>
                       <p className="mt-2 text-xs text-zinc-500">
-                        Use SAVE SESSION to keep a copy of your current trades and results in this browser.
+                        Saving stores the completed session in history and clears its current trades.
                       </p>
                     </div>
                   ) : (
@@ -2737,8 +2650,8 @@ function TradeTerminal() {
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>Matches</div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500">Cycle Progress</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount} / {cycleRuns} runs</div>
+                  <div className="text-[10px] text-zinc-500">Session Trades</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount}</div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Entry Digit</div>
@@ -2810,7 +2723,7 @@ function TradeTerminal() {
               className="flex-1 h-12 rounded-xl bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
             >
               <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-              STOP BOT ({runCount}/{cycleRuns})
+              STOP BOT
             </button>
           ) : (
             <button

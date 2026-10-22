@@ -76,7 +76,6 @@ export const DISPLAY_NAME = "Volatility 100";
 export const PIP_DECIMALS = 2;
 export const MARTINGALE_MULTIPLIER = 1.5;
 export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
-export const MAX_RUNS = 3; // exactly 3 runs per cycle
 export const WINDOW = 1000;
 
 /** Base stake is multiplied by 1.5 for each consecutive settled loss. */

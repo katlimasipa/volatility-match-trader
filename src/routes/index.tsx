@@ -140,7 +140,7 @@ function SignIn() {
 
         <div className="flex items-center justify-between border-t border-zinc-900 pt-6 font-mono text-[11px] text-zinc-600">
           <span>RULE: SPREAD ≤ 0.3%</span>
-          <span>CYCLE: 3 RUNS</span>
+          <span>RISK: TAKE PROFIT / STOP LOSS</span>
           <span>IF LOSS: RE-ANALYZE</span>
           <a
             href="https://architeq.co.za"
