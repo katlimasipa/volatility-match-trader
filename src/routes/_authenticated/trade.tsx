@@ -1626,6 +1626,11 @@ function TradeTerminal() {
                     Re-analyze after loss
                   </span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={stopOnWin}
+                    onChange={(e) => setStopOnWin(e.target.checked)}
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   Pauses and re-analyzes market distribution before next trade if a loss occurs.
                 </p>
@@ -1635,10 +1640,25 @@ function TradeTerminal() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-xs text-zinc-500">Cycle Limit</label>
-                  <div className={`w-full rounded border px-3 py-2 text-sm font-semibold num ${
-                    isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-800"
-                  }`}>
-                    3 runs
+                  <div className="grid grid-cols-4 gap-1">
+                    {[1, 3, 5, 10].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setCycleRuns(n)}
+                        className={`rounded border py-2 text-xs font-semibold num transition-colors ${
+                          cycleRuns === n
+                            ? isDark
+                              ? "border-zinc-600 bg-zinc-800 text-white"
+                              : "border-slate-400 bg-slate-900 text-white"
+                            : isDark
+                              ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700"
+                              : "border-slate-200 bg-slate-100 text-slate-600 hover:border-slate-300"
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -1808,7 +1828,7 @@ function TradeTerminal() {
                 </div>
               ) : (
                 <div className="py-2 text-xs text-zinc-500">
-                  Cycle Trade Limit: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>3 runs per cycle</span>
+                  Cycle Trade Limit: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{cycleRuns} runs per cycle</span>
                 </div>
               )}
             </section>
@@ -2142,7 +2162,7 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Cycle Progress</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount} / {MAX_RUNS} runs</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount} / {cycleRuns} runs</div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Entry Digit</div>
@@ -2209,7 +2229,7 @@ function TradeTerminal() {
               className="flex-1 h-12 rounded-xl bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
             >
               <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-              STOP BOT ({runCount}/{MAX_RUNS})
+              STOP BOT ({runCount}/{cycleRuns})
             </button>
           ) : (
             <button
