@@ -1631,8 +1631,15 @@ function TradeTerminal() {
                     type="checkbox"
                     checked={stopOnWin}
                     onChange={(e) => setStopOnWin(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
+                  />
+                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                    Stop after first win
+                  </span>
+                </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   Pauses and re-analyzes market distribution before next trade if a loss occurs.
+                  With "Stop after first win" on, the bot stops instead of continuing.
                 </p>
               </div>
 
