@@ -56,69 +56,6 @@ export type Database = {
         }
         Relationships: []
       }
-      bot_alerts: {
-        Row: {
-          id: string
-          room_id: string
-          device_id: string
-          kind: string
-          title: string
-          body: string
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          room_id: string
-          device_id?: string
-          kind?: string
-          title: string
-          body?: string
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          room_id?: string
-          device_id?: string
-          kind?: string
-          title?: string
-          body?: string
-          created_at?: string
-        }
-        Relationships: []
-      }
-      push_subscriptions: {
-        Row: {
-          id: string
-          room_id: string
-          device_id: string
-          endpoint: string
-          p256dh: string
-          auth: string
-          user_agent: string | null
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          room_id: string
-          device_id?: string
-          endpoint: string
-          p256dh: string
-          auth: string
-          user_agent?: string | null
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          room_id?: string
-          device_id?: string
-          endpoint?: string
-          p256dh?: string
-          auth?: string
-          user_agent?: string | null
-          updated_at?: string
-        }
-        Relationships: []
-      }
     }
     Views: {
       [_ in never]: never
