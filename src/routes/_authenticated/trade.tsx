@@ -110,6 +110,81 @@ interface TradeRow {
   time: string;
 }
 
+interface SavedSession {
+  id: string;
+  savedAt: string;
+  marketSymbol: MarketSymbol;
+  trades: TradeRow[];
+  totalPnl: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  spreadThreshold: number;
+  baseStake: number;
+  martingaleEnabled: boolean;
+}
+
+const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
+const MAX_SAVED_SESSIONS = 50;
+
+function isTradeRow(value: unknown): value is TradeRow {
+  if (typeof value !== "object" || value === null) return false;
+  const trade = value as Partial<TradeRow>;
+  return (
+    typeof trade.id === "number" && Number.isFinite(trade.id) &&
+    typeof trade.runIndex === "number" && Number.isFinite(trade.runIndex) &&
+    typeof trade.entry === "number" && Number.isFinite(trade.entry) &&
+    typeof trade.target === "number" && Number.isFinite(trade.target) &&
+    typeof trade.result === "number" && Number.isFinite(trade.result) &&
+    typeof trade.stake === "number" && Number.isFinite(trade.stake) &&
+    typeof trade.pnl === "number" && Number.isFinite(trade.pnl) &&
+    typeof trade.time === "string"
+  );
+}
+
+function isSavedSession(value: unknown): value is SavedSession {
+  if (typeof value !== "object" || value === null) return false;
+  const saved = value as Partial<SavedSession>;
+  return (
+    typeof saved.id === "string" &&
+    typeof saved.savedAt === "string" && Number.isFinite(Date.parse(saved.savedAt)) &&
+    typeof saved.marketSymbol === "string" &&
+    MARKET_LIST.some((market) => market.id === saved.marketSymbol) &&
+    Array.isArray(saved.trades) && saved.trades.every(isTradeRow) &&
+    typeof saved.totalPnl === "number" && Number.isFinite(saved.totalPnl) &&
+    typeof saved.wins === "number" && Number.isFinite(saved.wins) &&
+    typeof saved.losses === "number" && Number.isFinite(saved.losses) &&
+    typeof saved.winRate === "number" && Number.isFinite(saved.winRate) &&
+    typeof saved.spreadThreshold === "number" && Number.isFinite(saved.spreadThreshold) &&
+    typeof saved.baseStake === "number" && Number.isFinite(saved.baseStake) &&
+    typeof saved.martingaleEnabled === "boolean"
+  );
+}
+
+function loadSavedSessions(): SavedSession[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = localStorage.getItem(SESSION_HISTORY_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed.filter(isSavedSession).slice(0, MAX_SAVED_SESSIONS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedSessions(sessions: SavedSession[]): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    localStorage.setItem(SESSION_HISTORY_STORAGE_KEY, JSON.stringify(sessions));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface PendingTrade {
   runIndex: number;
   entry: number;
@@ -255,6 +330,8 @@ function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
+  const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "COMPLETED" | "CYCLING">("BUFFERING");
   const [cycleCount, setCycleCount] = useState(0);
   const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing market...");
@@ -1114,6 +1191,36 @@ function TradeTerminal() {
     if (wasRunning) {
       notifyBotStopped(message);
     }
+  }
+
+  function saveCurrentSession() {
+    if (trades.length === 0) return;
+
+    const wins = trades.filter((trade) => trade.pnl > 0).length;
+    const losses = trades.filter((trade) => trade.pnl < 0).length;
+    const snapshot: SavedSession = {
+      id: String(Date.now()) + "-" + Math.random().toString(36).slice(2, 8),
+      savedAt: new Date().toISOString(),
+      marketSymbol,
+      trades: trades.map((trade) => ({ ...trade })),
+      totalPnl: trades.reduce((total, trade) => total + trade.pnl, 0),
+      wins,
+      losses,
+      winRate: Math.round((wins / trades.length) * 100),
+      spreadThreshold: maxDiff,
+      baseStake: stake,
+      martingaleEnabled,
+    };
+    const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
+    if (!persistSavedSessions(nextHistory)) {
+      setNote("Could not save session history. Browser storage may be unavailable or full.");
+      return;
+    }
+
+    setSavedSessions(nextHistory);
+    setExpandedHistoryId(snapshot.id);
+    setCenterTab("session_history");
+    setNote("Session saved to this device's history.");
   }
 
   function resetSession() {
@@ -2334,12 +2441,27 @@ function TradeTerminal() {
                     HISTORY
                   </button>
                 </div>
-                <span className="text-xs text-zinc-500 num">
-                  {trades.length} trades
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={saveCurrentSession}
+                    disabled={trades.length === 0}
+                    title="Save a copy of this session on this device"
+                    className={"rounded border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " + (isDark
+                      ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                      : "border-slate-300 bg-white text-slate-700 hover:text-slate-900")}
+                  >
+                    SAVE SESSION
+                  </button>
+                  <span className="text-xs text-zinc-500 num">
+                    {centerTab === "trade_log" ? trades.length + " trades" : savedSessions.length + " saved"}
+                  </span>
+                </div>
               </div>
 
               <div className="p-4 sm:p-6">
+                {centerTab === "trade_log" ? (
+                  <>
                 {trades.length === 0 ? (
                   <div className="py-12 sm:py-16 text-center">
                     <p className={`text-xs ${isDark ? "text-zinc-600" : "text-slate-400"}`}>
@@ -2393,6 +2515,118 @@ function TradeTerminal() {
                       </tbody>
                     </table>
                   </div>
+                )}
+
+                  </>
+                ) : (
+                  savedSessions.length === 0 ? (
+                    <div className="py-12 sm:py-16 text-center">
+                      <p className={"text-xs " + (isDark ? "text-zinc-400" : "text-slate-600")}>
+                        No saved sessions yet.
+                      </p>
+                      <p className="mt-2 text-xs text-zinc-500">
+                        Use SAVE SESSION to keep a copy of your current trades and results in this browser.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {savedSessions.map((saved) => (
+                        <article
+                          key={saved.id}
+                          className={"rounded-lg border p-3 sm:p-4 " + (isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50")}
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <div className={"text-sm font-semibold " + (isDark ? "text-white" : "text-slate-900")}>
+                                {MARKETS[saved.marketSymbol].displayName}
+                              </div>
+                              <div className="mt-1 text-[11px] text-zinc-500">
+                                {new Date(saved.savedAt).toLocaleString()} · {MARKETS[saved.marketSymbol].classicSymbol}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              aria-expanded={expandedHistoryId === saved.id}
+                              onClick={() => setExpandedHistoryId((current) => current === saved.id ? null : saved.id)}
+                              className={"rounded border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider " + (isDark
+                                ? "border-zinc-700 text-zinc-300 hover:bg-zinc-900"
+                                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100")}
+                            >
+                              {expandedHistoryId === saved.id ? "HIDE TRADES" : "VIEW TRADES"}
+                            </button>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
+                              <div className="text-[10px] text-zinc-500">NET P/L</div>
+                              <div className={"mt-1 text-sm font-semibold num " + (saved.totalPnl >= 0 ? "text-emerald-500" : "text-red-500")}>
+                                {saved.totalPnl >= 0 ? "+" : ""}{saved.totalPnl.toFixed(2)} USD
+                              </div>
+                            </div>
+                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
+                              <div className="text-[10px] text-zinc-500">TRADES</div>
+                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
+                                {saved.trades.length}
+                              </div>
+                            </div>
+                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
+                              <div className="text-[10px] text-zinc-500">WINS / LOSSES</div>
+                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
+                                {saved.wins} / {saved.losses}
+                              </div>
+                            </div>
+                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
+                              <div className="text-[10px] text-zinc-500">WIN RATE</div>
+                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
+                                {saved.winRate}%
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 text-[11px] text-zinc-500">
+                            Spread threshold {saved.spreadThreshold}% · Base stake {saved.baseStake.toFixed(2)} USD · Martingale {saved.martingaleEnabled ? "ON" : "OFF"}
+                          </div>
+
+                          {expandedHistoryId === saved.id && (
+                            <div className="mt-4 overflow-x-auto text-xs num">
+                              <table className="w-full text-left">
+                                <thead>
+                                  <tr className={"border-b pb-2 uppercase text-[10px] text-zinc-500 " + (isDark ? "border-zinc-800" : "border-slate-200")}>
+                                    <th className="py-2">Run</th>
+                                    <th>Time</th>
+                                    <th>Entry</th>
+                                    <th>Target</th>
+                                    <th>Exit</th>
+                                    <th>Stake</th>
+                                    <th>Status</th>
+                                    <th className="text-right">P/L</th>
+                                  </tr>
+                                </thead>
+                                <tbody className={"divide-y " + (isDark ? "divide-zinc-900" : "divide-slate-100")}>
+                                  {saved.trades.map((trade) => (
+                                    <tr key={trade.id}>
+                                      <td className="py-2.5 font-bold">#{trade.runIndex}</td>
+                                      <td className="text-zinc-500">{trade.time}</td>
+                                      <td>{trade.entry}</td>
+                                      <td className="font-semibold">{trade.target}</td>
+                                      <td className="font-bold">{trade.result}</td>
+                                      <td>{trade.stake.toFixed(2)} USD</td>
+                                      <td className={trade.pnl > 0 ? "text-emerald-500" : "text-red-500"}>
+                                        {trade.pnl > 0 ? "WON" : "LOST"}
+                                      </td>
+                                      <td className={"text-right font-bold " + (trade.pnl > 0 ? "text-emerald-500" : "text-red-500")}>
+                                        {trade.pnl > 0 ? "+" : ""}{trade.pnl.toFixed(2)} USD
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  )
                 )}
               </div>
             </section>
