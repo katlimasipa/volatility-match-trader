@@ -125,6 +125,20 @@ interface SavedSession {
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
 const MAX_SAVED_SESSIONS = 50;
 
+function normalizeDecimalInput(value: string): string {
+  return value.replace(",", ".");
+}
+
+function isDecimalInput(value: string): boolean {
+  return /^\d*(?:[.,]\d*)?$/.test(value);
+}
+
+function parseDecimalInput(value: string): number {
+  const normalized = normalizeDecimalInput(value);
+  if (normalized === "" || normalized === ".") return Number.NaN;
+  return Number(normalized);
+}
+
 function isTradeRow(value: unknown): value is TradeRow {
   if (typeof value !== "object" || value === null) return false;
   const trade = value as Partial<TradeRow>;
@@ -1916,17 +1930,17 @@ function TradeTerminal() {
                       inputMode="decimal"
                       value={maxDiffInput}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                        const val = normalizeDecimalInput(e.target.value);
+                        if (isDecimalInput(val)) {
                           setMaxDiffInput(val);
-                          const num = parseFloat(val);
+                          const num = parseDecimalInput(val);
                           if (!isNaN(num) && num >= 0) {
                             setMaxDiff(num);
                           }
                         }
                       }}
                       onBlur={() => {
-                        const num = parseFloat(maxDiffInput);
+                        const num = parseDecimalInput(maxDiffInput);
                         if (isNaN(num) || num < 0.1) {
                           updateMaxDiff(0.3);
                         } else {
@@ -2036,17 +2050,17 @@ function TradeTerminal() {
                   inputMode="decimal"
                   value={stakeInput}
                   onChange={(e) => {
-                    const val = e.target.value;
-                    if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                    const val = normalizeDecimalInput(e.target.value);
+                    if (isDecimalInput(val)) {
                       setStakeInput(val);
-                      const num = parseFloat(val);
+                      const num = parseDecimalInput(val);
                       if (!isNaN(num) && num > 0) {
                         setStake(num);
                       }
                     }
                   }}
                   onBlur={() => {
-                    const num = parseFloat(stakeInput);
+                    const num = parseDecimalInput(stakeInput);
                     if (isNaN(num) || num < 0.35) {
                       updateStake(0.35);
                     } else {
@@ -2106,17 +2120,17 @@ function TradeTerminal() {
                       disabled={running}
                       value={tpInput}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                        const val = normalizeDecimalInput(e.target.value);
+                        if (isDecimalInput(val)) {
                           setTpInput(val);
-                          const num = parseFloat(val);
+                          const num = parseDecimalInput(val);
                           if (!isNaN(num) && num > 0) {
                             setTp(num);
                           }
                         }
                       }}
                       onBlur={() => {
-                        const num = parseFloat(tpInput);
+                        const num = parseDecimalInput(tpInput);
                         if (isNaN(num) || num < 1) {
                           updateTp(1);
                         } else {
@@ -2138,17 +2152,17 @@ function TradeTerminal() {
                       disabled={running}
                       value={slInput}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === "" || /^\d*\.?\d*$/.test(val)) {
+                        const val = normalizeDecimalInput(e.target.value);
+                        if (isDecimalInput(val)) {
                           setSlInput(val);
-                          const num = parseFloat(val);
+                          const num = parseDecimalInput(val);
                           if (!isNaN(num) && num > 0) {
                             setSl(num);
                           }
                         }
                       }}
                       onBlur={() => {
-                        const num = parseFloat(slInput);
+                        const num = parseDecimalInput(slInput);
                         if (isNaN(num) || num < 1) {
                           updateSl(1);
                         } else {
