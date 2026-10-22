@@ -183,6 +183,8 @@ function TradeTerminal() {
   const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
   const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
+  const [cycleRuns, setCycleRuns] = useState<number>(MAX_RUNS); // trades per cycle (user configurable)
+  const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
@@ -368,6 +370,8 @@ function TradeTerminal() {
     maxDiff,
     configuredMarkup,
     cycleCount,
+    cycleRuns,
+    stopOnWin,
   });
   stateRef.current = {
     running,
@@ -382,6 +386,8 @@ function TradeTerminal() {
     maxDiff,
     configuredMarkup,
     cycleCount,
+    cycleRuns,
+    stopOnWin,
   };
 
   useEffect(() => {
@@ -792,8 +798,11 @@ function TradeTerminal() {
       notifyStopLoss(totalPnl);
       return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
     }
-    if (nextRunCount >= MAX_RUNS) {
-      notifyCycleCompleted(MAX_RUNS, totalPnl);
+    if (won && s.stopOnWin) {
+      return stopBot(`First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`);
+    }
+    if (nextRunCount >= s.cycleRuns) {
+      notifyCycleCompleted(s.cycleRuns, totalPnl);
       // Auto-cycle: reset run count for the next cycle instead of stopping
       const nextCycle = (stateRef.current.cycleCount || 0) + 1;
       setCycleCount(nextCycle);
@@ -810,14 +819,14 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Run ${p.runIndex}/${MAX_RUNS} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
+        `Run ${p.runIndex}/${s.cycleRuns} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
       );
       return;
     }
 
     setBotState("ANALYZING");
     setNote(
-      `Run ${p.runIndex}/${MAX_RUNS} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
+      `Run ${p.runIndex}/${s.cycleRuns} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
     );
   }
 
@@ -928,7 +937,7 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
+        `Run ${targetRun}/${s.cycleRuns}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
@@ -1073,7 +1082,7 @@ function TradeTerminal() {
       return;
     }
     const a = analyze(digits, maxDiff);
-    const targetRun = (runCount % MAX_RUNS) + 1;
+    const targetRun = (runCount % cycleRuns) + 1;
     const p: PendingTrade = {
       runIndex: targetRun,
       entry: a.most,
@@ -1085,7 +1094,7 @@ function TradeTerminal() {
     pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
     setNote(
-      `Test run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
+      `Test run ${targetRun}/${cycleRuns}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
     );
     placeLiveMatch(p);
   }
@@ -1364,7 +1373,7 @@ function TradeTerminal() {
           <div className="flex items-center gap-1.5">
             <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-500"}`} />
             <span className="font-semibold uppercase text-[10px] text-zinc-400">{botState}</span>
-            <span className="text-zinc-400 text-[10px]">({runCount}/{MAX_RUNS})</span>
+            <span className="text-zinc-400 text-[10px]">({runCount}/{cycleRuns})</span>
           </div>
 
           <div className="flex items-center gap-1">
@@ -1617,8 +1626,20 @@ function TradeTerminal() {
                     Re-analyze after loss
                   </span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={stopOnWin}
+                    onChange={(e) => setStopOnWin(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
+                  />
+                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                    Stop after first win
+                  </span>
+                </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   Pauses and re-analyzes market distribution before next trade if a loss occurs.
+                  With "Stop after first win" on, the bot stops instead of continuing.
                 </p>
               </div>
 
@@ -1626,10 +1647,25 @@ function TradeTerminal() {
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-xs text-zinc-500">Cycle Limit</label>
-                  <div className={`w-full rounded border px-3 py-2 text-sm font-semibold num ${
-                    isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-800"
-                  }`}>
-                    3 runs
+                  <div className="grid grid-cols-4 gap-1">
+                    {[1, 3, 5, 10].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setCycleRuns(n)}
+                        className={`rounded border py-2 text-xs font-semibold num transition-colors ${
+                          cycleRuns === n
+                            ? isDark
+                              ? "border-zinc-600 bg-zinc-800 text-white"
+                              : "border-slate-400 bg-slate-900 text-white"
+                            : isDark
+                              ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700"
+                              : "border-slate-200 bg-slate-100 text-slate-600 hover:border-slate-300"
+                        }`}
+                      >
+                        {n}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
@@ -1692,37 +1728,6 @@ function TradeTerminal() {
                 ))}
               </div>
 
-              {/* Live Deriv Matches Payout Breakdown with App ID Configured Markup */}
-              {(() => {
-                const payoutInfo = calculateMatchesPayout(stake, configuredMarkup);
-                return (
-                  <div className={`mt-3 rounded-lg border p-3 space-y-2 ${
-                    isDark ? "border-zinc-800/80 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
-                  }`}>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500 font-medium">Potential Payout</span>
-                      <span className={`font-bold num ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
-                        ${payoutInfo.clientGrossPayout.toFixed(2)} USD
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500 font-medium">Net Profit / Win</span>
-                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                        +${payoutInfo.netWinProfit.toFixed(2)} USD
-                        <span className="ml-1 text-[10px] text-zinc-500 font-normal">
-                          (+{((payoutInfo.netWinProfit / (stake || 1)) * 100).toFixed(0)}%)
-                        </span>
-                      </span>
-                    </div>
-                    <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
-                      isDark ? "border-zinc-800/60" : "border-slate-200"
-                    }`}>
-                      <span>Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}</span>
-                      <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
-                    </div>
-                  </div>
-                );
-              })()}
             </section>
 
             {/* RISK */}
@@ -1830,7 +1835,7 @@ function TradeTerminal() {
                 </div>
               ) : (
                 <div className="py-2 text-xs text-zinc-500">
-                  Cycle Trade Limit: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>3 runs per cycle</span>
+                  Cycle Trade Limit: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{cycleRuns} runs per cycle</span>
                 </div>
               )}
             </section>
@@ -2164,7 +2169,7 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Cycle Progress</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount} / {MAX_RUNS} runs</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount} / {cycleRuns} runs</div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Entry Digit</div>
@@ -2231,7 +2236,7 @@ function TradeTerminal() {
               className="flex-1 h-12 rounded-xl bg-rose-600 px-4 text-xs font-bold uppercase tracking-wider text-white shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2"
             >
               <span className="h-2 w-2 rounded-full bg-white animate-pulse" />
-              STOP BOT ({runCount}/{MAX_RUNS})
+              STOP BOT ({runCount}/{cycleRuns})
             </button>
           ) : (
             <button
