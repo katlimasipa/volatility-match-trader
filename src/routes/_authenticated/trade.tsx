@@ -30,6 +30,8 @@ import {
   MAX_DIFF,
   MAX_RUNS,
   WINDOW,
+  MARTINGALE_MULTIPLIER,
+  calculateMartingaleStake,
   MARKETS,
   MARKET_LIST,
   getMarketConfig,
@@ -84,7 +86,7 @@ export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
       { title: "ThDpst Matches // Volatility Trader" },
-      { name: "description", content: "Deriv Matches smart trader bot for Volatility 100 & Volatility 10." },
+      { name: "description", content: "Deriv Matches trader for Volatility 100, Volatility 10, and their 1-second indices." },
     ],
   }),
   component: TradeTerminal,
@@ -173,11 +175,11 @@ function TradeTerminal() {
   const activeAppId = getDerivClientId();
   const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
 
-  // Market Selection state (Volatility 100 Index / Volatility 10 Index)
+  // Market Selection state (standard and 1-second Volatility 100 / 10 indices)
   const [marketSymbol, setMarketSymbol] = useState<MarketSymbol>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("thdpst_market_symbol");
-      if (saved === "R_10" || saved === "R_100") return saved;
+      if (saved === "R_10" || saved === "R_100" || saved === "1HZ100V" || saved === "1HZ10V") return saved;
     }
     return "R_100";
   });
@@ -199,6 +201,7 @@ function TradeTerminal() {
   const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
   const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
+  const [martingaleEnabled, setMartingaleEnabled] = useState(false);
   const [cycleRuns, setCycleRuns] = useState<number>(MAX_RUNS); // trades per cycle (user configurable)
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [stake, setStake] = useState<number>(1);
@@ -380,6 +383,7 @@ function TradeTerminal() {
   }
 
   const pending = useRef<PendingTrade | null>(null);
+  const lossStreakRef = useRef(0);
   const pendingSetAt = useRef<number>(0); // timestamp when pending was set, for stuck-trade safety
   const digitsRef = useRef<number[]>([]); // synchronous market digits buffer, avoids state batching drops
   const lossCooldownTicks = useRef(0);
@@ -402,6 +406,7 @@ function TradeTerminal() {
     trades,
     botState,
     reAnalyzeOnLoss,
+    martingaleEnabled,
     activeId,
     maxDiff,
     configuredMarkup,
@@ -420,6 +425,7 @@ function TradeTerminal() {
     trades,
     botState,
     reAnalyzeOnLoss,
+    martingaleEnabled,
     activeId,
     maxDiff,
     configuredMarkup,
@@ -777,6 +783,12 @@ function TradeTerminal() {
   ) {
     const s = stateRef.current;
 
+    if (won || !s.martingaleEnabled) {
+      lossStreakRef.current = 0;
+    } else {
+      lossStreakRef.current += 1;
+    }
+
     if (won) {
       notifyTradeWon(p.runIndex, Math.abs(pnl), p.target);
     } else {
@@ -934,11 +946,14 @@ function TradeTerminal() {
         setBotState("LOSS RE-ANALYSIS");
         setNote(
           limitHit
-            ? `Deriv limit exceeded. Waiting for open contracts to settle (${lossCooldownTicks.current} ticks) before the next buy...`
+            ? `Trading connection is cooling down after a temporary request cap. Waiting ${lossCooldownTicks.current} ticks for a fresh entry signal...`
             : `Trade notice: ${err.message}. Waiting ${lossCooldownTicks.current} ticks before retry...`,
         );
-        setTradingStatusNote(err.message);
-        if (stateRef.current.running) notifyTradeFailed(err.message);
+        const userFacingError = limitHit
+          ? "Temporary request cap. Cleared stale subscriptions and paused briefly before retrying."
+          : err.message;
+        setTradingStatusNote(userFacingError);
+        if (stateRef.current.running) notifyTradeFailed(userFacingError);
       });
   }
 
@@ -1010,11 +1025,23 @@ function TradeTerminal() {
         setNote("Waiting for the current Deriv contract to settle...");
         return;
       }
+      const nextStake = calculateMartingaleStake(
+        s.stake,
+        lossStreakRef.current,
+        s.martingaleEnabled,
+      );
+      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      if (nextStake > availableBalance) {
+        stopBot(
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+        );
+        return;
+      }
       pending.current = {
         runIndex: targetRun,
         entry: currentD,
         target: a.second,
-        stake: s.stake,
+        stake: nextStake,
         live: true,
       };
       pendingSetAt.current = Date.now();
@@ -1059,6 +1086,7 @@ function TradeTerminal() {
     setCycleCount(0);
     pending.current = null;
     lossCooldownTicks.current = 0;
+    lossStreakRef.current = 0;
     connectionLostAlertedRef.current = false;
     if (typeof window !== "undefined") {
       localStorage.setItem("deriv_bot_is_running", "true");
@@ -1093,6 +1121,7 @@ function TradeTerminal() {
     setTrades([]);
     setRunCount(0);
     setCycleCount(0);
+    lossStreakRef.current = 0;
   }
 
   // Pull the latest balance from Deriv (demo top-ups happen in Deriv, not locally)
@@ -1250,11 +1279,23 @@ function TradeTerminal() {
     }
     const a = analyze(digits, maxDiff);
     const targetRun = (runCount % cycleRuns) + 1;
+    const testStake = calculateMartingaleStake(
+      stake,
+      lossStreakRef.current,
+      martingaleEnabled,
+    );
+    const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+    if (testStake > availableBalance) {
+      setNote(
+        `Test trade not placed: the next stake ($${testStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}).`,
+      );
+      return;
+    }
     const p: PendingTrade = {
       runIndex: targetRun,
       entry: a.most,
       target: a.second,
-      stake,
+      stake: testStake,
       live: true,
     };
     pending.current = p;
@@ -1868,9 +1909,26 @@ function TradeTerminal() {
                     Stop after first win
                   </span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={martingaleEnabled}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setMartingaleEnabled(enabled);
+                      if (!enabled) lossStreakRef.current = 0;
+                    }}
+                    className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
+                  />
+                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                    1.5× martingale after losses
+                  </span>
+                </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Pauses and re-analyzes market distribution before next trade if a loss occurs.
-                  With "Stop after first win" on, the bot stops instead of continuing.
+                  {martingaleEnabled
+                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true).toFixed(2)}. It grows by ${MARTINGALE_MULTIPLIER}× after each loss and resets to the base stake after a win; this raises risk and cannot guarantee recovery.`
+                    : "Re-analyzes after a loss. Turn on 1.5× martingale to increase the next stake after each loss; a win resets it to your base stake."}
+                  {stopOnWin ? ' "Stop after first win" stops the bot after a win.' : ""}
                 </p>
               </div>
 

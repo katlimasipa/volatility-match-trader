@@ -58,8 +58,11 @@ function errorMessage(err: unknown): string {
 }
 
 export function isDerivLimitError(err: unknown): boolean {
-  return /limit exceeded|rate limit|too many requests|max(imum)? (number of )?contracts/i.test(
-    errorMessage(err),
+  const message = errorMessage(err);
+  return (
+    /limit.{0,40}(?:exceed|reach)|(?:exceed|reach).{0,40}limit/i.test(message) ||
+    /subscriptions?.{0,40}(?:limit|maximum)|(?:limit|maximum).{0,40}subscriptions?/i.test(message) ||
+    /rate limit|too many (?:requests|subscriptions)|max(imum)? (number of )?contracts/i.test(message)
   );
 }
 
@@ -387,7 +390,9 @@ export class DerivTradingSession {
       console.warn('[deriv-trading] openSocket failed:', url, err);
       try {
         ws?.dispose();
-      } catch {}
+      } catch {
+        // The socket may already be closed; cleanup is best-effort.
+      }
       return false;
     }
   }
@@ -515,17 +520,23 @@ export class DerivTradingSession {
     if (!this.ws || !this.ready) return;
     try {
       await this.ws.send({ forget_all: 'proposal' });
-    } catch {}
+    } catch {
+      // Continue cleanup even if Deriv already removed these proposals.
+    }
     try {
       await this.ws.send({ forget_all: 'proposal_open_contract' });
-    } catch {}
+    } catch {
+      // Continue cleanup even if Deriv already removed these contracts.
+    }
     try {
       await this.ws.send({ portfolio: 1 });
-    } catch {}
+    } catch {
+      // The portfolio request is only a best-effort refresh after cleanup.
+    }
   }
 
   /**
-   * Place a 1-tick DIGITMATCH contract on the selected market (Volatility 100 or Volatility 10).
+   * Place a 1-tick DIGITMATCH contract on the selected standard or 1-second market.
    */
   async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
     if (this.buyInFlight) {
@@ -672,7 +683,7 @@ export class DerivTradingSession {
           currency?: string;
           accounts?: Record<string, { balance: number | string; currency: string }>;
         };
-      }>({ balance: 1, subscribe: 1 });
+      }>({ balance: 1 });
       const bal = balRes.balance;
       if (!bal) return;
 

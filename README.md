@@ -1,14 +1,15 @@
 # ThDpst Matches — Volatility 100
 
-Monochrome Deriv Matches bot for **Volatility 100**. It reads the last 1,000 digits, checks the spread rule, and places live **DIGITMATCH** trades on your Deriv account.
+Monochrome Deriv Matches bot for **Volatility 100**, **Volatility 10**, and their **1-second** variants. It reads the last 1,000 digits, checks the spread rule, and places live **DIGITMATCH** trades on your Deriv account.
 
 ## What it does
 
 1. Connect with **Deriv Auth 2.0** (or paste an API token on the iPhone home-screen app).
-2. Buffer 1,000 ticks from Volatility 100.
+2. Select a standard or 1-second Volatility 100/10 index and buffer its own 1,000 ticks before trading that same symbol.
 3. Find the most and second-most common digits. Enter only when their difference is ≤ 0.3%.
 4. Buy DIGITMATCH using the second-most digit as the barrier (3 runs per cycle).
 5. On a loss, wait and re-analyse. Stop on take profit, stop loss, or end of cycle.
+6. Optionally enable 1.5× martingale: the next stake increases after each loss and returns to the base stake after a win. It increases risk and cannot guarantee recovery.
 6. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
 7. **Cross-device alerts** — turn **NOTIF** on on each device (same Deriv account). Bot start/stop and trade results sync live via Realtime, catch up when you reopen the app, and use Web Push when the app is closed (needs VAPID keys + the SQL migration in `supabase/migrations/`).
 

@@ -11,7 +11,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Matches // Volatility Trader" },
-      { name: "description", content: "Monochrome Deriv Matches strategy terminal for Volatility 100 and Volatility 10." },
+      { name: "description", content: "Deriv Matches terminal for standard and 1-second Volatility 100 and Volatility 10 indices." },
     ],
   }),
   component: SignIn,
@@ -122,7 +122,7 @@ function SignIn() {
         <div className="flex items-center gap-3">
           <img src="/app-icon.png" alt="Icon" className="h-8 w-8 rounded-full border border-zinc-800" />
           <span className="text-xs uppercase tracking-[0.25em] text-zinc-400">
-            DERIV // VOL 100 & VOL 10
+            DERIV // VOL 100 & 10
           </span>
         </div>
 

@@ -12,6 +12,7 @@ import {
   MARKET_LIST,
   getMarketConfig,
   marketTradeSymbols,
+  calculateMartingaleStake,
 } from "@/lib/matches";
 
 const build = (counts: number[]) => counts.flatMap((c, d) => new Array(c).fill(d));
@@ -19,7 +20,7 @@ const build = (counts: number[]) => counts.flatMap((c, d) => new Array(c).fill(d
 describe("Volatility 100 Matches strategy", () => {
   it("targets Volatility 100 with classic and Auth 2.0 symbols", () => {
     expect(CLASSIC_SYMBOL).toBe("R_100");
-    expect(OPTIONS_SYMBOL).toBe("1HZ100V");
+    expect(OPTIONS_SYMBOL).toBe("R_100");
     expect(SYMBOL).toBe("R_100");
     expect(lastDigit(1234.5)).toBe(0);
     expect(lastDigit(1234.57)).toBe(7);
@@ -32,7 +33,7 @@ describe("Volatility 100 Matches strategy", () => {
     expect(v10.id).toBe("R_10");
     expect(v10.displayName).toBe("Volatility 10 Index");
     expect(v10.classicSymbol).toBe("R_10");
-    expect(v10.optionsSymbol).toBe("1HZ10V");
+    expect(v10.optionsSymbol).toBe("R_10");
     expect(v10.pipDecimals).toBe(3);
 
     expect(lastDigit(6543.218, v10.pipDecimals)).toBe(8);
@@ -41,19 +42,42 @@ describe("Volatility 100 Matches strategy", () => {
     expect(lastDigit(6543.21, v10.pipDecimals)).toBe(0);
 
     expect(getMarketConfig("R_10").classicSymbol).toBe("R_10");
-    expect(getMarketConfig("1HZ10V").classicSymbol).toBe("R_10");
+    expect(getMarketConfig("1HZ10V").classicSymbol).toBe("1HZ10V");
     expect(getMarketConfig("R_100").classicSymbol).toBe("R_100");
     expect(getMarketConfig().classicSymbol).toBe("R_100");
-    expect(MARKET_LIST.map((m) => m.id)).toEqual(["R_100", "R_10"]);
+    expect(MARKET_LIST.map((m) => m.id)).toEqual(["R_100", "R_10", "1HZ100V", "1HZ10V"]);
 
     expect(marketTradeSymbols(v10, "classic")).toEqual({
       preferred: "R_10",
-      fallback: "1HZ10V",
-    });
-    expect(marketTradeSymbols(v10, "otp")).toEqual({
-      preferred: "1HZ10V",
       fallback: "R_10",
     });
+    expect(marketTradeSymbols(v10, "otp")).toEqual({
+      preferred: "R_10",
+      fallback: "R_10",
+    });
+  });
+
+  it("keeps 1-second indices separate from standard indices", () => {
+    const v100s = getMarketConfig("1HZ100V");
+    const v10s = getMarketConfig("1HZ10V");
+    expect(v100s.displayName).toBe("Volatility 100 (1s) Index");
+    expect(v100s.classicSymbol).toBe("1HZ100V");
+    expect(v100s.optionsSymbol).toBe("1HZ100V");
+    expect(v10s.displayName).toBe("Volatility 10 (1s) Index");
+    expect(v10s.classicSymbol).toBe("1HZ10V");
+    expect(v10s.optionsSymbol).toBe("1HZ10V");
+    expect(marketTradeSymbols(v10s, "otp")).toEqual({
+      preferred: "1HZ10V",
+      fallback: "1HZ10V",
+    });
+  });
+
+  it("applies 1.5× martingale progression only when enabled", () => {
+    expect(calculateMartingaleStake(1, 0, true)).toBe(1);
+    expect(calculateMartingaleStake(1, 1, true)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 2, true)).toBe(2.25);
+    expect(calculateMartingaleStake(1, 3, false)).toBe(1);
+    expect(calculateMartingaleStake(0.35, 1, true)).toBe(0.53);
   });
 
   it("identifies most and second most appearing digits", () => {

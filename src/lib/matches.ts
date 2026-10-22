@@ -1,7 +1,6 @@
-// Matches strategy analysis for Volatility 100 and Volatility 10.
-// Classic Binary API uses R_100 / R_10; Auth 2.0 Options API uses 1HZ100V / 1HZ10V.
+// Matches strategy analysis for standard and 1-second Volatility 100 / 10 indices.
 
-export type MarketSymbol = "R_100" | "R_10";
+export type MarketSymbol = "R_100" | "R_10" | "1HZ100V" | "1HZ10V";
 
 export interface MarketConfig {
   id: MarketSymbol;
@@ -18,7 +17,7 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     displayName: "Volatility 100 Index",
     shortName: "Vol 100",
     classicSymbol: "R_100",
-    optionsSymbol: "1HZ100V",
+    optionsSymbol: "R_100",
     pipDecimals: 2,
   },
   R_10: {
@@ -26,18 +25,36 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     displayName: "Volatility 10 Index",
     shortName: "Vol 10",
     classicSymbol: "R_10",
+    optionsSymbol: "R_10",
+    pipDecimals: 3,
+  },
+  "1HZ100V": {
+    id: "1HZ100V",
+    displayName: "Volatility 100 (1s) Index",
+    shortName: "Vol 100 (1s)",
+    classicSymbol: "1HZ100V",
+    optionsSymbol: "1HZ100V",
+    pipDecimals: 2,
+  },
+  "1HZ10V": {
+    id: "1HZ10V",
+    displayName: "Volatility 10 (1s) Index",
+    shortName: "Vol 10 (1s)",
+    classicSymbol: "1HZ10V",
     optionsSymbol: "1HZ10V",
     pipDecimals: 3,
   },
 };
 
-export const MARKET_LIST: MarketConfig[] = [MARKETS.R_100, MARKETS.R_10];
+export const MARKET_LIST: MarketConfig[] = [
+  MARKETS.R_100,
+  MARKETS.R_10,
+  MARKETS["1HZ100V"],
+  MARKETS["1HZ10V"],
+];
 
 export function getMarketConfig(symbol?: string): MarketConfig {
-  if (symbol === "R_10" || symbol === "1HZ10V") {
-    return MARKETS.R_10;
-  }
-  return MARKETS.R_100;
+  return MARKET_LIST.find((market) => market.id === symbol) ?? MARKETS.R_100;
 }
 
 /** Preferred Deriv symbol for the active connection, plus a fallback for the other API. */
@@ -52,17 +69,30 @@ export function marketTradeSymbols(
 }
 
 export const CLASSIC_SYMBOL = "R_100";
-export const OPTIONS_SYMBOL = "1HZ100V";
+export const OPTIONS_SYMBOL = "R_100";
 /** @deprecated Prefer CLASSIC_SYMBOL / OPTIONS_SYMBOL by connection mode */
 export const SYMBOL = CLASSIC_SYMBOL;
 export const DISPLAY_NAME = "Volatility 100";
 export const PIP_DECIMALS = 2;
+export const MARTINGALE_MULTIPLIER = 1.5;
 export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
 export const MAX_RUNS = 3; // exactly 3 runs per cycle
 export const WINDOW = 1000;
 
+/** Base stake is multiplied by 1.5 for each consecutive settled loss. */
+export function calculateMartingaleStake(
+  baseStake: number,
+  consecutiveLosses: number,
+  enabled: boolean,
+): number {
+  if (!Number.isFinite(baseStake) || baseStake <= 0) return 0;
+  const steps = enabled ? Math.max(0, Math.floor(consecutiveLosses)) : 0;
+  const amount = baseStake * Math.pow(MARTINGALE_MULTIPLIER, steps);
+  return Number.isFinite(amount) ? Math.round((amount + Number.EPSILON) * 100) / 100 : 0;
+}
+
 /**
- * Extract the last digit from a price quote using pip decimal precision (2 decimals for Vol 100, 3 for Vol 10).
+ * Extract the last digit from a quote using the selected market's pip precision.
  */
 export function lastDigit(quote: number, decimals = PIP_DECIMALS): number {
   const s = quote.toFixed(decimals);

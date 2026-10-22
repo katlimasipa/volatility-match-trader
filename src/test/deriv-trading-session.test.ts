@@ -85,7 +85,7 @@ describe("DIGITMATCH proposal payload", () => {
         barrier: "7",
       });
       if (mode === "otp") {
-        expect(proposal).toHaveProperty("underlying_symbol", "1HZ100V");
+        expect(proposal).toHaveProperty("underlying_symbol", "R_100");
         expect(proposal).not.toHaveProperty("symbol");
       } else {
         expect(proposal).toHaveProperty("symbol", "R_100");
@@ -97,7 +97,7 @@ describe("DIGITMATCH proposal payload", () => {
     },
   );
 
-  it("proposes Volatility 10 on the Options symbol when using Auth 2.0", async () => {
+  it("proposes the selected standard Volatility 10 symbol when using Auth 2.0", async () => {
     const sent: Record<string, unknown>[] = [];
     const fakeWs = {
       send: vi.fn(async (payload: Record<string, unknown>) => {
@@ -118,6 +118,33 @@ describe("DIGITMATCH proposal payload", () => {
 
     await expect(
       session.buyDigitMatch({ stake: 1, barrierDigit: 4, currency: "USD", symbol: "R_10" }),
+    ).rejects.toThrow("Deriv buy failed");
+
+    expect(sent[0]).toHaveProperty("underlying_symbol", "R_10");
+    session.dispose();
+  });
+
+  it("keeps a selected 1-second market on the same symbol for Auth 2.0", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        if (payload["proposal"] === 1) {
+          return { proposal: { id: "proposal-id", ask_price: 1 } };
+        }
+        return { buy: {} };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "otp",
+    });
+
+    await expect(
+      session.buyDigitMatch({ stake: 1, barrierDigit: 4, currency: "USD", symbol: "1HZ10V" }),
     ).rejects.toThrow("Deriv buy failed");
 
     expect(sent[0]).toHaveProperty("underlying_symbol", "1HZ10V");
@@ -192,6 +219,9 @@ describe("Deriv limit errors", () => {
   it("detects Limit exceeded messages from Deriv", () => {
     expect(isDerivLimitError(new Error("Limit exceeded"))).toBe(true);
     expect(isDerivLimitError(new Error("Rate limit exceeded"))).toBe(true);
+    expect(isDerivLimitError(new Error("Subscription limit exceeded"))).toBe(true);
+    expect(isDerivLimitError(new Error("Subscription limit has been reached"))).toBe(true);
+    expect(isDerivLimitError(new Error("Maximum number of active subscriptions exceeded"))).toBe(true);
     expect(isDerivLimitError(new Error("Invalid symbol"))).toBe(false);
   });
 
@@ -220,6 +250,23 @@ describe("Deriv limit errors", () => {
 
     expect(sent.some((p) => p["forget_all"] === "proposal")).toBe(true);
     expect(sent.some((p) => p["forget_all"] === "proposal_open_contract")).toBe(true);
+    session.dispose();
+  });
+
+  it("uses a one-shot balance request for refreshes", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        return { balance: { balance: 100, loginid: "CR123", currency: "USD" } };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, { ws: fakeWs, ready: true });
+
+    await session.refreshBalance();
+    expect(sent).toEqual([{ balance: 1 }]);
     session.dispose();
   });
 });

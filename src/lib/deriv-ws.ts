@@ -232,6 +232,15 @@ export class DerivWS {
     const reqId = ++this.reqIdCounter;
     const msg = { ...payload, req_id: reqId };
 
+    // Keep reconnect state in sync with subscriptions explicitly forgotten by Deriv.
+    if (payload['forget_all'] === 'all') {
+      this.activeSubscriptions.clear();
+    } else if (payload['forget_all'] === 'proposal_open_contract') {
+      for (const key of this.activeSubscriptions.keys()) {
+        if (key.startsWith('poc:')) this.activeSubscriptions.delete(key);
+      }
+    }
+
     // If it's a persistent subscription request, track it for auto-resubscription on reconnect
     if (payload['subscribe'] === 1 || payload['ticks_history']) {
       const key = String(
