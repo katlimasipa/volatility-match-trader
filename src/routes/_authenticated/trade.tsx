@@ -1692,37 +1692,6 @@ function TradeTerminal() {
                 ))}
               </div>
 
-              {/* Live Deriv Matches Payout Breakdown with App ID Configured Markup */}
-              {(() => {
-                const payoutInfo = calculateMatchesPayout(stake, configuredMarkup);
-                return (
-                  <div className={`mt-3 rounded-lg border p-3 space-y-2 ${
-                    isDark ? "border-zinc-800/80 bg-zinc-900/60" : "border-slate-200 bg-slate-50"
-                  }`}>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500 font-medium">Potential Payout</span>
-                      <span className={`font-bold num ${isDark ? "text-zinc-300" : "text-zinc-700"}`}>
-                        ${payoutInfo.clientGrossPayout.toFixed(2)} USD
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500 font-medium">Net Profit / Win</span>
-                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                        +${payoutInfo.netWinProfit.toFixed(2)} USD
-                        <span className="ml-1 text-[10px] text-zinc-500 font-normal">
-                          (+{((payoutInfo.netWinProfit / (stake || 1)) * 100).toFixed(0)}%)
-                        </span>
-                      </span>
-                    </div>
-                    <div className={`pt-2 border-t flex items-center justify-between text-[10px] text-zinc-500 ${
-                      isDark ? "border-zinc-800/60" : "border-slate-200"
-                    }`}>
-                      <span>Markup ({configuredMarkup.toFixed(1)}%): -${payoutInfo.markupFee.toFixed(2)}</span>
-                      <span>Effective: {payoutInfo.payoutMultiplier.toFixed(2)}x</span>
-                    </div>
-                  </div>
-                );
-              })()}
             </section>
 
             {/* RISK */}
