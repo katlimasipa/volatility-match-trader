@@ -259,6 +259,7 @@ function TradeTerminal() {
     return "R_100";
   });
   const currentMarket = getMarketConfig(marketSymbol);
+  const [marketPipDecimals, setMarketPipDecimals] = useState(currentMarket.pipDecimals);
 
   // Derive activeAccount and activeType (case-insensitive — Deriv loginids vary in casing)
   const activeAccount =
@@ -315,6 +316,7 @@ function TradeTerminal() {
       return;
     }
     setMarketSymbol(m);
+    setMarketPipDecimals(MARKETS[m].pipDecimals);
     if (typeof window !== "undefined") {
       localStorage.setItem("thdpst_market_symbol", m);
     }
@@ -664,6 +666,14 @@ function TradeTerminal() {
   // Connect to Deriv WebSocket tick feed & balance stream using configured App ID
   useEffect(() => {
     const marketInfo = getMarketConfig(marketSymbol);
+    let feedPipDecimals = marketInfo.pipDecimals;
+    const updateFeedPipDecimals = (value: unknown) => {
+      if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10) {
+        feedPipDecimals = value;
+        setMarketPipDecimals(value);
+      }
+    };
+    setMarketPipDecimals(feedPipDecimals);
     const wsUrl = getDerivWsUrl(activeAppId);
     const ws = new DerivWS(wsUrl, (s) => setStatus(s));
     wsRef.current = ws;
@@ -687,11 +697,16 @@ function TradeTerminal() {
 
     // Listen for tick history and incoming live ticks
     ws.registerHandler("history", (data) => {
-      const history = data['history'] as { prices?: number[]; times?: number[] };
+      const response = data as {
+        history?: { prices?: number[]; times?: number[] };
+        pip_size?: unknown;
+      };
+      const history = response.history;
       if (history?.prices && history.prices.length > 0) {
+        updateFeedPipDecimals(response.pip_size);
         const pList = history.prices;
         const tList = history.times || [];
-        const dList = pList.map((p) => lastDigit(p, marketInfo.pipDecimals));
+        const dList = pList.map((p) => lastDigit(p, feedPipDecimals));
         digitsRef.current = dList;
         setDigits(dList);
         setPrice(pList[pList.length - 1] ?? null);
@@ -720,11 +735,12 @@ function TradeTerminal() {
     });
 
     ws.registerHandler("tick", (data) => {
-      const tick = data['tick'] as { quote?: number; epoch?: number };
+      const tick = data['tick'] as { quote?: number; epoch?: number; pip_size?: unknown };
       if (typeof tick?.quote === "number") {
+        updateFeedPipDecimals(tick.pip_size);
         const q = tick.quote;
         const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
-        const nextDigit = lastDigit(q, marketInfo.pipDecimals);
+        const nextDigit = lastDigit(q, feedPipDecimals);
         lastTickAt.current = Date.now();
 
         setPrice(q);
@@ -1912,7 +1928,7 @@ function TradeTerminal() {
                   })}
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}% on {currentMarket.displayName} ({currentMarket.pipDecimals} decimals).
+                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}% on {currentMarket.displayName} ({marketPipDecimals} decimals).
                 </p>
               </div>
 
@@ -2285,7 +2301,7 @@ function TradeTerminal() {
                     </span>
                     <div className="text-[10px] text-zinc-500">PRICE</div>
                     <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                      {price !== null ? price.toFixed(currentMarket.pipDecimals) : "—"}
+                      {price !== null ? price.toFixed(marketPipDecimals) : "—"}
                     </div>
                     <div className={`text-[11px] font-semibold num ${
                       analysis.diff <= maxDiff
@@ -2393,7 +2409,7 @@ function TradeTerminal() {
                             {tick.time}
                           </td>
                           <td className={`py-1 font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
-                            {tick.price.toFixed(currentMarket.pipDecimals)}
+                            {tick.price.toFixed(marketPipDecimals)}
                           </td>
                           <td className="py-1 text-right font-bold">
                             <span className={`inline-block px-1.5 py-0.2 rounded text-[11px] ${
