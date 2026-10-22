@@ -183,6 +183,8 @@ function TradeTerminal() {
   const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
   const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
+  const [cycleRuns, setCycleRuns] = useState<number>(MAX_RUNS); // trades per cycle (user configurable)
+  const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
   const [riskTab, setRiskTab] = useState<"pnl" | "count">("pnl");
@@ -368,6 +370,8 @@ function TradeTerminal() {
     maxDiff,
     configuredMarkup,
     cycleCount,
+    cycleRuns,
+    stopOnWin,
   });
   stateRef.current = {
     running,
@@ -382,6 +386,8 @@ function TradeTerminal() {
     maxDiff,
     configuredMarkup,
     cycleCount,
+    cycleRuns,
+    stopOnWin,
   };
 
   useEffect(() => {
@@ -792,8 +798,11 @@ function TradeTerminal() {
       notifyStopLoss(totalPnl);
       return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)})`);
     }
-    if (nextRunCount >= MAX_RUNS) {
-      notifyCycleCompleted(MAX_RUNS, totalPnl);
+    if (won && s.stopOnWin) {
+      return stopBot(`First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`);
+    }
+    if (nextRunCount >= s.cycleRuns) {
+      notifyCycleCompleted(s.cycleRuns, totalPnl);
       // Auto-cycle: reset run count for the next cycle instead of stopping
       const nextCycle = (stateRef.current.cycleCount || 0) + 1;
       setCycleCount(nextCycle);
@@ -810,14 +819,14 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Run ${p.runIndex}/${MAX_RUNS} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
+        `Run ${p.runIndex}/${s.cycleRuns} Lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
       );
       return;
     }
 
     setBotState("ANALYZING");
     setNote(
-      `Run ${p.runIndex}/${MAX_RUNS} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
+      `Run ${p.runIndex}/${s.cycleRuns} ${won ? "Won" : "Lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing market for run ${nextRunCount + 1}...`
     );
   }
 
@@ -928,7 +937,7 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
+        `Run ${targetRun}/${s.cycleRuns}: Buying DIGITMATCH on Deriv — entry ${currentD}, match ${a.second}...`
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
@@ -1073,7 +1082,7 @@ function TradeTerminal() {
       return;
     }
     const a = analyze(digits, maxDiff);
-    const targetRun = (runCount % MAX_RUNS) + 1;
+    const targetRun = (runCount % cycleRuns) + 1;
     const p: PendingTrade = {
       runIndex: targetRun,
       entry: a.most,
@@ -1085,7 +1094,7 @@ function TradeTerminal() {
     pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
     setNote(
-      `Test run ${targetRun}/${MAX_RUNS}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
+      `Test run ${targetRun}/${cycleRuns}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
     );
     placeLiveMatch(p);
   }
@@ -1364,7 +1373,7 @@ function TradeTerminal() {
           <div className="flex items-center gap-1.5">
             <span className={`h-1.5 w-1.5 rounded-full ${running ? "bg-zinc-300 animate-pulse" : "bg-zinc-500"}`} />
             <span className="font-semibold uppercase text-[10px] text-zinc-400">{botState}</span>
-            <span className="text-zinc-400 text-[10px]">({runCount}/{MAX_RUNS})</span>
+            <span className="text-zinc-400 text-[10px]">({runCount}/{cycleRuns})</span>
           </div>
 
           <div className="flex items-center gap-1">
