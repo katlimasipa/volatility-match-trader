@@ -2897,7 +2897,7 @@ function TradeTerminal() {
                     ticks pause while a contract is open, during loss cooldown, or while trading
                     reconnects. References below 20 are rejected because subtracting 20 is negative.
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                  <div className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2 pt-1">
                     {[
                       ["Signals", x2xSignals.length],
                       ["Triggers", x2xTriggeredCount],
@@ -2906,7 +2906,7 @@ function TradeTerminal() {
                       ["W / L", `${x2xWins} / ${x2xLosses}`],
                       ["Win rate", `${x2xWinRate}%`],
                       ["Expired", x2xExpiredCount],
-                      ["Rejected / cancelled", x2xRejectedCount],
+                      ["Reject / cancel", x2xRejectedCount],
                     ].map(([label, value]) => (
                       <div
                         key={String(label)}
