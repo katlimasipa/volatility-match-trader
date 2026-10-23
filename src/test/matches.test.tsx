@@ -12,16 +12,25 @@ import {
   getMarketConfig,
   marketTradeSymbols,
   calculateMartingaleStake,
+} from "@/lib/matches";
+import {
   advanceX2XScanner,
+  cancelX2XScanner,
   calculateX2XOpTrigger,
   createX2XScannerState,
   lastTwoQuoteDigits,
-} from "@/lib/matches";
+  rememberUniqueX2XTick,
+  runX2XBacktest,
+  type X2XQuoteDigit,
+} from "@/lib/x2x-strategy";
 
 const build = (counts: number[]) => counts.flatMap((c, d) => new Array(c).fill(d));
-const x2xTick = (quote: number) => ({
+const x2xTick = (quote: number, tickId?: string): X2XQuoteDigit => ({
   digit: lastDigit(quote, 2),
   lastTwoQuoteDigits: lastTwoQuoteDigits(quote, 2),
+  quote,
+  tickId,
+  timestamp: "2026-10-23T12:00:00.000Z",
 });
 
 describe("Volatility 100 Matches strategy", () => {
@@ -172,7 +181,7 @@ describe("X2X Digit Match Sniper strategy", () => {
 
     step = advanceX2XScanner(state, x2xTick(1234.25), true); // digit 5: pattern 525
     state = step.state;
-    expect(step.event).toEqual({
+    expect(step.event).toMatchObject({
       type: "pattern",
       pattern: "525",
       referencePair: "25",
@@ -181,7 +190,7 @@ describe("X2X Digit Match Sniper strategy", () => {
 
     step = advanceX2XScanner(state, x2xTick(1234.68), true); // following digit 8 is LDP
     state = step.state;
-    expect(step.event).toEqual({
+    expect(step.event).toMatchObject({
       type: "ldp",
       pattern: "525",
       referencePair: "25",
@@ -190,7 +199,7 @@ describe("X2X Digit Match Sniper strategy", () => {
     });
 
     step = advanceX2XScanner(state, x2xTick(1234.05), true);
-    expect(step.event).toEqual({
+    expect(step.event).toMatchObject({
       type: "trigger",
       pattern: "525",
       referencePair: "25",
@@ -206,7 +215,7 @@ describe("X2X Digit Match Sniper strategy", () => {
 
     const pattern = advanceX2XScanner(state, x2xTick(1234.27), true); // 7, pattern 727
     state = pattern.state;
-    expect(pattern.event).toEqual({
+    expect(pattern.event).toMatchObject({
       type: "pattern",
       pattern: "727",
       referencePair: "27",
@@ -223,6 +232,10 @@ describe("X2X Digit Match Sniper strategy", () => {
 
   it("counts only eligible ticks in the ten-tick OP window", () => {
     expect(calculateX2XOpTrigger("27")).toBe("07");
+    expect(calculateX2XOpTrigger("20")).toBe("00");
+    expect(calculateX2XOpTrigger("35")).toBe("15");
+    expect(calculateX2XOpTrigger("42")).toBe("22");
+    expect(calculateX2XOpTrigger("19")).toBeNull();
     expect(lastTwoQuoteDigits(1234.07, 2)).toBe("07");
 
     let state = createX2XScannerState();
@@ -244,6 +257,73 @@ describe("X2X Digit Match Sniper strategy", () => {
     const tenth = advanceX2XScanner(state, x2xTick(1234.11), true);
     expect(tenth.event).toMatchObject({ type: "expired", ldp: 8 });
     expect(tenth.state.signal).toBeNull();
+  });
+
+  it("fires on the tenth eligible tick and ignores later patterns while one signal is active", () => {
+    let state = createX2XScannerState();
+    for (const quote of [1234.15, 1234.12, 1234.25, 1234.68]) {
+      state = advanceX2XScanner(state, x2xTick(quote), true).state;
+    }
+
+    for (const quote of [
+      1234.14, 1234.12, 1234.14, 1234.11, 1234.11, 1234.11, 1234.11, 1234.11, 1234.11,
+    ]) {
+      const step = advanceX2XScanner(state, x2xTick(quote), true);
+      state = step.state;
+      expect(step.event).toBeNull();
+    }
+
+    expect(state.recentDigits).toEqual([1, 1, 1]);
+    const tenth = advanceX2XScanner(state, x2xTick(1234.05), true);
+    expect(tenth.event).toMatchObject({ type: "trigger", eligibleTicksElapsed: 10, ldp: 8 });
+    expect(tenth.state.signal).toBeNull();
+  });
+
+  it("simulates one-tick trades with the same scanner and reports payout-adjusted P/L as unavailable", () => {
+    const replay = runX2XBacktest(
+      [1234.15, 1234.12, 1234.25, 1234.68, 1234.05, 1234.18].map((quote) => x2xTick(quote)),
+    );
+    expect(replay).toMatchObject({
+      totalTicks: 6,
+      patternsDetected: 1,
+      validSignals: 1,
+      triggers: 1,
+      executedTrades: 1,
+      wins: 1,
+      losses: 0,
+      unsettledTrades: 0,
+      netPnl: null,
+    });
+  });
+
+  it("does not turn a repeated tick id into another digit, signal, or trade", () => {
+    const seen = new Set<string>();
+    expect(rememberUniqueX2XTick(seen, "tick-1")).toBe(true);
+    expect(rememberUniqueX2XTick(seen, "tick-1")).toBe(false);
+
+    const replay = runX2XBacktest([
+      x2xTick(1234.15, "tick-1"),
+      x2xTick(1234.12, "tick-1"), // duplicate message must not become digit 2
+      x2xTick(1234.25, "tick-2"),
+      x2xTick(1234.68, "tick-3"),
+      x2xTick(1234.05, "tick-4"),
+    ]);
+    expect(replay.patternsDetected).toBe(0);
+    expect(replay.triggers).toBe(0);
+  });
+
+  it("cancels pending signals so a later OP quote cannot execute after stop or disable", () => {
+    let state = createX2XScannerState();
+    for (const quote of [1234.15, 1234.12, 1234.25]) {
+      state = advanceX2XScanner(state, x2xTick(quote), true).state;
+    }
+    state = advanceX2XScanner(state, x2xTick(1234.68), true).state;
+
+    const cancelled = cancelX2XScanner(state);
+    expect(cancelled.cancelledSignal).toMatchObject({ phase: "awaiting-op", ldp: 8 });
+    const afterStop = advanceX2XScanner(cancelled.state, x2xTick(1234.05), true);
+    expect(afterStop.event).toBeNull();
+    expect(afterStop.state.signal).toBeNull();
   });
 
   it("skips a pattern whose reference value cannot produce a non-negative two-digit trigger", () => {

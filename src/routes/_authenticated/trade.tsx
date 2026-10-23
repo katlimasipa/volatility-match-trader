@@ -35,14 +35,22 @@ import {
   MARKETS,
   MARKET_LIST,
   getMarketConfig,
-  advanceX2XScanner,
-  createX2XScannerState,
-  lastTwoQuoteDigits,
   type DigitPrediction,
   type MarketSymbol,
+} from "@/lib/matches";
+import {
+  advanceX2XScanner,
+  cancelX2XScanner,
+  createX2XScannerState,
+  isX2XScannerState,
+  lastTwoQuoteDigits,
+  rememberUniqueX2XTick,
+  runX2XBacktest,
+  type X2XBacktestResult,
+  type X2XQuoteDigit,
   type X2XScannerEvent,
   type X2XScannerState,
-} from "@/lib/matches";
+} from "@/lib/x2x-strategy";
 import { startBotKeepalive, stopBotKeepalive, requestScreenWakeLock } from "@/lib/bot-keepalive";
 import {
   isNotificationSupported,
@@ -108,6 +116,41 @@ interface TradeRow {
   stake: number;
   pnl: number;
   time: string;
+  signalId?: string | undefined;
+  contractId?: number | undefined;
+}
+
+type X2XSignalStatus =
+  | "signal_created"
+  | "monitoring"
+  | "triggered"
+  | "trade_submitted"
+  | "settled"
+  | "expired"
+  | "rejected"
+  | "failed"
+  | "cancelled";
+
+interface X2XSignalRecord {
+  signalId: string;
+  pattern: string;
+  patternTickIds: string[];
+  patternTickTimestamps: string[];
+  patternQuotes: Array<number | null>;
+  detectedAt: string;
+  referencePair: string;
+  opTrigger: string | null;
+  ldp: number | null;
+  contractDuration: 1;
+  eligibleTicksElapsed: number;
+  status: X2XSignalStatus;
+  updatedAt: string;
+  cancelledAt?: string | undefined;
+  triggerAt?: string | undefined;
+  contractId?: number | undefined;
+  stake?: number | undefined;
+  result?: "won" | "lost" | undefined;
+  reason?: string | undefined;
 }
 
 interface SavedSession {
@@ -123,11 +166,17 @@ interface SavedSession {
   baseStake: number;
   martingaleEnabled: boolean;
   strategyMode?: StrategyMode;
+  x2xSignals?: X2XSignalRecord[];
 }
 
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
 const STRATEGY_MODE_STORAGE_KEY = "thdpst_strategy_mode_v1";
+const X2X_SIGNAL_HISTORY_STORAGE_KEY = "thdpst_x2x_signal_history_v1";
+const X2X_SCANNER_STORAGE_KEY = "thdpst_x2x_scanner_state_v1";
+const X2X_SEEN_TICK_IDS_STORAGE_KEY = "thdpst_x2x_seen_tick_ids_v1";
 const MAX_SAVED_SESSIONS = 50;
+const MAX_X2X_AUDIT_SIGNALS = 200;
+const MAX_X2X_SEEN_TICK_IDS = 256;
 
 type StrategyMode = "matches" | "x2x";
 
@@ -176,7 +225,10 @@ function isTradeRow(value: unknown): value is TradeRow {
     Number.isFinite(trade.stake) &&
     typeof trade.pnl === "number" &&
     Number.isFinite(trade.pnl) &&
-    typeof trade.time === "string"
+    typeof trade.time === "string" &&
+    (trade.signalId === undefined || typeof trade.signalId === "string") &&
+    (trade.contractId === undefined ||
+      (typeof trade.contractId === "number" && Number.isFinite(trade.contractId)))
   );
 }
 
@@ -206,7 +258,9 @@ function isSavedSession(value: unknown): value is SavedSession {
     typeof saved.martingaleEnabled === "boolean" &&
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
-      saved.strategyMode === "x2x")
+      saved.strategyMode === "x2x") &&
+    (saved.x2xSignals === undefined ||
+      (Array.isArray(saved.x2xSignals) && saved.x2xSignals.every(isX2XSignalRecord)))
   );
 }
 
@@ -219,6 +273,102 @@ function loadSavedSessions(): SavedSession[] {
     return Array.isArray(parsed) ? parsed.filter(isSavedSession).slice(0, MAX_SAVED_SESSIONS) : [];
   } catch {
     return [];
+  }
+}
+
+function isX2XSignalRecord(value: unknown): value is X2XSignalRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const signal = value as Partial<X2XSignalRecord>;
+  return (
+    typeof signal.signalId === "string" &&
+    typeof signal.pattern === "string" &&
+    Array.isArray(signal.patternTickIds) &&
+    signal.patternTickIds.every((id) => typeof id === "string") &&
+    Array.isArray(signal.patternTickTimestamps) &&
+    signal.patternTickTimestamps.every((timestamp) => typeof timestamp === "string") &&
+    Array.isArray(signal.patternQuotes) &&
+    signal.patternQuotes.every((quote) => quote === null || typeof quote === "number") &&
+    typeof signal.detectedAt === "string" &&
+    typeof signal.referencePair === "string" &&
+    (signal.opTrigger === null ||
+      (typeof signal.opTrigger === "string" && /^\d{2}$/.test(signal.opTrigger))) &&
+    (signal.ldp === null ||
+      (typeof signal.ldp === "number" &&
+        Number.isInteger(signal.ldp) &&
+        signal.ldp >= 0 &&
+        signal.ldp <= 9)) &&
+    signal.contractDuration === 1 &&
+    Number.isInteger(signal.eligibleTicksElapsed) &&
+    [
+      "signal_created",
+      "monitoring",
+      "triggered",
+      "trade_submitted",
+      "settled",
+      "expired",
+      "rejected",
+      "failed",
+      "cancelled",
+    ].includes(String(signal.status)) &&
+    typeof signal.updatedAt === "string" &&
+    Number.isFinite(Date.parse(signal.detectedAt)) &&
+    Number.isFinite(Date.parse(signal.updatedAt)) &&
+    (signal.cancelledAt === undefined ||
+      (typeof signal.cancelledAt === "string" &&
+        Number.isFinite(Date.parse(signal.cancelledAt)))) &&
+    (signal.contractId === undefined ||
+      (typeof signal.contractId === "number" && Number.isFinite(signal.contractId))) &&
+    (signal.result === undefined || signal.result === "won" || signal.result === "lost")
+  );
+}
+
+function loadX2XSignalHistory(): X2XSignalRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = localStorage.getItem(X2X_SIGNAL_HISTORY_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed: unknown = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed.filter(isX2XSignalRecord).slice(0, MAX_X2X_AUDIT_SIGNALS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistX2XSignalHistory(signals: X2XSignalRecord[]): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    localStorage.setItem(X2X_SIGNAL_HISTORY_STORAGE_KEY, JSON.stringify(signals));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadX2XScannerState(): X2XScannerState {
+  if (typeof window === "undefined") return createX2XScannerState();
+  try {
+    const stored = localStorage.getItem(X2X_SCANNER_STORAGE_KEY);
+    if (!stored) return createX2XScannerState();
+    const parsed: unknown = JSON.parse(stored);
+    return isX2XScannerState(parsed) ? parsed : createX2XScannerState();
+  } catch {
+    return createX2XScannerState();
+  }
+}
+
+function loadX2XSeenTickIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(X2X_SEEN_TICK_IDS_STORAGE_KEY) || "[]");
+    return new Set(
+      Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === "string").slice(-MAX_X2X_SEEN_TICK_IDS)
+        : [],
+    );
+  } catch {
+    return new Set();
   }
 }
 
@@ -237,16 +387,17 @@ interface PendingTrade {
   entry: number;
   target: number;
   stake: number;
-  /** When true, settlement comes from Deriv contract result — not the next local tick. */
+  /** When true, settlement comes from Deriv contract result ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â not the next local tick. */
   live?: boolean;
+  signalId?: string;
 }
 
 interface TickItem {
   time: string;
   price: number;
   digit: number;
-  predictedDigit?: number;
-  predictionCorrect?: boolean;
+  predictedDigit?: number | undefined;
+  predictionCorrect?: boolean | undefined;
 }
 
 interface PredictionStats {
@@ -268,12 +419,14 @@ function emptyPredictionStats(): PredictionStats {
 }
 
 interface BacktestSummary {
+  strategyMode: StrategyMode;
   totalTicks: number;
   signals: number;
   wins: number;
   losses: number;
   winRate: number;
-  netPnl: number;
+  netPnl: number | null;
+  x2x?: X2XBacktestResult;
 }
 
 function TradeTerminal() {
@@ -335,12 +488,12 @@ function TradeTerminal() {
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
   const startTickRequirement = strategyMode === "x2x" ? 3 : WINDOW;
-  const [x2xScannerState, setX2xScannerState] = useState<X2XScannerState>(createX2XScannerState);
-  const x2xScannerRef = useRef<X2XScannerState>(createX2XScannerState());
+  const [x2xScannerState, setX2xScannerState] = useState<X2XScannerState>(loadX2XScannerState);
+  const x2xScannerRef = useRef<X2XScannerState>(x2xScannerState);
   const currentMarket = getMarketConfig(marketSymbol);
   const [marketPipDecimals, setMarketPipDecimals] = useState(currentMarket.pipDecimals);
 
-  // Derive activeAccount and activeType (case-insensitive — Deriv loginids vary in casing)
+  // Derive activeAccount and activeType (case-insensitive ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Deriv loginids vary in casing)
   const activeAccount =
     accounts.find((a) => a.account_id.toUpperCase() === String(activeId || "").toUpperCase()) ||
     accounts[0];
@@ -411,8 +564,7 @@ function TradeTerminal() {
     setRecentTicks([]);
     setNextPrediction(null);
     setPredictionStats(emptyPredictionStats());
-    x2xScannerRef.current = createX2XScannerState();
-    setX2xScannerState(x2xScannerRef.current);
+    saveX2XScannerState(createX2XScannerState());
     setPrice(null);
     setBotState("BUFFERING");
     setNote(`Switching to ${MARKETS[m].displayName}. Buffering last 1,000 market ticks...`);
@@ -420,12 +572,14 @@ function TradeTerminal() {
 
   function handleSelectStrategy(nextStrategy: StrategyMode) {
     if (running) return;
+    if (strategyMode === "x2x" && nextStrategy !== "x2x") {
+      cancelPendingX2XSignal("X2X strategy disabled by user.");
+    }
     if (nextStrategy === "x2x" && marketSymbol !== "R_100") {
       handleSelectMarket("R_100");
     }
     setStrategyMode(nextStrategy);
-    x2xScannerRef.current = createX2XScannerState();
-    setX2xScannerState(x2xScannerRef.current);
+    saveX2XScannerState(createX2XScannerState());
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, nextStrategy);
@@ -445,6 +599,9 @@ function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
+  const [x2xSignals, setX2xSignals] = useState<X2XSignalRecord[]>(loadX2XSignalHistory);
+  const x2xSignalsRef = useRef<X2XSignalRecord[]>(x2xSignals);
+  x2xSignalsRef.current = x2xSignals;
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [botState, setBotState] = useState<
@@ -495,7 +652,7 @@ function TradeTerminal() {
     return () => unsub();
   }, []);
 
-  // Cross-device alerts: same Deriv account → Realtime + catch-up + Web Push
+  // Cross-device alerts: same Deriv account ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Realtime + catch-up + Web Push
   useEffect(() => {
     const accountId = activeAccount?.account_id || getActiveAccountId();
     let cancelled = false;
@@ -540,7 +697,7 @@ function TradeTerminal() {
         const push = await enableWebPush(accountId);
         void dispatchNotification("Notifications Enabled", {
           body: push.ok
-            ? "Alerts sync across your devices — including when the app is closed (Web Push)."
+            ? "Alerts sync across your devices ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â including when the app is closed (Web Push)."
             : "Alerts sync on open devices. " +
               (push.error || "Background push will turn on once keys/tables are configured."),
           skipSync: true,
@@ -582,6 +739,8 @@ function TradeTerminal() {
   const lossStreakRef = useRef(0);
   const pendingSetAt = useRef<number>(0); // timestamp when pending was set, for stuck-trade safety
   const digitsRef = useRef<number[]>([]); // synchronous market digits buffer, avoids state batching drops
+  const x2xTicksRef = useRef<X2XQuoteDigit[]>([]);
+  const seenX2XTickIdsRef = useRef<Set<string>>(loadX2XSeenTickIds());
   const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
   const lastTickAt = useRef<number>(Date.now());
@@ -629,12 +788,150 @@ function TradeTerminal() {
     strategyMode,
   };
 
+  function saveX2XScannerState(next: X2XScannerState) {
+    x2xScannerRef.current = next;
+    setX2xScannerState(next);
+    try {
+      localStorage.setItem(X2X_SCANNER_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // In-memory scanning still works if device storage is unavailable.
+    }
+  }
+
+  function replaceX2XSignalHistory(next: X2XSignalRecord[]) {
+    const bounded = next.slice(0, MAX_X2X_AUDIT_SIGNALS);
+    x2xSignalsRef.current = bounded;
+    setX2xSignals(bounded);
+    persistX2XSignalHistory(bounded);
+  }
+
+  function upsertX2XSignal(record: X2XSignalRecord) {
+    const existing = x2xSignalsRef.current.filter((signal) => signal.signalId !== record.signalId);
+    replaceX2XSignalHistory([record, ...existing]);
+  }
+
+  function updateX2XSignal(signalId: string, patch: Partial<X2XSignalRecord>) {
+    const next = x2xSignalsRef.current.map((signal) =>
+      signal.signalId === signalId
+        ? { ...signal, ...patch, updatedAt: new Date().toISOString() }
+        : signal,
+    );
+    replaceX2XSignalHistory(next);
+  }
+
+  function recordX2XScannerEvent(event: X2XScannerEvent | null, state: X2XScannerState) {
+    if (!event) {
+      if (state.signal?.phase === "awaiting-op") {
+        updateX2XSignal(state.signal.id, {
+          status: "monitoring",
+          ldp: state.signal.ldp,
+          eligibleTicksElapsed: state.signal.eligibleTicksElapsed,
+        });
+      }
+      return;
+    }
+
+    if (event.type === "pattern") {
+      upsertX2XSignal({
+        signalId: event.signalId,
+        pattern: event.pattern,
+        patternTickIds: event.patternTickIds,
+        patternTickTimestamps: event.patternTickTimestamps,
+        patternQuotes: event.patternQuotes,
+        detectedAt: event.detectedAt,
+        referencePair: event.referencePair,
+        opTrigger: event.opTrigger,
+        ldp: null,
+        contractDuration: 1,
+        eligibleTicksElapsed: 0,
+        status: "signal_created",
+        updatedAt: event.detectedAt,
+      });
+      return;
+    }
+
+    if (event.type === "invalid-reference") {
+      upsertX2XSignal({
+        signalId: event.signalId,
+        pattern: event.pattern,
+        patternTickIds: event.patternTickIds,
+        patternTickTimestamps: event.patternTickTimestamps,
+        patternQuotes: event.patternQuotes,
+        detectedAt: event.detectedAt,
+        referencePair: event.referencePair,
+        opTrigger: null,
+        ldp: null,
+        contractDuration: 1,
+        eligibleTicksElapsed: 0,
+        status: "rejected",
+        updatedAt: event.detectedAt,
+        reason: `Reference ${event.referencePair} is below 20; subtracting 20 would be negative.`,
+      });
+      return;
+    }
+
+    const status: X2XSignalStatus =
+      event.type === "ldp" ? "monitoring" : event.type === "trigger" ? "triggered" : "expired";
+    updateX2XSignal(event.signalId, {
+      status,
+      ldp: event.ldp,
+      eligibleTicksElapsed: event.type === "ldp" ? 0 : event.eligibleTicksElapsed,
+      triggerAt: event.type === "trigger" ? event.timestamp : undefined,
+      reason:
+        event.type === "expired"
+          ? "OP trigger did not appear within 10 eligible ticks."
+          : undefined,
+    });
+  }
+
+  function cancelPendingX2XSignal(reason: string) {
+    const { state, cancelledSignal: signal } = cancelX2XScanner(x2xScannerRef.current);
+    if (!signal) return;
+    if (!x2xSignalsRef.current.some((record) => record.signalId === signal.id)) {
+      upsertX2XSignal({
+        signalId: signal.id,
+        pattern: signal.pattern,
+        patternTickIds: signal.patternTickIds,
+        patternTickTimestamps: signal.patternTickTimestamps,
+        patternQuotes: signal.patternQuotes,
+        detectedAt: signal.detectedAt,
+        referencePair: signal.referencePair,
+        opTrigger: signal.opTrigger,
+        ldp: signal.ldp,
+        contractDuration: 1,
+        eligibleTicksElapsed: signal.eligibleTicksElapsed,
+        status: signal.phase === "awaiting-ldp" ? "signal_created" : "monitoring",
+        updatedAt: signal.detectedAt,
+      });
+    }
+    updateX2XSignal(signal.id, {
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+      reason,
+      eligibleTicksElapsed: signal.eligibleTicksElapsed,
+    });
+    saveX2XScannerState(state);
+  }
+
+  function rememberX2XTick(identity: string): boolean {
+    const seen = seenX2XTickIdsRef.current;
+    if (!rememberUniqueX2XTick(seen, identity, MAX_X2X_SEEN_TICK_IDS)) return false;
+    if (stateRef.current.strategyMode === "x2x" && stateRef.current.running) {
+      try {
+        localStorage.setItem(X2X_SEEN_TICK_IDS_STORAGE_KEY, JSON.stringify([...seen]));
+      } catch {
+        // Duplicate protection remains active for this page even without storage.
+      }
+    }
+    return true;
+  }
+
   useEffect(() => {
     const handlePageHide = () => {
       if (!stateRef.current.running) return;
       void publishSyncedAlert(
         "Bot stopped",
-        `The app was closed on ${getDeviceLabel()} — bot is no longer running.`,
+        `The app was closed on ${getDeviceLabel()} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â bot is no longer running.`,
         "bot_stop",
       );
     };
@@ -827,6 +1124,16 @@ function TradeTerminal() {
         const pList = history.prices;
         const tList = history.times || [];
         const dList = pList.map((p) => lastDigit(p, feedPipDecimals));
+        x2xTicksRef.current = pList.slice(-WINDOW).map((historicalPrice, index) => {
+          const sourceIndex = pList.length - Math.min(WINDOW, pList.length) + index;
+          const epoch = tList[sourceIndex];
+          return {
+            digit: lastDigit(historicalPrice, 2),
+            lastTwoQuoteDigits: lastTwoQuoteDigits(historicalPrice, 2),
+            quote: historicalPrice,
+            timestamp: epoch ? new Date(epoch * 1000).toISOString() : undefined,
+          };
+        });
         digitsRef.current = dList;
         setDigits(dList);
         predictionRef.current = predictNextDigit(dList);
@@ -860,13 +1167,34 @@ function TradeTerminal() {
     });
 
     ws.registerHandler("tick", (data) => {
-      const tick = data["tick"] as { quote?: number; epoch?: number; pip_size?: unknown };
+      const tick = data["tick"] as {
+        quote?: number;
+        epoch?: number;
+        id?: string | number;
+        pip_size?: unknown;
+      };
       if (typeof tick?.quote === "number") {
         updateFeedPipDecimals(tick.pip_size);
         const q = tick.quote;
+        const tickIdentity =
+          tick.id !== undefined
+            ? `${marketSymbol}:${tick.id}`
+            : tick.epoch !== undefined
+              ? `${marketSymbol}:${tick.epoch}:${q.toFixed(feedPipDecimals)}`
+              : null;
+        if (tickIdentity && !rememberX2XTick(tickIdentity)) return;
         const timeStr = tick.epoch
           ? new Date(tick.epoch * 1000).toLocaleTimeString()
           : new Date().toLocaleTimeString();
+        const tickInfo: X2XQuoteDigit = {
+          digit: lastDigit(q, 2),
+          lastTwoQuoteDigits: lastTwoQuoteDigits(q, 2),
+          quote: q,
+          tickId: tick.id === undefined ? undefined : String(tick.id),
+          timestamp: tick.epoch
+            ? new Date(tick.epoch * 1000).toISOString()
+            : new Date().toISOString(),
+        };
         const nextDigit = lastDigit(q, feedPipDecimals);
         const priorPrediction = predictionRef.current;
         const predictionCorrect = priorPrediction ? priorPrediction.digit === nextDigit : undefined;
@@ -905,14 +1233,10 @@ function TradeTerminal() {
         setDigits(updatedDigits);
         predictionRef.current = predictNextDigit(updatedDigits);
         setNextPrediction(predictionRef.current);
+        x2xTicksRef.current = [...x2xTicksRef.current, tickInfo].slice(-WINDOW);
 
         // Process trade event immediately with guaranteed current digits
-        handleTickEventRef.current(
-          updatedDigits,
-          q,
-          nextDigit,
-          lastTwoQuoteDigits(q, feedPipDecimals),
-        );
+        handleTickEventRef.current(updatedDigits, q, nextDigit, tickInfo);
       }
     });
 
@@ -1028,6 +1352,7 @@ function TradeTerminal() {
     resultDigit: number,
     updateLocalBalance: boolean,
     balanceAfter?: number,
+    contractId?: number,
   ) {
     const s = stateRef.current;
 
@@ -1052,13 +1377,24 @@ function TradeTerminal() {
       stake: p.stake,
       pnl,
       time: new Date().toLocaleTimeString(),
+      signalId: p.signalId,
+      contractId,
     };
 
     const updatedTrades = [newRow, ...s.trades];
     setTrades(updatedTrades);
+    if (p.signalId) {
+      updateX2XSignal(p.signalId, {
+        status: "settled",
+        contractId,
+        stake: p.stake,
+        result: won ? "won" : "lost",
+        reason: undefined,
+      });
+    }
 
     if (updateLocalBalance) {
-      // Paper mode only — live balances come from Deriv buy/balance sockets
+      // Paper mode only ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â live balances come from Deriv buy/balance sockets
       setAccounts((prev) => {
         const targetId = (
           s.activeId ||
@@ -1107,14 +1443,16 @@ function TradeTerminal() {
     }
 
     if (won && s.stopOnWin) {
-      return stopBot(`First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`);
+      return stopBot(
+        `First win landed (+$${totalPnl.toFixed(2)}) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â bot stopped after 1 win.`,
+      );
     }
 
     if (!won && s.reAnalyzeOnLoss) {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Trade #${p.runIndex} lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`,
+        `Trade #${p.runIndex} lost (${resultDigit} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€š  ${p.target}). Re-analyzing market distribution...`,
       );
       return;
     }
@@ -1132,6 +1470,12 @@ function TradeTerminal() {
       pending.current = null;
       setBotState("ANALYZING");
       setNote("Trading session connecting. Will retry on next signal...");
+      if (p.signalId) {
+        updateX2XSignal(p.signalId, {
+          status: "failed",
+          reason: "The authorized trading session was unavailable before purchase.",
+        });
+      }
       return;
     }
 
@@ -1149,12 +1493,26 @@ function TradeTerminal() {
         const pnl = Number(result.profit);
         const resultDigit =
           typeof result.exitDigit === "number" ? result.exitDigit : result.won ? p.target : -1;
-        settleTradeResult(p, result.won || pnl > 0, pnl, resultDigit, false, result.balanceAfter);
+        settleTradeResult(
+          p,
+          result.won || pnl > 0,
+          pnl,
+          resultDigit,
+          false,
+          result.balanceAfter,
+          result.contractId,
+        );
       })
       .catch((err: Error) => {
         pending.current = null;
         pendingSetAt.current = 0;
         const limitHit = isDerivLimitError(err);
+        if (p.signalId) {
+          updateX2XSignal(p.signalId, {
+            status: "failed",
+            reason: `Contract purchase or settlement failed: ${err.message}`,
+          });
+        }
         lossCooldownTicks.current = limitHit ? 20 : 5;
         setBotState("LOSS RE-ANALYSIS");
         setNote(
@@ -1174,7 +1532,7 @@ function TradeTerminal() {
     tickList: number[],
     _currentPrice: number,
     currentD: number,
-    quoteLastTwoDigits: string,
+    tickInfo: X2XQuoteDigit,
   ) {
     const s = stateRef.current;
     let x2xEvent: X2XScannerEvent | null = null;
@@ -1185,17 +1543,13 @@ function TradeTerminal() {
       const tradeBusy = Boolean(pending.current?.live || tradingRef.current?.isBuyInFlight());
       const opEligible =
         !tradeBusy && lossCooldownTicks.current === 0 && Boolean(tradingRef.current?.isReady());
-      const step = advanceX2XScanner(
-        x2xScannerRef.current,
-        { digit: currentD, lastTwoQuoteDigits: quoteLastTwoDigits },
-        opEligible,
-      );
-      x2xScannerRef.current = step.state;
-      setX2xScannerState(step.state);
+      const step = advanceX2XScanner(x2xScannerRef.current, tickInfo, opEligible);
+      saveX2XScannerState(step.state);
       x2xEvent = step.event;
+      recordX2XScannerEvent(step.event, step.state);
     }
 
-    // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
+    // Live contracts settle via Deriv proposal_open_contract ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ignore local tick settlement
     if (pending.current?.live || tradingRef.current?.isBuyInFlight()) {
       // Safety net: if pending has been stuck for >60 seconds AND no buy is in flight
       const elapsed = Date.now() - pendingSetAt.current;
@@ -1233,13 +1587,21 @@ function TradeTerminal() {
       if (x2xEvent?.type === "trigger") {
         const session = tradingRef.current;
         if (!session?.isReady()) {
+          updateX2XSignal(x2xEvent.signalId, {
+            status: "failed",
+            reason: "OP matched while the authorized trading connection was unavailable.",
+          });
           setBotState("ANALYZING");
           setNote(
-            "X2X OP matched, but the Deriv trading session is reconnecting. Waiting for the next signal...",
+            "X2X OP matched, but the Deriv trading session is reconnecting. The signal was recorded as failed and will not be retried.",
           );
           return;
         }
         if (session.isBuyInFlight()) {
+          updateX2XSignal(x2xEvent.signalId, {
+            status: "failed",
+            reason: "A Deriv purchase was already in flight when the OP trigger appeared.",
+          });
           setBotState("IN TRADE");
           setNote("Waiting for the current Deriv contract to settle...");
           return;
@@ -1255,8 +1617,12 @@ function TradeTerminal() {
           ? Number(activeAccount.balance)
           : Number.POSITIVE_INFINITY;
         if (nextStake > availableBalance) {
+          updateX2XSignal(x2xEvent.signalId, {
+            status: "failed",
+            reason: `Stake ${nextStake.toFixed(2)} exceeded the available balance.`,
+          });
           stopBot(
-            `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+            `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â martingale.`,
           );
           return;
         }
@@ -1267,7 +1633,13 @@ function TradeTerminal() {
           target: x2xEvent.ldp,
           stake: nextStake,
           live: true,
+          signalId: x2xEvent.signalId,
         };
+        updateX2XSignal(x2xEvent.signalId, {
+          status: "trade_submitted",
+          stake: nextStake,
+          triggerAt: x2xEvent.timestamp,
+        });
         pendingSetAt.current = Date.now();
         setBotState("IN TRADE");
         setNote(
@@ -1357,7 +1729,7 @@ function TradeTerminal() {
         : Number.POSITIVE_INFINITY;
       if (nextStake > availableBalance) {
         stopBot(
-          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â martingale.`,
         );
         return;
       }
@@ -1371,17 +1743,19 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Trade #${targetRun}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`,
+        `Trade #${targetRun}: Buying DIGITMATCH on ${currentMarket.displayName} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â entry ${currentD}, match ${a.second}...`,
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
+        `Spread verified (ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${a.diff.toFixed(2)}% ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
       );
     } else {
       setBotState("ANALYZING");
-      setNote(`Spread Δ ${a.diff.toFixed(2)}% > ${s.maxDiff}%. Analyzing last 1,000 ticks...`);
+      setNote(
+        `Spread ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${a.diff.toFixed(2)}% > ${s.maxDiff}%. Analyzing last 1,000 ticks...`,
+      );
     }
   }
 
@@ -1423,8 +1797,8 @@ function TradeTerminal() {
       return;
     }
     pending.current = null;
-    x2xScannerRef.current = createX2XScannerState();
-    setX2xScannerState(x2xScannerRef.current);
+    cancelPendingX2XSignal("Bot restarted; the previous X2X signal was cancelled.");
+    saveX2XScannerState(createX2XScannerState());
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
     connectionLostAlertedRef.current = false;
@@ -1437,13 +1811,14 @@ function TradeTerminal() {
     setNote(
       strategyMode === "x2x"
         ? `X2X Sniper active on ${activeAccount.account_id}. Scanning Volatility 100 tick digits for X2X signals...`
-        : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`,
+        : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â trade #${runCount + 1}...`,
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
 
   function stopBot(message: string) {
     const wasRunning = running || stateRef.current.running;
+    cancelPendingX2XSignal("Bot stopped by user; the pending X2X signal was cancelled.");
     if (typeof window !== "undefined") {
       localStorage.removeItem("deriv_bot_is_running");
     }
@@ -1453,19 +1828,21 @@ function TradeTerminal() {
     setBotState("IDLE");
     setNote(message);
     pending.current = null;
-    x2xScannerRef.current = createX2XScannerState();
-    setX2xScannerState(x2xScannerRef.current);
+    saveX2XScannerState(createX2XScannerState());
     if (wasRunning) {
       notifyBotStopped(message);
     }
   }
 
   function saveCurrentSession() {
-    if (trades.length === 0) return;
     if (running) {
       setNote("Stop the bot before saving and clearing this session.");
       return;
     }
+
+    cancelPendingX2XSignal("Session saved; the pending X2X signal was cancelled.");
+    const signalHistory = x2xSignalsRef.current;
+    if (trades.length === 0 && signalHistory.length === 0) return;
 
     const wins = trades.filter((trade) => trade.pnl > 0).length;
     const losses = trades.filter((trade) => trade.pnl < 0).length;
@@ -1477,11 +1854,12 @@ function TradeTerminal() {
       totalPnl: trades.reduce((total, trade) => total + trade.pnl, 0),
       wins,
       losses,
-      winRate: Math.round((wins / trades.length) * 100),
+      winRate: trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0,
       spreadThreshold: maxDiff,
       baseStake: stake,
       martingaleEnabled,
       strategyMode,
+      x2xSignals: signalHistory.map((signal) => ({ ...signal })),
     };
     const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
     if (!persistSavedSessions(nextHistory)) {
@@ -1491,6 +1869,8 @@ function TradeTerminal() {
 
     setSavedSessions(nextHistory);
     setTrades([]);
+    replaceX2XSignalHistory([]);
+    saveX2XScannerState(createX2XScannerState());
     setRunCount(0);
     lossStreakRef.current = 0;
     setExpandedHistoryId(snapshot.id);
@@ -1607,7 +1987,27 @@ function TradeTerminal() {
 
   function runBacktest1000Ticks() {
     if (strategyMode === "x2x") {
-      setNote("TEST 1K evaluates the Matches strategy. Switch to Matches to run that backtest.");
+      if (x2xTicksRef.current.length < WINDOW) {
+        setNote(
+          `X2X replay needs 1,000 Volatility 100 quotes (${x2xTicksRef.current.length}/1,000 loaded).`,
+        );
+        return;
+      }
+      const replay = runX2XBacktest(x2xTicksRef.current.slice(-WINDOW), {
+        reAnalyzeOnLoss,
+        cooldownTicks: 5,
+      });
+      setBacktest({
+        strategyMode: "x2x",
+        totalTicks: replay.totalTicks,
+        signals: replay.validSignals,
+        wins: replay.wins,
+        losses: replay.losses,
+        winRate: replay.winRate,
+        netPnl: null,
+        x2x: replay,
+      });
+      setShowBacktestModal(true);
       return;
     }
     if (digits.length < WINDOW) {
@@ -1640,6 +2040,7 @@ function TradeTerminal() {
 
     const winRate = signals > 0 ? (wins / signals) * 100 : 0;
     setBacktest({
+      strategyMode: "matches",
       totalTicks: windowDigits.length,
       signals,
       wins,
@@ -1710,7 +2111,9 @@ function TradeTerminal() {
     pending.current = p;
     pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
-    setNote(`Test trade #${targetRun}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`);
+    setNote(
+      `Test trade #${targetRun}: Buying DIGITMATCH ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â match digit ${a.second} on Deriv...`,
+    );
     placeLiveMatch(p);
   }
 
@@ -1731,6 +2134,19 @@ function TradeTerminal() {
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.filter((t) => t.pnl < 0).length;
   const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0;
+  const x2xTriggeredCount = x2xSignals.filter((signal) => Boolean(signal.triggerAt)).length;
+  const x2xSubmittedCount = x2xSignals.filter((signal) =>
+    ["trade_submitted", "settled"].includes(signal.status),
+  ).length;
+  const x2xExecutedCount = x2xSignals.filter((signal) => signal.contractId !== undefined).length;
+  const x2xWins = x2xSignals.filter((signal) => signal.result === "won").length;
+  const x2xLosses = x2xSignals.filter((signal) => signal.result === "lost").length;
+  const x2xSettledCount = x2xWins + x2xLosses;
+  const x2xWinRate = x2xSettledCount ? Math.round((x2xWins / x2xSettledCount) * 100) : 0;
+  const x2xExpiredCount = x2xSignals.filter((signal) => signal.status === "expired").length;
+  const x2xRejectedCount = x2xSignals.filter((signal) =>
+    ["rejected", "cancelled", "failed"].includes(signal.status),
+  ).length;
   const predictionAccuracy =
     predictionStats.forecasts > 0
       ? Math.round((predictionStats.correct / predictionStats.forecasts) * 100)
@@ -1935,7 +2351,8 @@ function TradeTerminal() {
                   value={acc.account_id}
                   className={isDark ? "bg-zinc-900 text-white" : "bg-white text-slate-900"}
                 >
-                  {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — $
+                  {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"})
+                  ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â $
                   {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
                 </option>
               ))}
@@ -1947,7 +2364,7 @@ function TradeTerminal() {
               onClick={toggleNotifications}
               title={
                 notifsEnabled
-                  ? "Alerts on — synced across your devices"
+                  ? "Alerts on ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â synced across your devices"
                   : "Enable alerts on this device (syncs across devices)"
               }
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
@@ -2080,7 +2497,7 @@ function TradeTerminal() {
 
               <button
                 onClick={runBacktest1000Ticks}
-                disabled={strategyMode === "x2x"}
+                disabled={digits.length < WINDOW}
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
@@ -2326,7 +2743,9 @@ function TradeTerminal() {
                             : "border-amber-200 bg-amber-50 text-amber-700"
                       }`}
                     >
-                      {tradingReady ? "LIVE TRADING" : "AUTHED · SOCKET…"}
+                      {tradingReady
+                        ? "LIVE TRADING"
+                        : "AUTHED ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· SOCKETÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦"}
                     </button>
                     <button
                       onClick={refreshDerivBalances}
@@ -2401,7 +2820,9 @@ function TradeTerminal() {
                 <div className="flex items-center justify-between">
                   <label className="text-xs text-zinc-500">Contract & Market</label>
                   <span className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "X2X · DIGITMATCH · 1 TICK" : "Matches · DIGITMATCH"}
+                    {strategyMode === "x2x"
+                      ? "X2X ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 1 TICK"
+                      : "Matches ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH"}
                   </span>
                 </div>
                 <div
@@ -2438,7 +2859,7 @@ function TradeTerminal() {
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
                     ? "Volatility 100 only: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's two-decimal value minus 20."
-                    : `Enter on most appearing digit, match second most digit when spread ≤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
+                    : `Enter on most appearing digit, match second most digit when spread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
@@ -2451,36 +2872,115 @@ function TradeTerminal() {
                   <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                     X2X LIVE SCAN
                   </div>
+                  <div className="text-[10px] text-zinc-500">
+                    Volatility 100 ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 1 tick
+                    ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Stake ${stake.toFixed(2)}
+                  </div>
                   <div
                     className={`font-mono text-xs ${isDark ? "text-zinc-200" : "text-zinc-800"}`}
                   >
                     {x2xScannerState.recentDigits.length > 0
-                      ? x2xScannerState.recentDigits.join(" → ")
+                      ? x2xScannerState.recentDigits.join(
+                          " ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ",
+                        )
                       : "Waiting for live ticks"}
                   </div>
                   <div className="text-[10px] leading-relaxed text-zinc-500">
                     {x2xScannerState.signal?.phase === "awaiting-ldp"
-                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
+                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ OP ${x2xScannerState.signal.opTrigger}.`
                       : x2xScannerState.signal?.phase === "awaiting-op"
                         ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
                         : "Scanning consecutive live tick digits for X2X."}
                   </div>
                   <div className="text-[10px] leading-relaxed text-zinc-600">
-                    One signal is tracked at a time. OP ticks pause while a contract is open, during
-                    loss cooldown, or while trading reconnects. References below 20 are skipped
-                    because they cannot produce a non-negative two-digit OP value.
+                    One signal is tracked at a time; patterns seen before it ends are ignored. OP
+                    ticks pause while a contract is open, during loss cooldown, or while trading
+                    reconnects. References below 20 are rejected because subtracting 20 is negative.
                   </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    {[
+                      ["Signals", x2xSignals.length],
+                      ["Triggers", x2xTriggeredCount],
+                      ["Submissions", x2xSubmittedCount],
+                      ["Contracts", x2xExecutedCount],
+                      ["W / L", `${x2xWins} / ${x2xLosses}`],
+                      ["Win rate", `${x2xWinRate}%`],
+                      ["Expired", x2xExpiredCount],
+                      ["Rejected / cancelled", x2xRejectedCount],
+                    ].map(([label, value]) => (
+                      <div
+                        key={String(label)}
+                        className={`rounded border px-2 py-1 ${
+                          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                        }`}
+                      >
+                        <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+                          {label}
+                        </div>
+                        <div className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                          {value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {x2xSignals.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto divide-y divide-zinc-200 dark:divide-zinc-900">
+                      {x2xSignals.slice(0, 8).map((signal) => (
+                        <div
+                          key={signal.signalId}
+                          className="grid grid-cols-[1fr_auto] gap-x-2 py-1.5 text-[10px]"
+                        >
+                          <span className="font-mono text-zinc-700 dark:text-zinc-300">
+                            {signal.pattern} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.referencePair}{" "}
+                            ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢{" "}
+                            {signal.opTrigger ?? "rejected"}
+                            {signal.ldp === null ? "" : ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· LDP ${signal.ldp}`}
+                          </span>
+                          <span className="text-right uppercase text-zinc-500">
+                            {signal.status.replaceAll("_", " ")}
+                          </span>
+                          <span className="text-zinc-500">
+                            {new Date(signal.detectedAt).toLocaleTimeString()} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·{" "}
+                            {signal.eligibleTicksElapsed}/10 eligible ticks
+                            {signal.status === "cancelled" && signal.cancelledAt
+                              ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
+                              : ""}
+                            {` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.contractDuration} tick`}
+                            {signal.contractId
+                              ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· contract ${signal.contractId}`
+                              : ""}
+                          </span>
+                          <span className="text-zinc-500">
+                            Source:{" "}
+                            {signal.patternTickTimestamps
+                              .map(
+                                (timestamp, index) =>
+                                  `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
+                              )
+                              .join(" ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ")}
+                          </span>
+                          {signal.reason && (
+                            <span className="text-right text-zinc-500">{signal.reason}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
               {strategyMode === "matches" && (
                 <>
-                  {/* Spread Threshold Δ Selector */}
+                  {/* Spread Threshold ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Selector */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500">Max Spread Δ Threshold</span>
+                      <span className="text-zinc-500">
+                        Max Spread ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Threshold
+                      </span>
                       <div className="flex items-center gap-1">
-                        <span className="text-zinc-500 text-[10px]">Δ ≤</span>
+                        <span className="text-zinc-500 text-[10px]">
+                          ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤
+                        </span>
                         <input
                           type="text"
                           inputMode="decimal"
@@ -2534,8 +3034,8 @@ function TradeTerminal() {
                     </div>
                     <p className="text-[10px] text-zinc-500 leading-tight">
                       {maxDiff === 0.3
-                        ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
-                        : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
+                        ? "Strict rule: requires top 2 digits to differ by ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 0.3% (ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 3 ticks out of 1,000)."
+                        : `Relaxed threshold: triggers trade entry when spread is ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%.`}
                     </p>
                   </div>
                 </>
@@ -2601,13 +3101,13 @@ function TradeTerminal() {
                   <span
                     className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
                   >
-                    1.5× martingale after losses
+                    1.5ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â martingale after losses
                   </span>
                 </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {martingaleEnabled
-                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true).toFixed(2)}. It grows by ${MARTINGALE_MULTIPLIER}× after each loss and resets to the base stake after a win; this raises risk and cannot guarantee recovery.`
-                    : "Re-analyzes after a loss. Turn on 1.5× martingale to increase the next stake after each loss; a win resets it to your base stake."}
+                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true).toFixed(2)}. It grows by ${MARTINGALE_MULTIPLIER}ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â after each loss and resets to the base stake after a win; this raises risk and cannot guarantee recovery.`
+                    : "Re-analyzes after a loss. Turn on 1.5ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â martingale to increase the next stake after each loss; a win resets it to your base stake."}
                   {stopOnWin ? ' "Stop after first win" stops the bot after a win.' : ""}
                 </p>
               </div>
@@ -2818,7 +3318,9 @@ function TradeTerminal() {
                           "text-sm font-bold num " + (isDark ? "text-white" : "text-slate-900")
                         }
                       >
-                        {price !== null ? price.toFixed(marketPipDecimals) : "—"}
+                        {price !== null
+                          ? price.toFixed(marketPipDecimals)
+                          : "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}
                       </div>
                     </div>
                     <div className="max-w-[65%] text-right">
@@ -2834,7 +3336,7 @@ function TradeTerminal() {
                               : "text-slate-600")
                         }
                       >
-                        SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
+                        SPREAD ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â {analysis.diff.toFixed(2)}%{" "}
                         <span className="opacity-60">/ {maxDiff}%</span>
                       </div>
                       <div
@@ -2859,7 +3361,9 @@ function TradeTerminal() {
                   <span
                     className={`text-6xl sm:text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}
                   >
-                    {currentDigit !== undefined ? currentDigit : "—"}
+                    {currentDigit !== undefined
+                      ? currentDigit
+                      : "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}
                   </span>
                   <div className="space-y-0.5 text-xs">
                     <div className="text-zinc-500">
@@ -3043,11 +3547,13 @@ function TradeTerminal() {
                   <span
                     className={`my-1 text-6xl font-light num ${isDark ? "text-white" : "text-slate-900"}`}
                   >
-                    {nextPrediction?.digit ?? "—"}
+                    {nextPrediction?.digit ?? "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}
                   </span>
                   <span className="text-[11px] text-zinc-500">
                     Estimated chance{" "}
-                    {nextPrediction ? `${nextPrediction.confidence.toFixed(1)}%` : "—"}
+                    {nextPrediction
+                      ? `${nextPrediction.confidence.toFixed(1)}%`
+                      : "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"}
                   </span>
                   <span className="mt-2 text-[10px] uppercase tracking-wide text-zinc-500">
                     {nextPrediction?.method ?? "Awaiting 1,000 ticks"}
@@ -3069,7 +3575,9 @@ function TradeTerminal() {
                     <div
                       className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
                     >
-                      {predictionAccuracy === null ? "—" : `${predictionAccuracy}%`}
+                      {predictionAccuracy === null
+                        ? "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"
+                        : `${predictionAccuracy}%`}
                     </div>
                     <div className="text-[10px] text-zinc-500">
                       {predictionStats.correct} correct / {predictionStats.forecasts} scored
@@ -3084,7 +3592,9 @@ function TradeTerminal() {
                     <div
                       className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
                     >
-                      {recentPredictionAccuracy === null ? "—" : `${recentPredictionAccuracy}%`}
+                      {recentPredictionAccuracy === null
+                        ? "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"
+                        : `${recentPredictionAccuracy}%`}
                     </div>
                     <div className="text-[10px] text-zinc-500">
                       {predictionStats.recentResults.length} recent live ticks
@@ -3248,7 +3758,7 @@ function TradeTerminal() {
                   <button
                     type="button"
                     onClick={saveCurrentSession}
-                    disabled={running || trades.length === 0}
+                    disabled={running || (trades.length === 0 && x2xSignals.length === 0)}
                     title={
                       running
                         ? "Stop the bot before saving and clearing this session"
@@ -3296,6 +3806,7 @@ function TradeTerminal() {
                               <th>Exit</th>
                               <th>Stake</th>
                               <th>Status</th>
+                              <th>Contract</th>
                               <th className="text-right">P/L</th>
                             </tr>
                           </thead>
@@ -3335,6 +3846,9 @@ function TradeTerminal() {
                                   >
                                     {t.pnl > 0 ? "WON" : "LOST"}
                                   </span>
+                                </td>
+                                <td className="text-zinc-500" title={t.signalId}>
+                                  {t.contractId ?? "--"}
                                 </td>
                                 <td
                                   className={`text-right font-bold ${
@@ -3381,7 +3895,7 @@ function TradeTerminal() {
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
                             <div className="mt-1 text-[11px] text-zinc-500">
-                              {new Date(saved.savedAt).toLocaleString()} ·{" "}
+                              {new Date(saved.savedAt).toLocaleString()} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·{" "}
                               {MARKETS[saved.marketSymbol].classicSymbol}
                             </div>
                           </div>
@@ -3473,9 +3987,12 @@ function TradeTerminal() {
                         </div>
 
                         <div className="mt-3 text-[11px] text-zinc-500">
-                          Spread threshold {saved.spreadThreshold}% · Base stake{" "}
-                          {saved.baseStake.toFixed(2)} USD · Martingale{" "}
+                          Spread threshold {saved.spreadThreshold}% ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Base stake{" "}
+                          {saved.baseStake.toFixed(2)} USD ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
+                          {saved.x2xSignals?.length
+                            ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· X2X signals ${saved.x2xSignals.length}`
+                            : ""}
                         </div>
 
                         {expandedHistoryId === saved.id && (
@@ -3495,6 +4012,7 @@ function TradeTerminal() {
                                   <th>Exit</th>
                                   <th>Stake</th>
                                   <th>Status</th>
+                                  <th>Contract</th>
                                   <th className="text-right">P/L</th>
                                 </tr>
                               </thead>
@@ -3518,6 +4036,9 @@ function TradeTerminal() {
                                     >
                                       {trade.pnl > 0 ? "WON" : "LOST"}
                                     </td>
+                                    <td className="text-zinc-500" title={trade.signalId}>
+                                      {trade.contractId ?? "--"}
+                                    </td>
                                     <td
                                       className={
                                         "text-right font-bold " +
@@ -3531,6 +4052,58 @@ function TradeTerminal() {
                                 ))}
                               </tbody>
                             </table>
+                          </div>
+                        )}
+                        {expandedHistoryId === saved.id && Boolean(saved.x2xSignals?.length) && (
+                          <div className="mt-4 space-y-2">
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                              X2X Signal Audit
+                            </h4>
+                            {saved.x2xSignals?.map((signal) => (
+                              <div
+                                key={signal.signalId}
+                                className={`grid grid-cols-[1fr_auto] gap-x-2 rounded border p-2 text-[10px] ${
+                                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-white"
+                                }`}
+                              >
+                                <span className="font-mono">
+                                  {signal.pattern} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.referencePair}{" "}
+                                  ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢{" "}
+                                  {signal.opTrigger ?? "invalid"} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· LDP{" "}
+                                  {signal.ldp ?? "--"}
+                                </span>
+                                <span className="text-right uppercase text-zinc-500">
+                                  {signal.status.replaceAll("_", " ")}
+                                </span>
+                                <span className="text-zinc-500">
+                                  {new Date(signal.detectedAt).toLocaleString()}{" "}
+                                  ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.eligibleTicksElapsed}/10 eligible
+                                  ticks
+                                  {signal.status === "cancelled" && signal.cancelledAt
+                                    ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
+                                    : ""}
+                                  {` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.contractDuration} tick`}
+                                  {signal.contractId
+                                    ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· contract ${signal.contractId}`
+                                    : ""}
+                                  {signal.result
+                                    ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.result.toUpperCase()}`
+                                    : ""}
+                                </span>
+                                <span className="text-zinc-500">
+                                  Source:{" "}
+                                  {signal.patternTickTimestamps
+                                    .map(
+                                      (timestamp, index) =>
+                                        `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
+                                    )
+                                    .join(" ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ")}
+                                </span>
+                                {signal.reason && (
+                                  <span className="text-right text-zinc-500">{signal.reason}</span>
+                                )}
+                              </div>
+                            ))}
                           </div>
                         )}
                       </article>
@@ -3712,7 +4285,7 @@ function TradeTerminal() {
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
-                      : `Δ ≤ ${maxDiff}%`}
+                      : `ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -3760,7 +4333,7 @@ function TradeTerminal() {
               rel="noopener noreferrer"
               className="font-bold text-zinc-400 hover:text-zinc-300 hover:underline transition-colors"
             >
-              Architeq Web Agency ↗
+              Architeq Web Agency ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
             </a>
           </div>
         </footer>
@@ -3974,7 +4547,8 @@ function TradeTerminal() {
               >
                 {accounts.map((acc) => (
                   <option key={acc.account_id} value={acc.account_id}>
-                    {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — $
+                    {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"})
+                    ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â $
                     {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
                   </option>
                 ))}
@@ -4041,7 +4615,7 @@ function TradeTerminal() {
               <button
                 type="button"
                 onClick={runBacktest1000Ticks}
-                disabled={strategyMode === "x2x"}
+                disabled={digits.length < WINDOW}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider ${
                   isDark
                     ? "border-zinc-800 bg-zinc-900 text-zinc-200"
@@ -4108,7 +4682,7 @@ function TradeTerminal() {
                 rel="noopener noreferrer"
                 className="text-zinc-400 hover:text-zinc-300 font-bold hover:underline"
               >
-                Architeq Web Agency ↗
+                Architeq Web Agency ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
               </a>
             </div>
           </div>
@@ -4133,7 +4707,9 @@ function TradeTerminal() {
               <span
                 className={`text-xs font-bold uppercase tracking-wider ${isDark ? "text-white" : "text-slate-900"}`}
               >
-                1,000 TICKS BACKTEST RESULTS
+                {backtest.strategyMode === "x2x"
+                  ? "X2X SNIPER / 1,000 TICK REPLAY"
+                  : "MATCHES / 1,000 TICK BACKTEST"}
               </span>
               <button
                 onClick={() => setShowBacktestModal(false)}
@@ -4144,43 +4720,81 @@ function TradeTerminal() {
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Calculated across the latest {backtest.totalTicks} real market ticks of{" "}
-              {currentMarket.displayName} using the Deriv Matches strategy (spread ≤ {maxDiff}%,
-              enter on most appearing digit, target second most appearing digit):
+              {backtest.strategyMode === "x2x"
+                ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent Volatility 100 quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
+                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%, enter on most appearing digit, target second most appearing digit).`}
             </p>
 
-            <div
-              className={`grid grid-cols-2 gap-4 rounded border p-4 num ${
-                isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-              }`}
-            >
-              <div>
-                <span className="text-[10px] uppercase text-zinc-500">Signals Found</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
-                  {backtest.signals}
+            {backtest.x2x ? (
+              <div
+                className={`grid grid-cols-2 sm:grid-cols-3 gap-4 rounded border p-4 num ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                {[
+                  ["Patterns detected", backtest.x2x.patternsDetected],
+                  ["Valid signals", backtest.x2x.validSignals],
+                  ["OP triggers", backtest.x2x.triggers],
+                  ["Simulated trades", backtest.x2x.executedTrades],
+                  ["Wins / losses", `${backtest.x2x.wins} / ${backtest.x2x.losses}`],
+                  ["Settled win rate", `${backtest.x2x.winRate.toFixed(1)}%`],
+                  ["Expired", backtest.x2x.expiredSignals],
+                  ["Rejected", backtest.x2x.rejectedSignals],
+                  ["Unsettled at end", backtest.x2x.unsettledTrades],
+                  ["Payout adjusted P/L", "Unavailable"],
+                ].map(([label, value]) => (
+                  <div key={String(label)}>
+                    <span className="text-[10px] uppercase text-zinc-500">{label}</span>
+                    <div
+                      className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
+                    >
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                className={`grid grid-cols-2 gap-4 rounded border p-4 num ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <div>
+                  <span className="text-[10px] uppercase text-zinc-500">Signals Found</span>
+                  <div
+                    className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {backtest.signals}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase text-zinc-500">Win Rate</span>
+                  <div
+                    className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {backtest.winRate.toFixed(1)}%
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase text-zinc-500">Wins / Losses</span>
+                  <div
+                    className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {backtest.wins}W ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {backtest.losses}L
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase text-zinc-500">Simulated Net P/L</span>
+                  <div
+                    className={`text-2xl font-light ${backtest.netPnl !== null && backtest.netPnl > 0 ? "text-emerald-500" : backtest.netPnl !== null && backtest.netPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {backtest.netPnl === null
+                      ? "Unavailable"
+                      : `${backtest.netPnl >= 0 ? "+" : ""}$${backtest.netPnl.toFixed(2)}`}
+                  </div>
                 </div>
               </div>
-              <div>
-                <span className="text-[10px] uppercase text-zinc-500">Win Rate</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
-                  {backtest.winRate.toFixed(1)}%
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-zinc-500">Wins / Losses</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
-                  {backtest.wins}W · {backtest.losses}L
-                </div>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-zinc-500">Simulated Net P/L</span>
-                <div
-                  className={`text-2xl font-light ${backtest.netPnl > 0 ? "text-emerald-500" : backtest.netPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}
-                >
-                  {backtest.netPnl >= 0 ? "+" : ""}${backtest.netPnl.toFixed(2)}
-                </div>
-              </div>
-            </div>
+            )}
 
             <button
               onClick={() => setShowBacktestModal(false)}

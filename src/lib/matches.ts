@@ -123,7 +123,7 @@ function predictFromFrequency(
   | "selectedStrategy"
 > {
   const allDigitCounts = new Array(10).fill(0) as number[];
-  for (const digit of training) allDigitCounts[digit]++;
+  for (const digit of training) allDigitCounts[digit] = (allDigitCounts[digit] ?? 0) + 1;
   const allDigitPrior = allDigitCounts.map((count) => count / training.length);
 
   let contextCounts = allDigitCounts;
@@ -133,23 +133,24 @@ function predictFromFrequency(
     const windowSize = method === "recent-500 frequency" ? 500 : 250;
     const recentTicks = training.slice(-windowSize);
     contextCounts = new Array(10).fill(0) as number[];
-    for (const digit of recentTicks) contextCounts[digit]++;
+    for (const digit of recentTicks) contextCounts[digit] = (contextCounts[digit] ?? 0) + 1;
     contextSamples = recentTicks.length;
     smoothingWeight = method === "recent-500 frequency" ? 50 : 25;
   }
 
   const denominator = contextSamples + smoothingWeight;
   const probabilities = contextCounts.map(
-    (count, digit) => (count + allDigitPrior[digit] * smoothingWeight) / denominator,
+    (count, digit) => (count + (allDigitPrior[digit] ?? 0) * smoothingWeight) / denominator,
   );
   const predictedDigit = probabilities.reduce(
-    (bestDigit, probability, digit) => (probability > probabilities[bestDigit] ? digit : bestDigit),
+    (bestDigit, probability, digit) =>
+      probability > (probabilities[bestDigit] ?? 0) ? digit : bestDigit,
     0,
   );
 
   return {
     digit: predictedDigit,
-    confidence: probabilities[predictedDigit] * 100,
+    confidence: (probabilities[predictedDigit] ?? 0) * 100,
     method,
     contextSamples,
   };
@@ -230,179 +231,19 @@ export function lastDigit(quote: number, decimals = PIP_DECIMALS): number {
   return Number(s[s.length - 1]);
 }
 
-export interface X2XQuoteDigit {
-  digit: number;
-  /** The quote's final two decimal places, kept as text (for example, "07"). */
-  lastTwoQuoteDigits: string;
-}
-
-export interface X2XScannerSignal {
-  phase: "awaiting-ldp" | "awaiting-op";
-  pattern: string;
-  referencePair: string;
-  opTrigger: string;
-  ldp: number | null;
-  eligibleTicksRemaining: number;
-}
-
-export interface X2XScannerState {
-  /** One last digit per incoming tick, in chronological order. */
-  recentDigits: number[];
-  signal: X2XScannerSignal | null;
-}
-
-export type X2XScannerEvent =
-  | { type: "pattern"; pattern: string; referencePair: string; opTrigger: string }
-  | { type: "ldp"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
-  | { type: "trigger"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
-  | { type: "expired"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
-  | { type: "invalid-reference"; pattern: string; referencePair: string };
-
-export interface X2XScannerStep {
-  state: X2XScannerState;
-  event: X2XScannerEvent | null;
-}
-
-const X2X_OP_WINDOW_TICKS = 10;
-
-export function createX2XScannerState(): X2XScannerState {
-  return { recentDigits: [], signal: null };
-}
-
-/**
- * X2X's OP reference is the two decimal places from the quote on the third
- * pattern digit. Values below 20 cannot produce a non-negative two-digit
- * result after subtracting 20, so they cannot form a valid OP trigger.
- */
-export function calculateX2XOpTrigger(referencePair: string): string | null {
-  if (!/^\d{2}$/.test(referencePair)) return null;
-  const value = Number(referencePair);
-  if (value < 20) return null;
-  return String(value - 20).padStart(2, "0");
-}
-
-/** Format a quote with its market precision and preserve its final two decimals. */
-export function lastTwoQuoteDigits(quote: number, decimals = 2): string {
-  const formatted = quote.toFixed(decimals);
-  return formatted.slice(-2);
-}
-
-/**
- * Advance the X2X scanner by one chronological tick. The X2X pattern is three
- * consecutive per-tick last digits X, 2, X. The following tick supplies LDP.
- * OP matching then scans up to ten eligible subsequent ticks; ineligible ticks
- * do not consume the window.
- */
-export function advanceX2XScanner(
-  state: X2XScannerState,
-  tick: X2XQuoteDigit,
-  eligibleForOp: boolean,
-): X2XScannerStep {
-  const recentDigits = [...state.recentDigits, tick.digit].slice(-3);
-  const signal = state.signal;
-
-  if (signal?.phase === "awaiting-ldp") {
-    const nextSignal: X2XScannerSignal = {
-      ...signal,
-      phase: "awaiting-op",
-      ldp: tick.digit,
-      eligibleTicksRemaining: X2X_OP_WINDOW_TICKS,
-    };
-    return {
-      state: { recentDigits, signal: nextSignal },
-      event: {
-        type: "ldp",
-        pattern: signal.pattern,
-        referencePair: signal.referencePair,
-        opTrigger: signal.opTrigger,
-        ldp: tick.digit,
-      },
-    };
-  }
-
-  if (signal?.phase === "awaiting-op") {
-    if (!eligibleForOp) {
-      return { state: { recentDigits, signal }, event: null };
-    }
-
-    if (tick.lastTwoQuoteDigits === signal.opTrigger) {
-      return {
-        state: { recentDigits, signal: null },
-        event: {
-          type: "trigger",
-          pattern: signal.pattern,
-          referencePair: signal.referencePair,
-          opTrigger: signal.opTrigger,
-          ldp: signal.ldp as number,
-        },
-      };
-    }
-
-    if (signal.eligibleTicksRemaining <= 1) {
-      return {
-        state: { recentDigits, signal: null },
-        event: {
-          type: "expired",
-          pattern: signal.pattern,
-          referencePair: signal.referencePair,
-          opTrigger: signal.opTrigger,
-          ldp: signal.ldp as number,
-        },
-      };
-    }
-
-    return {
-      state: {
-        recentDigits,
-        signal: {
-          ...signal,
-          eligibleTicksRemaining: signal.eligibleTicksRemaining - 1,
-        },
-      },
-      event: null,
-    };
-  }
-
-  if (recentDigits.length < 3) return { state: { recentDigits, signal: null }, event: null };
-
-  const [first, middle, last] = recentDigits;
-  if (first !== last || middle !== 2) {
-    return { state: { recentDigits, signal: null }, event: null };
-  }
-
-  const pattern = recentDigits.join("");
-  const opTrigger = calculateX2XOpTrigger(tick.lastTwoQuoteDigits);
-  if (opTrigger === null) {
-    return {
-      state: { recentDigits, signal: null },
-      event: {
-        type: "invalid-reference",
-        pattern,
-        referencePair: tick.lastTwoQuoteDigits,
-      },
-    };
-  }
-
-  return {
-    state: {
-      recentDigits,
-      signal: {
-        phase: "awaiting-ldp",
-        pattern,
-        referencePair: tick.lastTwoQuoteDigits,
-        opTrigger,
-        ldp: null,
-        eligibleTicksRemaining: 0,
-      },
-    },
-    event: {
-      type: "pattern",
-      pattern,
-      referencePair: tick.lastTwoQuoteDigits,
-      opTrigger,
-    },
-  };
-}
+export {
+  advanceX2XScanner,
+  calculateX2XOpTrigger,
+  createX2XScannerState,
+  lastTwoQuoteDigits,
+  runX2XBacktest,
+  type X2XBacktestResult,
+  type X2XQuoteDigit,
+  type X2XScannerEvent,
+  type X2XScannerSignal,
+  type X2XScannerState,
+  type X2XScannerStep,
+} from "./x2x-strategy";
 
 export interface Analysis {
   total: number;
