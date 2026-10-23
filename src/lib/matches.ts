@@ -113,7 +113,15 @@ type PredictionMethod = DigitPrediction["method"];
 function predictFromFrequency(
   training: number[],
   method: PredictionMethod,
-): Omit<DigitPrediction, "trainingTicks" | "validationAccuracy" | "baselineAccuracy" | "validationForecasts" | "edgeDetected" | "selectedStrategy"> {
+): Omit<
+  DigitPrediction,
+  | "trainingTicks"
+  | "validationAccuracy"
+  | "baselineAccuracy"
+  | "validationForecasts"
+  | "edgeDetected"
+  | "selectedStrategy"
+> {
   const allDigitCounts = new Array(10).fill(0) as number[];
   for (const digit of training) allDigitCounts[digit]++;
   const allDigitPrior = allDigitCounts.map((count) => count / training.length);
@@ -131,12 +139,11 @@ function predictFromFrequency(
   }
 
   const denominator = contextSamples + smoothingWeight;
-  const probabilities = contextCounts.map((count, digit) =>
-    (count + allDigitPrior[digit] * smoothingWeight) / denominator,
+  const probabilities = contextCounts.map(
+    (count, digit) => (count + allDigitPrior[digit] * smoothingWeight) / denominator,
   );
   const predictedDigit = probabilities.reduce(
-    (bestDigit, probability, digit) =>
-      probability > probabilities[bestDigit] ? digit : bestDigit,
+    (bestDigit, probability, digit) => (probability > probabilities[bestDigit] ? digit : bestDigit),
     0,
   );
 
@@ -167,9 +174,7 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
   ];
   const validationStart = training.length - 250;
   const validationForecasts = training.length - validationStart;
-  const scores = new Map<PredictionMethod, number>(
-    methods.map((method) => [method, 0]),
-  );
+  const scores = new Map<PredictionMethod, number>(methods.map((method) => [method, 0]));
 
   for (let targetIndex = validationStart; targetIndex < training.length; targetIndex++) {
     const pastTicks = training.slice(0, targetIndex);
@@ -182,14 +187,14 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
   }
 
   const baselineCorrect = scores.get("all-digit frequency") ?? 0;
-  const bestRecentMethod = methods.slice(1).reduce<PredictionMethod>(
-    (best, method) =>
-      (scores.get(method) ?? 0) > (scores.get(best) ?? 0) ? method : best,
-    "all-digit frequency",
-  );
+  const bestRecentMethod = methods
+    .slice(1)
+    .reduce<PredictionMethod>(
+      (best, method) => ((scores.get(method) ?? 0) > (scores.get(best) ?? 0) ? method : best),
+      "all-digit frequency",
+    );
   const minimumImprovement = Math.max(5, Math.ceil(validationForecasts * 0.02));
-  const edgeDetected =
-    (scores.get(bestRecentMethod) ?? 0) >= baselineCorrect + minimumImprovement;
+  const edgeDetected = (scores.get(bestRecentMethod) ?? 0) >= baselineCorrect + minimumImprovement;
   const selectedStrategy = edgeDetected ? bestRecentMethod : "all-digit frequency";
   const prediction = predictFromFrequency(training, selectedStrategy);
 
@@ -225,6 +230,180 @@ export function lastDigit(quote: number, decimals = PIP_DECIMALS): number {
   return Number(s[s.length - 1]);
 }
 
+export interface X2XQuoteDigit {
+  digit: number;
+  /** The quote's final two decimal places, kept as text (for example, "07"). */
+  lastTwoQuoteDigits: string;
+}
+
+export interface X2XScannerSignal {
+  phase: "awaiting-ldp" | "awaiting-op";
+  pattern: string;
+  referencePair: string;
+  opTrigger: string;
+  ldp: number | null;
+  eligibleTicksRemaining: number;
+}
+
+export interface X2XScannerState {
+  /** One last digit per incoming tick, in chronological order. */
+  recentDigits: number[];
+  signal: X2XScannerSignal | null;
+}
+
+export type X2XScannerEvent =
+  | { type: "pattern"; pattern: string; referencePair: string; opTrigger: string }
+  | { type: "ldp"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
+  | { type: "trigger"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
+  | { type: "expired"; pattern: string; referencePair: string; opTrigger: string; ldp: number }
+  | { type: "invalid-reference"; pattern: string; referencePair: string };
+
+export interface X2XScannerStep {
+  state: X2XScannerState;
+  event: X2XScannerEvent | null;
+}
+
+const X2X_OP_WINDOW_TICKS = 10;
+
+export function createX2XScannerState(): X2XScannerState {
+  return { recentDigits: [], signal: null };
+}
+
+/**
+ * X2X's OP reference is the two decimal places from the quote on the third
+ * pattern digit. Values below 20 cannot produce a non-negative two-digit
+ * result after subtracting 20, so they cannot form a valid OP trigger.
+ */
+export function calculateX2XOpTrigger(referencePair: string): string | null {
+  if (!/^\d{2}$/.test(referencePair)) return null;
+  const value = Number(referencePair);
+  if (value < 20) return null;
+  return String(value - 20).padStart(2, "0");
+}
+
+/** Format a quote with its market precision and preserve its final two decimals. */
+export function lastTwoQuoteDigits(quote: number, decimals = 2): string {
+  const formatted = quote.toFixed(decimals);
+  return formatted.slice(-2);
+}
+
+/**
+ * Advance the X2X scanner by one chronological tick. The X2X pattern is three
+ * consecutive per-tick last digits X, 2, X. The following tick supplies LDP.
+ * OP matching then scans up to ten eligible subsequent ticks; ineligible ticks
+ * do not consume the window.
+ */
+export function advanceX2XScanner(
+  state: X2XScannerState,
+  tick: X2XQuoteDigit,
+  eligibleForOp: boolean,
+): X2XScannerStep {
+  const recentDigits = [...state.recentDigits, tick.digit].slice(-3);
+  const signal = state.signal;
+
+  if (signal?.phase === "awaiting-ldp") {
+    const nextSignal: X2XScannerSignal = {
+      ...signal,
+      phase: "awaiting-op",
+      ldp: tick.digit,
+      eligibleTicksRemaining: X2X_OP_WINDOW_TICKS,
+    };
+    return {
+      state: { recentDigits, signal: nextSignal },
+      event: {
+        type: "ldp",
+        pattern: signal.pattern,
+        referencePair: signal.referencePair,
+        opTrigger: signal.opTrigger,
+        ldp: tick.digit,
+      },
+    };
+  }
+
+  if (signal?.phase === "awaiting-op") {
+    if (!eligibleForOp) {
+      return { state: { recentDigits, signal }, event: null };
+    }
+
+    if (tick.lastTwoQuoteDigits === signal.opTrigger) {
+      return {
+        state: { recentDigits, signal: null },
+        event: {
+          type: "trigger",
+          pattern: signal.pattern,
+          referencePair: signal.referencePair,
+          opTrigger: signal.opTrigger,
+          ldp: signal.ldp as number,
+        },
+      };
+    }
+
+    if (signal.eligibleTicksRemaining <= 1) {
+      return {
+        state: { recentDigits, signal: null },
+        event: {
+          type: "expired",
+          pattern: signal.pattern,
+          referencePair: signal.referencePair,
+          opTrigger: signal.opTrigger,
+          ldp: signal.ldp as number,
+        },
+      };
+    }
+
+    return {
+      state: {
+        recentDigits,
+        signal: {
+          ...signal,
+          eligibleTicksRemaining: signal.eligibleTicksRemaining - 1,
+        },
+      },
+      event: null,
+    };
+  }
+
+  if (recentDigits.length < 3) return { state: { recentDigits, signal: null }, event: null };
+
+  const [first, middle, last] = recentDigits;
+  if (first !== last || middle !== 2) {
+    return { state: { recentDigits, signal: null }, event: null };
+  }
+
+  const pattern = recentDigits.join("");
+  const opTrigger = calculateX2XOpTrigger(tick.lastTwoQuoteDigits);
+  if (opTrigger === null) {
+    return {
+      state: { recentDigits, signal: null },
+      event: {
+        type: "invalid-reference",
+        pattern,
+        referencePair: tick.lastTwoQuoteDigits,
+      },
+    };
+  }
+
+  return {
+    state: {
+      recentDigits,
+      signal: {
+        phase: "awaiting-ldp",
+        pattern,
+        referencePair: tick.lastTwoQuoteDigits,
+        opTrigger,
+        ldp: null,
+        eligibleTicksRemaining: 0,
+      },
+    },
+    event: {
+      type: "pattern",
+      pattern,
+      referencePair: tick.lastTwoQuoteDigits,
+      opTrigger,
+    },
+  };
+}
+
 export interface Analysis {
   total: number;
   counts: number[];
@@ -253,9 +432,7 @@ export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis 
   const total = windowDigits.length;
   const percents = counts.map((c) => (total > 0 ? (c / total) * 100 : 0));
 
-  const order = percents
-    .map((p, d) => ({ p, d }))
-    .sort((a, b) => b.p - a.p || a.d - b.d);
+  const order = percents.map((p, d) => ({ p, d })).sort((a, b) => b.p - a.p || a.d - b.d);
 
   const first = order[0] || { p: 0, d: 0 };
   const runner = order[1] || { p: 0, d: 1 };

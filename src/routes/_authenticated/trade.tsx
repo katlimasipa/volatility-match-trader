@@ -35,14 +35,15 @@ import {
   MARKETS,
   MARKET_LIST,
   getMarketConfig,
+  advanceX2XScanner,
+  createX2XScannerState,
+  lastTwoQuoteDigits,
   type DigitPrediction,
   type MarketSymbol,
+  type X2XScannerEvent,
+  type X2XScannerState,
 } from "@/lib/matches";
-import {
-  startBotKeepalive,
-  stopBotKeepalive,
-  requestScreenWakeLock,
-} from "@/lib/bot-keepalive";
+import { startBotKeepalive, stopBotKeepalive, requestScreenWakeLock } from "@/lib/bot-keepalive";
 import {
   isNotificationSupported,
   isNotificationEnabled,
@@ -74,19 +75,18 @@ import {
   publishSyncedAlert,
 } from "@/lib/alert-sync";
 import { disableWebPush, enableWebPush } from "@/lib/push-client";
-import {
-  isRunningStandalone,
-  isIOS,
-  onInstallableChange,
-  triggerInstallPrompt,
-} from "@/lib/pwa";
+import { isRunningStandalone, isIOS, onInstallableChange, triggerInstallPrompt } from "@/lib/pwa";
 import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/payout";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
       { title: "ThDpst Matches // Volatility Trader" },
-      { name: "description", content: "Deriv Matches trader for Volatility 75, Volatility 100, Volatility 10, and their 1-second indices." },
+      {
+        name: "description",
+        content:
+          "Deriv Matches trader for Volatility 75, Volatility 100, Volatility 10, and their 1-second indices.",
+      },
     ],
   }),
   component: TradeTerminal,
@@ -122,10 +122,27 @@ interface SavedSession {
   spreadThreshold: number;
   baseStake: number;
   martingaleEnabled: boolean;
+  strategyMode?: StrategyMode;
 }
 
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
+const STRATEGY_MODE_STORAGE_KEY = "thdpst_strategy_mode_v1";
 const MAX_SAVED_SESSIONS = 50;
+
+type StrategyMode = "matches" | "x2x";
+
+function loadStrategyMode(): StrategyMode {
+  if (typeof window === "undefined") return "matches";
+  try {
+    const savedMarket = localStorage.getItem("thdpst_market_symbol");
+    return localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) === "x2x" &&
+      (!savedMarket || savedMarket === "R_100")
+      ? "x2x"
+      : "matches";
+  } catch {
+    return "matches";
+  }
+}
 
 function normalizeDecimalInput(value: string): string {
   return value.replace(",", ".");
@@ -145,13 +162,20 @@ function isTradeRow(value: unknown): value is TradeRow {
   if (typeof value !== "object" || value === null) return false;
   const trade = value as Partial<TradeRow>;
   return (
-    typeof trade.id === "number" && Number.isFinite(trade.id) &&
-    typeof trade.runIndex === "number" && Number.isFinite(trade.runIndex) &&
-    typeof trade.entry === "number" && Number.isFinite(trade.entry) &&
-    typeof trade.target === "number" && Number.isFinite(trade.target) &&
-    typeof trade.result === "number" && Number.isFinite(trade.result) &&
-    typeof trade.stake === "number" && Number.isFinite(trade.stake) &&
-    typeof trade.pnl === "number" && Number.isFinite(trade.pnl) &&
+    typeof trade.id === "number" &&
+    Number.isFinite(trade.id) &&
+    typeof trade.runIndex === "number" &&
+    Number.isFinite(trade.runIndex) &&
+    typeof trade.entry === "number" &&
+    Number.isFinite(trade.entry) &&
+    typeof trade.target === "number" &&
+    Number.isFinite(trade.target) &&
+    typeof trade.result === "number" &&
+    Number.isFinite(trade.result) &&
+    typeof trade.stake === "number" &&
+    Number.isFinite(trade.stake) &&
+    typeof trade.pnl === "number" &&
+    Number.isFinite(trade.pnl) &&
     typeof trade.time === "string"
   );
 }
@@ -161,17 +185,28 @@ function isSavedSession(value: unknown): value is SavedSession {
   const saved = value as Partial<SavedSession>;
   return (
     typeof saved.id === "string" &&
-    typeof saved.savedAt === "string" && Number.isFinite(Date.parse(saved.savedAt)) &&
+    typeof saved.savedAt === "string" &&
+    Number.isFinite(Date.parse(saved.savedAt)) &&
     typeof saved.marketSymbol === "string" &&
     MARKET_LIST.some((market) => market.id === saved.marketSymbol) &&
-    Array.isArray(saved.trades) && saved.trades.every(isTradeRow) &&
-    typeof saved.totalPnl === "number" && Number.isFinite(saved.totalPnl) &&
-    typeof saved.wins === "number" && Number.isFinite(saved.wins) &&
-    typeof saved.losses === "number" && Number.isFinite(saved.losses) &&
-    typeof saved.winRate === "number" && Number.isFinite(saved.winRate) &&
-    typeof saved.spreadThreshold === "number" && Number.isFinite(saved.spreadThreshold) &&
-    typeof saved.baseStake === "number" && Number.isFinite(saved.baseStake) &&
-    typeof saved.martingaleEnabled === "boolean"
+    Array.isArray(saved.trades) &&
+    saved.trades.every(isTradeRow) &&
+    typeof saved.totalPnl === "number" &&
+    Number.isFinite(saved.totalPnl) &&
+    typeof saved.wins === "number" &&
+    Number.isFinite(saved.wins) &&
+    typeof saved.losses === "number" &&
+    Number.isFinite(saved.losses) &&
+    typeof saved.winRate === "number" &&
+    Number.isFinite(saved.winRate) &&
+    typeof saved.spreadThreshold === "number" &&
+    Number.isFinite(saved.spreadThreshold) &&
+    typeof saved.baseStake === "number" &&
+    Number.isFinite(saved.baseStake) &&
+    typeof saved.martingaleEnabled === "boolean" &&
+    (saved.strategyMode === undefined ||
+      saved.strategyMode === "matches" ||
+      saved.strategyMode === "x2x")
   );
 }
 
@@ -181,9 +216,7 @@ function loadSavedSessions(): SavedSession[] {
     const stored = localStorage.getItem(SESSION_HISTORY_STORAGE_KEY);
     if (!stored) return [];
     const parsed: unknown = JSON.parse(stored);
-    return Array.isArray(parsed)
-      ? parsed.filter(isSavedSession).slice(0, MAX_SAVED_SESSIONS)
-      : [];
+    return Array.isArray(parsed) ? parsed.filter(isSavedSession).slice(0, MAX_SAVED_SESSIONS) : [];
   } catch {
     return [];
   }
@@ -275,14 +308,21 @@ function TradeTerminal() {
   const [showConnectModal, setShowConnectModal] = useState(false);
 
   // In-app alert banner
-  const [inAppAlert, setInAppAlert] = useState<{ id: number; title: string; body: string; type: string } | null>(null);
+  const [inAppAlert, setInAppAlert] = useState<{
+    id: number;
+    title: string;
+    body: string;
+    type: string;
+  } | null>(null);
 
   // Mobile settings drawer/modal
   const [showMobileMenu, setShowMobileMenu] = useState(false);
 
   // App ID and configured markup dynamically resolved for this application
   const activeAppId = getDerivClientId();
-  const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
+  const [configuredMarkup, setConfiguredMarkup] = useState<number>(() =>
+    getAppIdMarkup(activeAppId),
+  );
 
   // Market Selection state (standard and 1-second Volatility 100 / 75 / 10 indices)
   const [marketSymbol, setMarketSymbol] = useState<MarketSymbol>(() => {
@@ -293,6 +333,10 @@ function TradeTerminal() {
     }
     return "R_100";
   });
+  const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
+  const startTickRequirement = strategyMode === "x2x" ? 3 : WINDOW;
+  const [x2xScannerState, setX2xScannerState] = useState<X2XScannerState>(createX2XScannerState);
+  const x2xScannerRef = useRef<X2XScannerState>(createX2XScannerState());
   const currentMarket = getMarketConfig(marketSymbol);
   const [marketPipDecimals, setMarketPipDecimals] = useState(currentMarket.pipDecimals);
 
@@ -350,6 +394,12 @@ function TradeTerminal() {
       alert("Please stop the bot before switching markets.");
       return;
     }
+    if (strategyMode === "x2x" && m !== "R_100") {
+      setNote(
+        "X2X Sniper only supports Volatility 100 Index. Switch back to Matches before choosing another market.",
+      );
+      return;
+    }
     setMarketSymbol(m);
     setMarketPipDecimals(MARKETS[m].pipDecimals);
     if (typeof window !== "undefined") {
@@ -361,9 +411,34 @@ function TradeTerminal() {
     setRecentTicks([]);
     setNextPrediction(null);
     setPredictionStats(emptyPredictionStats());
+    x2xScannerRef.current = createX2XScannerState();
+    setX2xScannerState(x2xScannerRef.current);
     setPrice(null);
     setBotState("BUFFERING");
     setNote(`Switching to ${MARKETS[m].displayName}. Buffering last 1,000 market ticks...`);
+  }
+
+  function handleSelectStrategy(nextStrategy: StrategyMode) {
+    if (running) return;
+    if (nextStrategy === "x2x" && marketSymbol !== "R_100") {
+      handleSelectMarket("R_100");
+    }
+    setStrategyMode(nextStrategy);
+    x2xScannerRef.current = createX2XScannerState();
+    setX2xScannerState(x2xScannerRef.current);
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, nextStrategy);
+        if (nextStrategy === "x2x") localStorage.setItem("thdpst_market_symbol", "R_100");
+      } catch {
+        // Strategy selection still works for this page if storage is unavailable.
+      }
+    }
+    setNote(
+      nextStrategy === "x2x"
+        ? "X2X Sniper selected on Volatility 100. Live pattern scanning starts when the bot starts."
+        : "Matches strategy selected.",
+    );
   }
 
   // Execution state
@@ -372,7 +447,9 @@ function TradeTerminal() {
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
-  const [botState, setBotState] = useState<"IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS">("BUFFERING");
+  const [botState, setBotState] = useState<
+    "IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS"
+  >("BUFFERING");
   const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing market...");
 
   // Backtest / Inspection Modal
@@ -464,11 +541,14 @@ function TradeTerminal() {
         void dispatchNotification("Notifications Enabled", {
           body: push.ok
             ? "Alerts sync across your devices — including when the app is closed (Web Push)."
-            : "Alerts sync on open devices. " + (push.error || "Background push will turn on once keys/tables are configured."),
+            : "Alerts sync on open devices. " +
+              (push.error || "Background push will turn on once keys/tables are configured."),
           skipSync: true,
         });
       } else if (perm === "denied") {
-        alert("Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.");
+        alert(
+          "Notifications are blocked in your browser or device settings. Please allow notifications for this site to receive trade alerts.",
+        );
       } else if (perm === "unsupported") {
         setShowIOSInstallGuide(true);
       }
@@ -529,6 +609,7 @@ function TradeTerminal() {
     configuredMarkup,
     stopOnWin,
     marketSymbol,
+    strategyMode,
   });
   stateRef.current = {
     running,
@@ -545,6 +626,7 @@ function TradeTerminal() {
     configuredMarkup,
     stopOnWin,
     marketSymbol,
+    strategyMode,
   };
 
   useEffect(() => {
@@ -560,39 +642,42 @@ function TradeTerminal() {
     return () => window.removeEventListener("pagehide", handlePageHide);
   }, []);
 
-  const applyBalanceToAccounts = useCallback((loginid: string, balance: number, currency?: string) => {
-    const idNorm = String(loginid).toUpperCase();
-    setAccounts((prev) => {
-      let matched = false;
-      const updated = prev.map((acc) => {
-        if (acc.account_id.toUpperCase() === idNorm) {
-          matched = true;
-          return {
-            ...acc,
-            balance: Number(balance).toFixed(2),
-            currency: currency || acc.currency,
-          };
-        }
-        return acc;
-      });
-      if (!matched) {
-        const isDemo =
-          idNorm.startsWith("VRTC") ||
-          idNorm.startsWith("V") ||
-          idNorm.startsWith("DOT") ||
-          idNorm.startsWith("VRW");
-        updated.push({
-          account_id: loginid,
-          account_type: isDemo ? "demo" : "real",
-          currency: currency || "USD",
-          balance: Number(balance).toFixed(2),
-          status: "active",
+  const applyBalanceToAccounts = useCallback(
+    (loginid: string, balance: number, currency?: string) => {
+      const idNorm = String(loginid).toUpperCase();
+      setAccounts((prev) => {
+        let matched = false;
+        const updated = prev.map((acc) => {
+          if (acc.account_id.toUpperCase() === idNorm) {
+            matched = true;
+            return {
+              ...acc,
+              balance: Number(balance).toFixed(2),
+              currency: currency || acc.currency,
+            };
+          }
+          return acc;
         });
-      }
-      storeAccounts(updated);
-      return updated;
-    });
-  }, []);
+        if (!matched) {
+          const isDemo =
+            idNorm.startsWith("VRTC") ||
+            idNorm.startsWith("V") ||
+            idNorm.startsWith("DOT") ||
+            idNorm.startsWith("VRW");
+          updated.push({
+            account_id: loginid,
+            account_type: isDemo ? "demo" : "real",
+            currency: currency || "USD",
+            balance: Number(balance).toFixed(2),
+            status: "active",
+          });
+        }
+        storeAccounts(updated);
+        return updated;
+      });
+    },
+    [],
+  );
 
   // Refresh live balances from Deriv (never keep stale local demo balances)
   const refreshDerivBalances = useCallback(async () => {
@@ -615,7 +700,7 @@ function TradeTerminal() {
         const storedActive = getActiveAccountId();
         const chosen =
           res.accounts.find(
-            (a) => a.account_id.toUpperCase() === String(storedActive || "").toUpperCase()
+            (a) => a.account_id.toUpperCase() === String(storedActive || "").toUpperCase(),
           ) ||
           res.accounts.find((a) => a.account_type === "demo") ||
           res.accounts[0];
@@ -672,7 +757,7 @@ function TradeTerminal() {
 
     // Drop leftover fake accounts from older builds
     const realAccounts = savedAccounts.filter(
-      (a) => a.account_id !== "VRTC1029384" && a.account_id !== "CR91945350"
+      (a) => a.account_id !== "VRTC1029384" && a.account_id !== "CR91945350",
     );
     if (realAccounts.length !== savedAccounts.length) {
       storeAccounts(realAccounts);
@@ -712,13 +797,16 @@ function TradeTerminal() {
 
     // Listen for live proposal responses from Deriv to sync exact App ID server markup
     ws.registerHandler("proposal", (data) => {
-      const pData = data['proposal'] as { payout?: number; ask_price?: number };
+      const pData = data["proposal"] as { payout?: number; ask_price?: number };
       if (pData?.payout && pData?.ask_price) {
         const ask = pData.ask_price;
         const payout = pData.payout;
         const baseGross = ask * DERIV_MATCH_BASE_PAYOUT_RATIO;
         if (baseGross > 0) {
-          const liveMarkup = Math.max(0, Math.round(((baseGross - payout) / baseGross) * 1000) / 10);
+          const liveMarkup = Math.max(
+            0,
+            Math.round(((baseGross - payout) / baseGross) * 1000) / 10,
+          );
           if (liveMarkup >= 0 && liveMarkup <= 10) {
             setConfiguredMarkup(liveMarkup);
             setAppIdMarkup(activeAppId, liveMarkup);
@@ -752,7 +840,9 @@ function TradeTerminal() {
         const count = Math.min(15, pList.length);
         for (let i = pList.length - count; i < pList.length; i++) {
           const ts = tList[i];
-          const timestamp = ts ? new Date(ts * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+          const timestamp = ts
+            ? new Date(ts * 1000).toLocaleTimeString()
+            : new Date().toLocaleTimeString();
           initialTicks.unshift({
             time: timestamp,
             price: pList[i] ?? 0,
@@ -764,43 +854,44 @@ function TradeTerminal() {
         const a = analyze(dList);
         setBotState((cur) => (cur === "BUFFERING" ? "IDLE" : cur));
         setNote(
-          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`
+          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`,
         );
       }
     });
 
     ws.registerHandler("tick", (data) => {
-      const tick = data['tick'] as { quote?: number; epoch?: number; pip_size?: unknown };
+      const tick = data["tick"] as { quote?: number; epoch?: number; pip_size?: unknown };
       if (typeof tick?.quote === "number") {
         updateFeedPipDecimals(tick.pip_size);
         const q = tick.quote;
-        const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+        const timeStr = tick.epoch
+          ? new Date(tick.epoch * 1000).toLocaleTimeString()
+          : new Date().toLocaleTimeString();
         const nextDigit = lastDigit(q, feedPipDecimals);
         const priorPrediction = predictionRef.current;
-        const predictionCorrect = priorPrediction
-          ? priorPrediction.digit === nextDigit
-          : undefined;
+        const predictionCorrect = priorPrediction ? priorPrediction.digit === nextDigit : undefined;
         lastTickAt.current = Date.now();
 
         setPrice(q);
 
         // Score the forecast made before this tick arrived, then show the actual result.
-        setRecentTicks((prev) => [{
-          time: timeStr,
-          price: q,
-          digit: nextDigit,
-          predictedDigit: priorPrediction?.digit,
-          predictionCorrect,
-        }, ...prev.slice(0, 14)]);
+        setRecentTicks((prev) => [
+          {
+            time: timeStr,
+            price: q,
+            digit: nextDigit,
+            predictedDigit: priorPrediction?.digit,
+            predictionCorrect,
+          },
+          ...prev.slice(0, 14),
+        ]);
         if (predictionCorrect !== undefined) {
           setPredictionStats((previous) => ({
             forecasts: previous.forecasts + 1,
             correct: previous.correct + (predictionCorrect ? 1 : 0),
             recentResults: [...previous.recentResults, predictionCorrect].slice(-100),
             currentStreak:
-              previous.lastResult === predictionCorrect
-                ? previous.currentStreak + 1
-                : 1,
+              previous.lastResult === predictionCorrect ? previous.currentStreak + 1 : 1,
             lastResult: predictionCorrect,
           }));
         }
@@ -816,7 +907,12 @@ function TradeTerminal() {
         setNextPrediction(predictionRef.current);
 
         // Process trade event immediately with guaranteed current digits
-        handleTickEventRef.current(updatedDigits, q, nextDigit);
+        handleTickEventRef.current(
+          updatedDigits,
+          q,
+          nextDigit,
+          lastTwoQuoteDigits(q, feedPipDecimals),
+        );
       }
     });
 
@@ -931,7 +1027,7 @@ function TradeTerminal() {
     pnl: number,
     resultDigit: number,
     updateLocalBalance: boolean,
-    balanceAfter?: number
+    balanceAfter?: number,
   ) {
     const s = stateRef.current;
 
@@ -964,7 +1060,11 @@ function TradeTerminal() {
     if (updateLocalBalance) {
       // Paper mode only — live balances come from Deriv buy/balance sockets
       setAccounts((prev) => {
-        const targetId = (s.activeId || activeId || (prev[0] ? prev[0].account_id : "")).toUpperCase();
+        const targetId = (
+          s.activeId ||
+          activeId ||
+          (prev[0] ? prev[0].account_id : "")
+        ).toUpperCase();
         const updated = prev.map((acc) => {
           if (acc.account_id.toUpperCase() === targetId || (!targetId && acc === prev[0])) {
             const currentBal = parseFloat(acc.balance) || 0;
@@ -999,15 +1099,11 @@ function TradeTerminal() {
 
     if (s.tp > 0 && totalPnl >= s.tp) {
       notifyTakeProfit(totalPnl);
-      return stopBot(
-        `Take Profit reached (+$${totalPnl.toFixed(2)}). Bot stopped.`,
-      );
+      return stopBot(`Take Profit reached (+$${totalPnl.toFixed(2)}). Bot stopped.`);
     }
     if (s.sl > 0 && totalPnl <= -s.sl) {
       notifyStopLoss(totalPnl);
-      return stopBot(
-        `Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)}). Bot stopped.`,
-      );
+      return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)}). Bot stopped.`);
     }
 
     if (won && s.stopOnWin) {
@@ -1018,14 +1114,14 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Trade #${p.runIndex} lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`
+        `Trade #${p.runIndex} lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`,
       );
       return;
     }
 
     setBotState("ANALYZING");
     setNote(
-      `Trade #${p.runIndex} ${won ? "won" : "lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing for trade #${nextRunCount + 1}...`
+      `Trade #${p.runIndex} ${won ? "won" : "lost"} (${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} USD). Analyzing for trade #${nextRunCount + 1}...`,
     );
   }
 
@@ -1053,14 +1149,7 @@ function TradeTerminal() {
         const pnl = Number(result.profit);
         const resultDigit =
           typeof result.exitDigit === "number" ? result.exitDigit : result.won ? p.target : -1;
-        settleTradeResult(
-          p,
-          result.won || pnl > 0,
-          pnl,
-          resultDigit,
-          false,
-          result.balanceAfter
-        );
+        settleTradeResult(p, result.won || pnl > 0, pnl, resultDigit, false, result.balanceAfter);
       })
       .catch((err: Error) => {
         pending.current = null;
@@ -1081,15 +1170,41 @@ function TradeTerminal() {
       });
   }
 
-  function handleTickEvent(tickList: number[], _currentPrice: number, currentD: number) {
+  function handleTickEvent(
+    tickList: number[],
+    _currentPrice: number,
+    currentD: number,
+    quoteLastTwoDigits: string,
+  ) {
     const s = stateRef.current;
+    let x2xEvent: X2XScannerEvent | null = null;
+
+    // Scan every incoming live tick in order, even while a contract settles.
+    // The OP window only consumes ticks when the engine can accept a new trade.
+    if (s.running && s.strategyMode === "x2x" && s.marketSymbol === "R_100") {
+      const tradeBusy = Boolean(pending.current?.live || tradingRef.current?.isBuyInFlight());
+      const opEligible =
+        !tradeBusy && lossCooldownTicks.current === 0 && Boolean(tradingRef.current?.isReady());
+      const step = advanceX2XScanner(
+        x2xScannerRef.current,
+        { digit: currentD, lastTwoQuoteDigits: quoteLastTwoDigits },
+        opEligible,
+      );
+      x2xScannerRef.current = step.state;
+      setX2xScannerState(step.state);
+      x2xEvent = step.event;
+    }
 
     // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
     if (pending.current?.live || tradingRef.current?.isBuyInFlight()) {
       // Safety net: if pending has been stuck for >60 seconds AND no buy is in flight
       const elapsed = Date.now() - pendingSetAt.current;
       if (elapsed > 60_000 && !tradingRef.current?.isBuyInFlight()) {
-        console.warn('[bot] Force-clearing stuck pending trade after', Math.round(elapsed / 1000), 'seconds');
+        console.warn(
+          "[bot] Force-clearing stuck pending trade after",
+          Math.round(elapsed / 1000),
+          "seconds",
+        );
         pending.current = null;
         pendingSetAt.current = 0;
         lossCooldownTicks.current = 5;
@@ -1107,6 +1222,89 @@ function TradeTerminal() {
 
     if (!s.running) return;
 
+    if (s.strategyMode === "x2x") {
+      if (lossCooldownTicks.current > 0) {
+        lossCooldownTicks.current -= 1;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(`X2X loss protection: ${lossCooldownTicks.current} eligible ticks remaining...`);
+        return;
+      }
+
+      if (x2xEvent?.type === "trigger") {
+        const session = tradingRef.current;
+        if (!session?.isReady()) {
+          setBotState("ANALYZING");
+          setNote(
+            "X2X OP matched, but the Deriv trading session is reconnecting. Waiting for the next signal...",
+          );
+          return;
+        }
+        if (session.isBuyInFlight()) {
+          setBotState("IN TRADE");
+          setNote("Waiting for the current Deriv contract to settle...");
+          return;
+        }
+
+        const targetRun = s.runCount + 1;
+        const nextStake = calculateMartingaleStake(
+          s.stake,
+          lossStreakRef.current,
+          s.martingaleEnabled,
+        );
+        const availableBalance = activeAccount
+          ? Number(activeAccount.balance)
+          : Number.POSITIVE_INFINITY;
+        if (nextStake > availableBalance) {
+          stopBot(
+            `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+          );
+          return;
+        }
+
+        pending.current = {
+          runIndex: targetRun,
+          entry: currentD,
+          target: x2xEvent.ldp,
+          stake: nextStake,
+          live: true,
+        };
+        pendingSetAt.current = Date.now();
+        setBotState("IN TRADE");
+        setNote(
+          `X2X OP ${x2xEvent.opTrigger} matched. Buying 1-tick DIGITMATCH on Volatility 100 with stored LDP ${x2xEvent.ldp}...`,
+        );
+        placeLiveMatch(pending.current);
+        return;
+      }
+
+      if (x2xEvent?.type === "pattern") {
+        setBotState("ANALYZING");
+        setNote(
+          `X2X ${x2xEvent.pattern} detected across consecutive ticks. Reference ${x2xEvent.referencePair} gives OP ${x2xEvent.opTrigger}; waiting for the next tick's LDP...`,
+        );
+      } else if (x2xEvent?.type === "ldp") {
+        setBotState("WAITING ENTRY");
+        setNote(
+          `X2X LDP ${x2xEvent.ldp} stored. Waiting for quote suffix ${x2xEvent.opTrigger} within the next 10 eligible ticks...`,
+        );
+      } else if (x2xEvent?.type === "expired") {
+        setBotState("ANALYZING");
+        setNote(
+          `X2X signal expired: OP ${x2xEvent.opTrigger} did not appear within 10 eligible ticks.`,
+        );
+      } else if (x2xEvent?.type === "invalid-reference") {
+        setBotState("ANALYZING");
+        setNote(
+          `X2X ${x2xEvent.pattern} skipped: reference ${x2xEvent.referencePair} is below 20 and cannot produce a two-digit OP trigger.`,
+        );
+      } else if (x2xScannerRef.current.signal?.phase === "awaiting-op") {
+        setBotState("WAITING ENTRY");
+      } else {
+        setBotState("ANALYZING");
+      }
+      return;
+    }
+
     if (lossCooldownTicks.current > 0) {
       lossCooldownTicks.current -= 1;
       setBotState("LOSS RE-ANALYSIS");
@@ -1117,7 +1315,7 @@ function TradeTerminal() {
     if (tickList.length < WINDOW) {
       setBotState("BUFFERING");
       setNote(
-        `Buffering market ticks (${tickList.length}/${WINDOW}). Analyzing last 1,000 ticks before evaluating entry...`
+        `Buffering market ticks (${tickList.length}/${WINDOW}). Analyzing last 1,000 ticks before evaluating entry...`,
       );
       return;
     }
@@ -1125,7 +1323,9 @@ function TradeTerminal() {
     if (s.botState === "LOSS RE-ANALYSIS") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
-        setNote(`Loss re-analysis: streaming fresh ticks (${lossCooldownTicks.current} remaining)...`);
+        setNote(
+          `Loss re-analysis: streaming fresh ticks (${lossCooldownTicks.current} remaining)...`,
+        );
         return;
       }
       setBotState("ANALYZING");
@@ -1139,9 +1339,7 @@ function TradeTerminal() {
       const useLive = Boolean(session?.isReady());
       if (!useLive) {
         setBotState("ANALYZING");
-        setNote(
-          "Waiting for Deriv trading connection before entering trade..."
-        );
+        setNote("Waiting for Deriv trading connection before entering trade...");
         return;
       }
       if (session?.isBuyInFlight()) {
@@ -1154,7 +1352,9 @@ function TradeTerminal() {
         lossStreakRef.current,
         s.martingaleEnabled,
       );
-      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      const availableBalance = activeAccount
+        ? Number(activeAccount.balance)
+        : Number.POSITIVE_INFINITY;
       if (nextStake > availableBalance) {
         stopBot(
           `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
@@ -1171,13 +1371,13 @@ function TradeTerminal() {
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
-        `Trade #${targetRun}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`
+        `Trade #${targetRun}: Buying DIGITMATCH on ${currentMarket.displayName} — entry ${currentD}, match ${a.second}...`,
       );
       placeLiveMatch(pending.current);
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`
+        `Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
       );
     } else {
       setBotState("ANALYZING");
@@ -1187,26 +1387,34 @@ function TradeTerminal() {
 
   function startBot() {
     initAudioContext();
+    if (strategyMode === "x2x" && marketSymbol !== "R_100") {
+      setNote("X2X Sniper only supports Volatility 100 Index. Select that market before starting.");
+      return;
+    }
     const currentSessionPnl = trades.reduce((total, trade) => total + trade.pnl, 0);
     if (tp > 0 && currentSessionPnl >= tp) {
-      setNote("Take Profit is already reached for this session. Save or reset the session before restarting.");
+      setNote(
+        "Take Profit is already reached for this session. Save or reset the session before restarting.",
+      );
       return;
     }
     if (sl > 0 && currentSessionPnl <= -sl) {
-      setNote("Stop Loss is already reached for this session. Save or reset the session before restarting.");
+      setNote(
+        "Stop Loss is already reached for this session. Save or reset the session before restarting.",
+      );
       return;
     }
-    if (digits.length < WINDOW) {
+    if (digits.length < startTickRequirement) {
       setNote(
-        `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`
+        strategyMode === "x2x"
+          ? `Cannot start X2X Sniper: waiting for at least ${startTickRequirement} live market ticks.`
+          : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
     }
     if (!isConnectedToDeriv || !tradingReady) {
       setShowConnectModal(true);
-      setNote(
-        "Connect Deriv Auth 2.0 so trades hit your account and the balance updates."
-      );
+      setNote("Connect Deriv Auth 2.0 so trades hit your account and the balance updates.");
       return;
     }
     if (!activeAccount) {
@@ -1215,6 +1423,8 @@ function TradeTerminal() {
       return;
     }
     pending.current = null;
+    x2xScannerRef.current = createX2XScannerState();
+    setX2xScannerState(x2xScannerRef.current);
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
     connectionLostAlertedRef.current = false;
@@ -1225,7 +1435,9 @@ function TradeTerminal() {
     stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
-      `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
+      strategyMode === "x2x"
+        ? `X2X Sniper active on ${activeAccount.account_id}. Scanning Volatility 100 tick digits for X2X signals...`
+        : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`,
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
@@ -1241,6 +1453,8 @@ function TradeTerminal() {
     setBotState("IDLE");
     setNote(message);
     pending.current = null;
+    x2xScannerRef.current = createX2XScannerState();
+    setX2xScannerState(x2xScannerRef.current);
     if (wasRunning) {
       notifyBotStopped(message);
     }
@@ -1267,6 +1481,7 @@ function TradeTerminal() {
       spreadThreshold: maxDiff,
       baseStake: stake,
       martingaleEnabled,
+      strategyMode,
     };
     const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
     if (!persistSavedSessions(nextHistory)) {
@@ -1360,21 +1575,45 @@ function TradeTerminal() {
 
   // Auto-resume running state from localStorage if restored
   useEffect(() => {
-    const wasRunning = typeof window !== "undefined" && localStorage.getItem("deriv_bot_is_running") === "true";
-    if (wasRunning && !running && digits.length >= WINDOW && tradingReady && isConnectedToDeriv) {
+    const wasRunning =
+      typeof window !== "undefined" && localStorage.getItem("deriv_bot_is_running") === "true";
+    if (
+      wasRunning &&
+      !running &&
+      digits.length >= startTickRequirement &&
+      tradingReady &&
+      isConnectedToDeriv
+    ) {
       console.log("[bot] Auto-resuming bot from persistent running state...");
       setRunning(true);
       stateRef.current.running = true;
       setBotState("ANALYZING");
       setNote(
-        `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`
+        strategyMode === "x2x"
+          ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning Volatility 100 tick digits...`
+          : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
       );
     }
-  }, [digits.length, tradingReady, isConnectedToDeriv, running, activeAccount?.account_id, currentMarket.displayName]);
+  }, [
+    digits.length,
+    tradingReady,
+    isConnectedToDeriv,
+    running,
+    activeAccount?.account_id,
+    currentMarket.displayName,
+    startTickRequirement,
+    strategyMode,
+  ]);
 
   function runBacktest1000Ticks() {
+    if (strategyMode === "x2x") {
+      setNote("TEST 1K evaluates the Matches strategy. Switch to Matches to run that backtest.");
+      return;
+    }
     if (digits.length < WINDOW) {
-      alert(`Buffering market ticks. Exactly 1,000 ticks are required to calculate the test (${digits.length}/${WINDOW} collected so far).`);
+      alert(
+        `Buffering market ticks. Exactly 1,000 ticks are required to calculate the test (${digits.length}/${WINDOW} collected so far).`,
+      );
       return;
     }
 
@@ -1426,7 +1665,7 @@ function TradeTerminal() {
       switchAccount(targetAcc.account_id);
     } else {
       setNote(
-        `No ${targetType} account on this Deriv login. Open Deriv and create one, then reconnect.`
+        `No ${targetType} account on this Deriv login. Open Deriv and create one, then reconnect.`,
       );
       setShowConnectModal(true);
     }
@@ -1434,6 +1673,12 @@ function TradeTerminal() {
 
   function triggerManualTestTrade() {
     initAudioContext();
+    if (strategyMode === "x2x") {
+      setNote(
+        "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal.",
+      );
+      return;
+    }
     if (digits.length < WINDOW) {
       alert(`Buffering market ticks (${digits.length}/${WINDOW}). Exactly 1,000 ticks required.`);
       return;
@@ -1445,12 +1690,10 @@ function TradeTerminal() {
     }
     const a = analyze(digits, maxDiff);
     const targetRun = runCount + 1;
-    const testStake = calculateMartingaleStake(
-      stake,
-      lossStreakRef.current,
-      martingaleEnabled,
-    );
-    const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+    const testStake = calculateMartingaleStake(stake, lossStreakRef.current, martingaleEnabled);
+    const availableBalance = activeAccount
+      ? Number(activeAccount.balance)
+      : Number.POSITIVE_INFINITY;
     if (testStake > availableBalance) {
       setNote(
         `Test trade not placed: the next stake ($${testStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}).`,
@@ -1467,9 +1710,7 @@ function TradeTerminal() {
     pending.current = p;
     pendingSetAt.current = Date.now();
     setBotState("IN TRADE");
-    setNote(
-      `Test trade #${targetRun}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`
-    );
+    setNote(`Test trade #${targetRun}: Buying DIGITMATCH — match digit ${a.second} on Deriv...`);
     placeLiveMatch(p);
   }
 
@@ -1490,23 +1731,29 @@ function TradeTerminal() {
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.filter((t) => t.pnl < 0).length;
   const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0;
-  const predictionAccuracy = predictionStats.forecasts > 0
-    ? Math.round((predictionStats.correct / predictionStats.forecasts) * 100)
-    : null;
-  const recentPredictionAccuracy = predictionStats.recentResults.length > 0
-    ? Math.round((predictionStats.recentResults.filter(Boolean).length / predictionStats.recentResults.length) * 100)
-    : null;
-  const scoredTicks = recentTicks
-    .filter((tick) => tick.predictedDigit !== undefined)
-    .slice(0, 10);
+  const predictionAccuracy =
+    predictionStats.forecasts > 0
+      ? Math.round((predictionStats.correct / predictionStats.forecasts) * 100)
+      : null;
+  const recentPredictionAccuracy =
+    predictionStats.recentResults.length > 0
+      ? Math.round(
+          (predictionStats.recentResults.filter(Boolean).length /
+            predictionStats.recentResults.length) *
+            100,
+        )
+      : null;
+  const scoredTicks = recentTicks.filter((tick) => tick.predictedDigit !== undefined).slice(0, 10);
 
   // Strictly chronological sequence of the latest 33 digits (incoming order from left to right)
   const recentDigits33 = digits.slice(-33);
 
   return (
-    <div className={`min-h-screen font-sans antialiased transition-colors overflow-x-hidden ${
-      isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
-    }`}>
+    <div
+      className={`min-h-screen font-sans antialiased transition-colors overflow-x-hidden ${
+        isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
+      }`}
+    >
       {/* Floating In-App Alert Toast (Docked above mobile bottom bar, bottom-right on desktop) */}
       {inAppAlert && (
         <aside
@@ -1515,21 +1762,37 @@ function TradeTerminal() {
           style={{ bottom: "calc(max(env(safe-area-inset-bottom, 0px), 0.75rem) + 4.75rem)" }}
           className="fixed left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-md animate-in fade-in slide-in-from-bottom-3 duration-200 lg:top-auto lg:bottom-6 lg:left-auto lg:right-6 lg:translate-x-0 lg:w-80 lg:slide-in-from-right-4"
         >
-          <div className={`rounded-xl border px-4 py-3 shadow-2xl flex items-center justify-between gap-3 backdrop-blur-md ${
-            inAppAlert.type === "win"
-              ? isDark ? "border-emerald-500/60 bg-zinc-950/95 text-emerald-400" : "border-emerald-500 bg-emerald-50/95 text-emerald-800 shadow-emerald-950/10"
-              : inAppAlert.type === "loss"
-              ? isDark ? "border-red-500/60 bg-zinc-950/95 text-red-400" : "border-red-500 bg-red-50/95 text-red-800 shadow-red-950/10"
-              : isDark ? "border-zinc-800 bg-zinc-950/95 text-white" : "border-slate-300 bg-white/95 text-slate-900 shadow-slate-950/10"
-          }`}>
+          <div
+            className={`rounded-xl border px-4 py-3 shadow-2xl flex items-center justify-between gap-3 backdrop-blur-md ${
+              inAppAlert.type === "win"
+                ? isDark
+                  ? "border-emerald-500/60 bg-zinc-950/95 text-emerald-400"
+                  : "border-emerald-500 bg-emerald-50/95 text-emerald-800 shadow-emerald-950/10"
+                : inAppAlert.type === "loss"
+                  ? isDark
+                    ? "border-red-500/60 bg-zinc-950/95 text-red-400"
+                    : "border-red-500 bg-red-50/95 text-red-800 shadow-red-950/10"
+                  : isDark
+                    ? "border-zinc-800 bg-zinc-950/95 text-white"
+                    : "border-slate-300 bg-white/95 text-slate-900 shadow-slate-950/10"
+            }`}
+          >
             <div className="space-y-0.5 min-w-0 flex-1">
               <div className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
-                <span className={`h-2 w-2 rounded-full ${
-                  inAppAlert.type === "win" ? "bg-emerald-400" : inAppAlert.type === "loss" ? "bg-rose-500" : "bg-sky-400"
-                }`} />
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    inAppAlert.type === "win"
+                      ? "bg-emerald-400"
+                      : inAppAlert.type === "loss"
+                        ? "bg-rose-500"
+                        : "bg-sky-400"
+                  }`}
+                />
                 <span className="truncate">{inAppAlert.title}</span>
               </div>
-              <div className="text-[11px] opacity-90 leading-snug break-words">{inAppAlert.body}</div>
+              <div className="text-[11px] opacity-90 leading-snug break-words">
+                {inAppAlert.body}
+              </div>
             </div>
             <button
               onClick={() => setInAppAlert(null)}
@@ -1546,51 +1809,90 @@ function TradeTerminal() {
       <header
         style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 0.625rem)" }}
         className={`border-b px-3 sm:px-6 pb-2.5 sm:pb-3 transition-colors sticky top-0 z-30 ${
-          isDark ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md" : "border-slate-200 bg-white/95 backdrop-blur-md"
+          isDark
+            ? "border-zinc-900 bg-zinc-950/95 backdrop-blur-md"
+            : "border-slate-200 bg-white/95 backdrop-blur-md"
         }`}
       >
         <div className="mx-auto flex max-w-[1560px] flex-wrap items-center justify-between gap-2 sm:gap-4">
           {/* Logo & Market Badge */}
           <div className="flex items-center gap-2 shrink-0">
-            <img src="/app-icon.png" alt="ThDpst Matches" className="h-5 w-5 rounded object-cover" />
-            <span className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}>
+            <img
+              src="/app-icon.png"
+              alt="ThDpst Matches"
+              className="h-5 w-5 rounded object-cover"
+            />
+            <span
+              className={`text-xs sm:text-sm font-bold tracking-wider uppercase ${isDark ? "text-white" : "text-slate-900"}`}
+            >
               ThDpst Matches
             </span>
-            <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded border transition-colors ${
-              isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-slate-100 text-slate-700"
-            }`}>
+            <span
+              className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded border transition-colors ${
+                isDark
+                  ? "border-zinc-700 bg-zinc-900 text-zinc-300"
+                  : "border-slate-300 bg-slate-100 text-slate-700"
+              }`}
+            >
               {currentMarket.id}
             </span>
-            <span className="hidden md:inline font-normal text-zinc-500 text-xs">// {currentMarket.displayName}</span>
+            <span className="hidden md:inline font-normal text-zinc-500 text-xs">
+              // {currentMarket.displayName}
+            </span>
           </div>
 
           {/* Desktop Bot Telemetry Pill (lg screens only) */}
-          <div className={`hidden xl:flex min-w-0 items-center gap-2 border-l pl-3 text-xs ${
-            isDark ? "border-zinc-800" : "border-slate-200"
-          }`}>
+          <div
+            className={`hidden xl:flex min-w-0 items-center gap-2 border-l pl-3 text-xs ${
+              isDark ? "border-zinc-800" : "border-slate-200"
+            }`}
+          >
             <div className="flex items-center gap-1.5">
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                running ? (isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse") : (isDark ? "bg-zinc-600" : "bg-slate-400")
-              }`} />
-              <span className={`font-semibold uppercase text-[11px] ${isDark ? "text-zinc-300" : "text-slate-800"}`}>{botState}</span>
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  running
+                    ? isDark
+                      ? "bg-emerald-400 animate-pulse"
+                      : "bg-emerald-600 animate-pulse"
+                    : isDark
+                      ? "bg-zinc-600"
+                      : "bg-slate-400"
+                }`}
+              />
+              <span
+                className={`font-semibold uppercase text-[11px] ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+              >
+                {botState}
+              </span>
             </div>
             <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
             <div className="flex items-center gap-1">
               <span className="text-zinc-500 text-[11px]">P/L</span>
-              <span className={`font-semibold num ${
-                totalPnl > 0
-                  ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
-                  : totalPnl < 0
-                  ? isDark ? "text-rose-400 font-bold" : "text-rose-600 font-bold"
-                  : isDark ? "text-white" : "text-slate-800"
-              }`}>
-                {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)}
+              <span
+                className={`font-semibold num ${
+                  totalPnl > 0
+                    ? isDark
+                      ? "text-emerald-400 font-bold"
+                      : "text-emerald-600 font-bold"
+                    : totalPnl < 0
+                      ? isDark
+                        ? "text-rose-400 font-bold"
+                        : "text-rose-600 font-bold"
+                      : isDark
+                        ? "text-white"
+                        : "text-slate-800"
+                }`}
+              >
+                {totalPnl >= 0 ? "+" : ""}
+                {totalPnl.toFixed(2)}
               </span>
             </div>
             <span className={isDark ? "text-zinc-800" : "text-slate-300"}>|</span>
             <div className="flex items-center gap-1">
               <span className="text-zinc-500 text-[11px]">TRADES</span>
-              <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-800"}`}>{trades.length}</span>
+              <span className={`font-semibold num ${isDark ? "text-zinc-200" : "text-slate-800"}`}>
+                {trades.length}
+              </span>
             </div>
           </div>
 
@@ -1598,12 +1900,22 @@ function TradeTerminal() {
           <div className="hidden lg:flex min-w-0 flex-wrap items-center justify-end gap-2.5">
             {/* Live Balance */}
             <div className="flex items-center gap-1.5 text-xs font-medium">
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                isConnectedToDeriv ? (isDark ? "bg-emerald-400" : "bg-emerald-600") : "bg-amber-400"
-              }`} />
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  isConnectedToDeriv
+                    ? isDark
+                      ? "bg-emerald-400"
+                      : "bg-emerald-600"
+                    : "bg-amber-400"
+                }`}
+              />
               <span className="text-zinc-500">{activeAccount?.currency || "USD"}</span>
               <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                {activeAccount?.balance ? Number(activeAccount.balance).toLocaleString("en-US", { minimumFractionDigits: 2 }) : "0.00"}
+                {activeAccount?.balance
+                  ? Number(activeAccount.balance).toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                    })
+                  : "0.00"}
               </span>
             </div>
 
@@ -1618,8 +1930,13 @@ function TradeTerminal() {
               }`}
             >
               {accounts.map((acc) => (
-                <option key={acc.account_id} value={acc.account_id} className={isDark ? "bg-zinc-900 text-white" : "bg-white text-slate-900"}>
-                  {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — ${Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                <option
+                  key={acc.account_id}
+                  value={acc.account_id}
+                  className={isDark ? "bg-zinc-900 text-white" : "bg-white text-slate-900"}
+                >
+                  {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — $
+                  {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
                 </option>
               ))}
             </select>
@@ -1628,18 +1945,32 @@ function TradeTerminal() {
             <button
               type="button"
               onClick={toggleNotifications}
-              title={notifsEnabled ? "Alerts on — synced across your devices" : "Enable alerts on this device (syncs across devices)"}
+              title={
+                notifsEnabled
+                  ? "Alerts on — synced across your devices"
+                  : "Enable alerts on this device (syncs across devices)"
+              }
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors flex items-center gap-1.5 ${
                 notifsEnabled
-                  ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300 font-bold" : "border-zinc-500 bg-zinc-100 text-zinc-800 font-bold"
-                  : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
+                  ? isDark
+                    ? "border-zinc-600 bg-zinc-900 text-zinc-300 font-bold"
+                    : "border-zinc-500 bg-zinc-100 text-zinc-800 font-bold"
+                  : isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700 hover:text-white"
+                    : "border-slate-300 bg-white text-slate-600 hover:border-slate-400"
               }`}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                notifsEnabled
-                  ? isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse"
-                  : isDark ? "bg-zinc-600" : "bg-slate-400"
-              }`} />
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  notifsEnabled
+                    ? isDark
+                      ? "bg-emerald-400 animate-pulse"
+                      : "bg-emerald-600 animate-pulse"
+                    : isDark
+                      ? "bg-zinc-600"
+                      : "bg-slate-400"
+                }`}
+              />
               <span>NOTIF: {notifsEnabled ? "ON" : "OFF"}</span>
             </button>
 
@@ -1649,8 +1980,12 @@ function TradeTerminal() {
               onClick={toggleSound}
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
                 soundEnabled
-                  ? isDark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
-                  : isDark ? "border-zinc-800 text-zinc-500" : "border-slate-200 text-slate-400"
+                  ? isDark
+                    ? "border-zinc-700 bg-zinc-900 text-zinc-200"
+                    : "border-slate-300 bg-slate-100 text-slate-800"
+                  : isDark
+                    ? "border-zinc-800 text-zinc-500"
+                    : "border-slate-200 text-slate-400"
               }`}
             >
               SOUND: {soundEnabled ? "ON" : "OFF"}
@@ -1671,7 +2006,9 @@ function TradeTerminal() {
             <button
               onClick={toggleTheme}
               className={`rounded border px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700 hover:text-slate-900"
+                isDark
+                  ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                  : "border-slate-300 bg-white text-slate-700 hover:text-slate-900"
               }`}
             >
               {isDark ? "LIGHT" : "DARK"}
@@ -1685,14 +2022,18 @@ function TradeTerminal() {
                 navigate({ to: "/" });
               }}
               className={`rounded border px-2 py-1.5 text-xs uppercase tracking-wider transition-colors ${
-                isDark ? "border-zinc-800 text-zinc-400 hover:text-white" : "border-slate-300 text-slate-600 hover:text-slate-900"
+                isDark
+                  ? "border-zinc-800 text-zinc-400 hover:text-white"
+                  : "border-slate-300 text-slate-600 hover:text-slate-900"
               }`}
             >
               EXIT
             </button>
 
             {/* Desktop Action Buttons */}
-            <div className={`flex items-center gap-1.5 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+            <div
+              className={`flex items-center gap-1.5 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}
+            >
               {running ? (
                 <button
                   onClick={() => stopBot("User stopped bot.")}
@@ -1703,17 +2044,21 @@ function TradeTerminal() {
               ) : (
                 <button
                   onClick={startBot}
-                  disabled={digits.length < WINDOW}
+                  disabled={digits.length < startTickRequirement}
                   className="rounded bg-white px-4 py-2 text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200 transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
+                  {digits.length < startTickRequirement
+                    ? `BUFFERING (${digits.length}/${startTickRequirement})`
+                    : "START BOT"}
                 </button>
               )}
 
               <button
                 onClick={resetSession}
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700"
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                    : "border-slate-300 bg-white text-slate-700"
                 }`}
               >
                 RESET
@@ -1721,9 +2066,13 @@ function TradeTerminal() {
 
               <button
                 onClick={triggerManualTestTrade}
-                disabled={digits.length < WINDOW || pending.current !== null}
+                disabled={
+                  strategyMode === "x2x" || digits.length < WINDOW || pending.current !== null
+                }
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
-                  isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600" : "border-zinc-300 bg-zinc-100 text-zinc-800"
+                  isDark
+                    ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-600"
+                    : "border-zinc-300 bg-zinc-100 text-zinc-800"
                 }`}
               >
                 TEST 1
@@ -1731,8 +2080,11 @@ function TradeTerminal() {
 
               <button
                 onClick={runBacktest1000Ticks}
+                disabled={strategyMode === "x2x"}
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-white text-slate-700"
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                    : "border-slate-300 bg-white text-slate-700"
                 }`}
               >
                 TEST 1K
@@ -1748,12 +2100,20 @@ function TradeTerminal() {
                 if (!isConnectedToDeriv || !activeAccount) setShowConnectModal(true);
               }}
               className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold ${
-                isDark ? "border-zinc-800 bg-zinc-900/90 text-white" : "border-slate-200 bg-slate-100 text-slate-900"
+                isDark
+                  ? "border-zinc-800 bg-zinc-900/90 text-white"
+                  : "border-slate-200 bg-slate-100 text-slate-900"
               }`}
             >
-              <span className={`text-[9px] font-bold uppercase ${
-                !activeAccount ? "text-zinc-500" : activeAccount.account_type === "real" ? "text-zinc-400" : "text-zinc-500"
-              }`}>
+              <span
+                className={`text-[9px] font-bold uppercase ${
+                  !activeAccount
+                    ? "text-zinc-500"
+                    : activeAccount.account_type === "real"
+                      ? "text-zinc-400"
+                      : "text-zinc-500"
+                }`}
+              >
                 {!activeAccount ? "Off" : activeAccount.account_type === "real" ? "Real" : "Demo"}
               </span>
               <span className="num">
@@ -1767,7 +2127,9 @@ function TradeTerminal() {
               type="button"
               onClick={() => setShowMobileMenu(true)}
               className={`rounded border px-2.5 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
-                isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-white text-slate-800 shadow-sm"
+                isDark
+                  ? "border-zinc-800 bg-zinc-900 text-zinc-200"
+                  : "border-slate-300 bg-white text-slate-800 shadow-sm"
               }`}
             >
               MENU
@@ -1776,38 +2138,76 @@ function TradeTerminal() {
         </div>
 
         {/* Mobile Telemetry Sub-bar (< lg screens, Dedicated Strip, Guaranteed Zero Overlap) */}
-        <div className={`lg:hidden border-t mt-2 pt-1.5 flex items-center justify-between text-[11px] ${
-          isDark ? "border-zinc-900 text-zinc-400" : "border-slate-200 text-slate-700"
-        }`}>
+        <div
+          className={`lg:hidden border-t mt-2 pt-1.5 flex items-center justify-between text-[11px] ${
+            isDark ? "border-zinc-900 text-zinc-400" : "border-slate-200 text-slate-700"
+          }`}
+        >
           <div className="flex items-center gap-1.5">
-            <span className={`h-1.5 w-1.5 rounded-full ${
-              running ? (isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse") : (isDark ? "bg-zinc-600" : "bg-slate-400")
-            }`} />
-            <span className={`font-semibold uppercase text-[10px] ${isDark ? "text-zinc-300" : "text-slate-900"}`}>{botState}</span>
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                running
+                  ? isDark
+                    ? "bg-emerald-400 animate-pulse"
+                    : "bg-emerald-600 animate-pulse"
+                  : isDark
+                    ? "bg-zinc-600"
+                    : "bg-slate-400"
+              }`}
+            />
+            <span
+              className={`font-semibold uppercase text-[10px] ${isDark ? "text-zinc-300" : "text-slate-900"}`}
+            >
+              {botState}
+            </span>
             <span className="text-[10px] opacity-75">({runCount} trades)</span>
           </div>
 
           <div className="flex items-center gap-1">
             <span className="text-[10px] uppercase opacity-75">P/L:</span>
-            <span className={`font-bold num ${
-              totalPnl > 0
-                ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
-                : totalPnl < 0
-                ? isDark ? "text-rose-400 font-bold" : "text-rose-600 font-bold"
-                : isDark ? "text-white" : "text-slate-900"
-            }`}>
+            <span
+              className={`font-bold num ${
+                totalPnl > 0
+                  ? isDark
+                    ? "text-emerald-400 font-bold"
+                    : "text-emerald-600 font-bold"
+                  : totalPnl < 0
+                    ? isDark
+                      ? "text-rose-400 font-bold"
+                      : "text-rose-600 font-bold"
+                    : isDark
+                      ? "text-white"
+                      : "text-slate-900"
+              }`}
+            >
               {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
             </span>
           </div>
 
           <div className="flex items-center gap-1 text-[10px]">
-            <span className="opacity-75">SPREAD:</span>
-            <span className={`font-semibold num ${
-              analysis.diff <= maxDiff
-                ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
-                : isDark ? "text-zinc-400" : "text-slate-600"
-            }`}>
-              {analysis.diff.toFixed(2)}%
+            <span className="opacity-75">{strategyMode === "x2x" ? "OP:" : "SPREAD:"}</span>
+            <span
+              className={`font-semibold num ${
+                strategyMode === "x2x"
+                  ? x2xScannerState.signal
+                    ? isDark
+                      ? "text-emerald-400 font-bold"
+                      : "text-emerald-600 font-bold"
+                    : isDark
+                      ? "text-zinc-400"
+                      : "text-slate-600"
+                  : analysis.diff <= maxDiff
+                    ? isDark
+                      ? "text-emerald-400 font-bold"
+                      : "text-emerald-600 font-bold"
+                    : isDark
+                      ? "text-zinc-400"
+                      : "text-slate-600"
+              }`}
+            >
+              {strategyMode === "x2x"
+                ? (x2xScannerState.signal?.opTrigger ?? "--")
+                : `${analysis.diff.toFixed(2)}%`}
             </span>
           </div>
         </div>
@@ -1816,9 +2216,11 @@ function TradeTerminal() {
       {/* 2. Main Content Container (Padded bottom on mobile for sticky bottom bar) */}
       <main className="mx-auto max-w-[1560px] p-3 sm:p-4 lg:p-6 pb-36 lg:pb-6">
         {/* Mobile Segmented Control Tab Switcher (< lg screens) */}
-        <div className={`lg:hidden mb-4 grid grid-cols-4 gap-1 p-1 rounded-xl border text-[11px] font-bold uppercase tracking-wider ${
-          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
-        }`}>
+        <div
+          className={`lg:hidden mb-4 grid grid-cols-4 gap-1 p-1 rounded-xl border text-[11px] font-bold uppercase tracking-wider ${
+            isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white shadow-sm"
+          }`}
+        >
           {(["market", "controls", "session", "all"] as const).map((tab) => (
             <button
               key={tab}
@@ -1829,22 +2231,33 @@ function TradeTerminal() {
                   ? isDark
                     ? "bg-zinc-800 text-zinc-300 font-bold shadow-sm"
                     : "bg-slate-900 text-white font-bold shadow-sm"
-                  : isDark ? "text-zinc-500 hover:text-zinc-300" : "text-slate-500 hover:text-slate-800"
+                  : isDark
+                    ? "text-zinc-500 hover:text-zinc-300"
+                    : "text-slate-500 hover:text-slate-800"
               }`}
             >
-              {tab === "market" ? "Market" : tab === "controls" ? "Controls" : tab === "session" ? "Session" : "All"}
+              {tab === "market"
+                ? "Market"
+                : tab === "controls"
+                  ? "Controls"
+                  : tab === "session"
+                    ? "Session"
+                    : "All"}
             </button>
           ))}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[290px_1fr_290px] gap-5 lg:gap-6 items-start">
-
           {/* LEFT COLUMN: Controls & Settings */}
-          <aside className={`space-y-5 lg:space-y-6 ${mobileTab === "controls" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <aside
+            className={`space-y-5 lg:space-y-6 ${mobileTab === "controls" || mobileTab === "all" ? "block" : "hidden lg:block"}`}
+          >
             {/* CONNECTION */}
-            <section className={`rounded-xl border p-4 space-y-3 shadow-sm ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
+            <section
+              className={`rounded-xl border p-4 space-y-3 shadow-sm ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                   CONNECTION
@@ -1877,7 +2290,10 @@ function TradeTerminal() {
                       {activeAccount ? `(${activeType === "real" ? "Real" : "Demo"})` : ""}
                     </span>
                     <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                      ${Number(activeAccount?.balance || 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                      $
+                      {Number(activeAccount?.balance || 0).toLocaleString("en-US", {
+                        minimumFractionDigits: 2,
+                      })}
                     </span>
                   </div>
                   <p className="mt-1 text-[11px] text-zinc-500 leading-tight">
@@ -1888,7 +2304,9 @@ function TradeTerminal() {
                         : "Connect Deriv so each trade moves your real balance."}
                   </p>
                   {tradingStatusNote && (
-                    <p className="mt-1 text-[10px] text-zinc-600 leading-tight">{tradingStatusNote}</p>
+                    <p className="mt-1 text-[10px] text-zinc-600 leading-tight">
+                      {tradingStatusNote}
+                    </p>
                   )}
                 </div>
               </div>
@@ -1914,7 +2332,9 @@ function TradeTerminal() {
                       onClick={refreshDerivBalances}
                       title="Sync latest balances from Deriv"
                       className={`rounded border px-3 py-2 text-xs uppercase tracking-wider transition-colors ${
-                        isDark ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white" : "border-slate-300 text-slate-600 hover:border-slate-400"
+                        isDark
+                          ? "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-white"
+                          : "border-slate-300 text-slate-600 hover:border-slate-400"
                       }`}
                     >
                       SYNC
@@ -1938,28 +2358,64 @@ function TradeTerminal() {
             </section>
 
             {/* STRATEGY (Strict Matches Strategy) */}
-            <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
+            <section
+              className={`rounded-xl border p-4 space-y-4 shadow-sm ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                 STRATEGY
               </span>
 
               <div className="space-y-1.5">
+                <label className="text-xs text-zinc-500">Trading Strategy</label>
+                <div
+                  className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                    isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                  }`}
+                >
+                  {(["matches", "x2x"] as const).map((mode) => {
+                    const selected = strategyMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={running}
+                        onClick={() => handleSelectStrategy(mode)}
+                        className={`rounded py-1.5 px-2 text-xs font-semibold transition-colors disabled:opacity-40 ${
+                          selected
+                            ? isDark
+                              ? "bg-zinc-800 text-white shadow-sm"
+                              : "bg-white text-slate-900 shadow-sm"
+                            : "text-zinc-500 hover:text-zinc-900"
+                        }`}
+                      >
+                        {mode === "matches" ? "Matches" : "X2X Sniper"}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-xs text-zinc-500">Contract & Market</label>
-                  <span className="text-[10px] text-zinc-500">Matches (DIGITMATCH)</span>
+                  <span className="text-[10px] text-zinc-500">
+                    {strategyMode === "x2x" ? "X2X · DIGITMATCH · 1 TICK" : "Matches · DIGITMATCH"}
+                  </span>
                 </div>
-                <div className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
-                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
-                }`}>
+                <div
+                  className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                    isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                  }`}
+                >
                   {MARKET_LIST.map((m) => {
                     const isSelected = marketSymbol === m.id;
                     return (
                       <button
                         key={m.id}
                         type="button"
-                        disabled={running}
+                        disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
                         onClick={() => handleSelectMarket(m.id)}
                         className={`rounded py-1.5 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
                           isSelected
@@ -1980,85 +2436,128 @@ function TradeTerminal() {
                   })}
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
-                  Enter on most appearing digit, match second most digit when spread ≤ {maxDiff}% on {currentMarket.displayName} ({marketPipDecimals} decimals).
+                  {strategyMode === "x2x"
+                    ? "Volatility 100 only: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's two-decimal value minus 20."
+                    : `Enter on most appearing digit, match second most digit when spread ≤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
-              {/* Spread Threshold Δ Selector */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-zinc-500">Max Spread Δ Threshold</span>
-                  <div className="flex items-center gap-1">
-                    <span className="text-zinc-500 text-[10px]">Δ ≤</span>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={maxDiffInput}
-                      onChange={(e) => {
-                        const val = normalizeDecimalInput(e.target.value);
-                        if (isDecimalInput(val)) {
-                          setMaxDiffInput(val);
-                          const num = parseDecimalInput(val);
-                          if (!isNaN(num) && num >= 0) {
-                            setMaxDiff(num);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        const num = parseDecimalInput(maxDiffInput);
-                        if (isNaN(num) || num < 0.1) {
-                          updateMaxDiff(0.3);
-                        } else {
-                          updateMaxDiff(num);
-                        }
-                      }}
-                      className={`w-14 rounded border px-1.5 py-0.5 text-right text-xs font-bold num outline-none ${
-                        isDark
-                          ? "border-zinc-800 bg-black text-zinc-300 focus:border-zinc-600"
-                          : "border-slate-300 bg-white text-zinc-700 focus:border-slate-500"
-                      }`}
-                    />
-                    <span className="text-zinc-500 text-[10px]">%</span>
+              {strategyMode === "x2x" && (
+                <div
+                  className={`rounded-lg border p-3 space-y-1.5 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    X2X LIVE SCAN
+                  </div>
+                  <div
+                    className={`font-mono text-xs ${isDark ? "text-zinc-200" : "text-zinc-800"}`}
+                  >
+                    {x2xScannerState.recentDigits.length > 0
+                      ? x2xScannerState.recentDigits.join(" → ")
+                      : "Waiting for live ticks"}
+                  </div>
+                  <div className="text-[10px] leading-relaxed text-zinc-500">
+                    {x2xScannerState.signal?.phase === "awaiting-ldp"
+                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
+                      : x2xScannerState.signal?.phase === "awaiting-op"
+                        ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
+                        : "Scanning consecutive live tick digits for X2X."}
+                  </div>
+                  <div className="text-[10px] leading-relaxed text-zinc-600">
+                    One signal is tracked at a time. OP ticks pause while a contract is open, during
+                    loss cooldown, or while trading reconnects. References below 20 are skipped
+                    because they cannot produce a non-negative two-digit OP value.
                   </div>
                 </div>
-                <div className="grid grid-cols-4 gap-1">
-                  {[0.3, 0.5, 1.0, 1.5].map((val) => (
-                    <button
-                      key={val}
-                      type="button"
-                      onClick={() => updateMaxDiff(val)}
-                      className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
-                        maxDiff === val
-                          ? isDark
-                            ? "border-zinc-500 bg-zinc-1000/20 text-zinc-300 font-bold"
-                            : "border-zinc-600 bg-zinc-100 text-zinc-800 font-bold"
-                          : isDark
-                            ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
-                            : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
-                      }`}
-                    >
-                      {val === 0.3 ? "0.3% (SPEC)" : `${val}%`}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[10px] text-zinc-500 leading-tight">
-                  {maxDiff === 0.3
-                    ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
-                    : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
-                </p>
-              </div>
+              )}
+
+              {strategyMode === "matches" && (
+                <>
+                  {/* Spread Threshold Δ Selector */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-500">Max Spread Δ Threshold</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-zinc-500 text-[10px]">Δ ≤</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={maxDiffInput}
+                          onChange={(e) => {
+                            const val = normalizeDecimalInput(e.target.value);
+                            if (isDecimalInput(val)) {
+                              setMaxDiffInput(val);
+                              const num = parseDecimalInput(val);
+                              if (!isNaN(num) && num >= 0) {
+                                setMaxDiff(num);
+                              }
+                            }
+                          }}
+                          onBlur={() => {
+                            const num = parseDecimalInput(maxDiffInput);
+                            if (isNaN(num) || num < 0.1) {
+                              updateMaxDiff(0.3);
+                            } else {
+                              updateMaxDiff(num);
+                            }
+                          }}
+                          className={`w-14 rounded border px-1.5 py-0.5 text-right text-xs font-bold num outline-none ${
+                            isDark
+                              ? "border-zinc-800 bg-black text-zinc-300 focus:border-zinc-600"
+                              : "border-slate-300 bg-white text-zinc-700 focus:border-slate-500"
+                          }`}
+                        />
+                        <span className="text-zinc-500 text-[10px]">%</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1">
+                      {[0.3, 0.5, 1.0, 1.5].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => updateMaxDiff(val)}
+                          className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
+                            maxDiff === val
+                              ? isDark
+                                ? "border-zinc-500 bg-zinc-1000/20 text-zinc-300 font-bold"
+                                : "border-zinc-600 bg-zinc-100 text-zinc-800 font-bold"
+                              : isDark
+                                ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
+                                : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
+                          }`}
+                        >
+                          {val === 0.3 ? "0.3% (SPEC)" : `${val}%`}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-zinc-500 leading-tight">
+                      {maxDiff === 0.3
+                        ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
+                        : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
+                    </p>
+                  </div>
+                </>
+              )}
 
               {/* Loss Protection Toggle */}
-              <div className={`rounded-lg border p-3 space-y-2 ${
-                isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-              }`}>
+              <div
+                className={`rounded-lg border p-3 space-y-2 ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                  <span
+                    className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                  >
                     Loss Protection
                   </span>
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                    isDark ? "bg-zinc-800 text-zinc-400" : "bg-slate-200 text-slate-600"
-                  }`}>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      isDark ? "bg-zinc-800 text-zinc-400" : "bg-slate-200 text-slate-600"
+                    }`}
+                  >
                     ACTIVE
                   </span>
                 </div>
@@ -2069,7 +2568,9 @@ function TradeTerminal() {
                     onChange={(e) => setReAnalyzeOnLoss(e.target.checked)}
                     className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
                   />
-                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                  <span
+                    className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                  >
                     Re-analyze after loss
                   </span>
                 </label>
@@ -2080,7 +2581,9 @@ function TradeTerminal() {
                     onChange={(e) => setStopOnWin(e.target.checked)}
                     className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
                   />
-                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                  <span
+                    className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                  >
                     Stop after first win
                   </span>
                 </label>
@@ -2095,7 +2598,9 @@ function TradeTerminal() {
                     }}
                     className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
                   />
-                  <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                  <span
+                    className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                  >
                     1.5× martingale after losses
                   </span>
                 </label>
@@ -2152,7 +2657,7 @@ function TradeTerminal() {
                         setNote("Balance is 0. Top up demo funds in Deriv, then sync.");
                         return;
                       }
-                      const calculated = Math.max(0.35, Math.round((bal * (pct / 100)) * 100) / 100);
+                      const calculated = Math.max(0.35, Math.round(bal * (pct / 100) * 100) / 100);
                       updateStake(calculated);
                     }}
                     className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
@@ -2165,95 +2670,99 @@ function TradeTerminal() {
                   </button>
                 ))}
               </div>
-
             </section>
 
             {/* RISK */}
-            <section className={`rounded-xl border p-4 space-y-3 shadow-sm ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
+            <section
+              className={`rounded-xl border p-4 space-y-3 shadow-sm ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                 RISK
               </span>
 
               <div className="grid grid-cols-2 gap-3 pt-1">
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-zinc-500">Take Profit ($)</label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      disabled={running}
-                      value={tpInput}
-                      onChange={(e) => {
-                        const val = normalizeDecimalInput(e.target.value);
-                        if (isDecimalInput(val)) {
-                          setTpInput(val);
-                          const num = parseDecimalInput(val);
-                          if (!isNaN(num) && num > 0) {
-                            setTp(num);
-                          }
+                <div className="space-y-1">
+                  <label className="text-[11px] text-zinc-500">Take Profit ($)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    disabled={running}
+                    value={tpInput}
+                    onChange={(e) => {
+                      const val = normalizeDecimalInput(e.target.value);
+                      if (isDecimalInput(val)) {
+                        setTpInput(val);
+                        const num = parseDecimalInput(val);
+                        if (!isNaN(num) && num > 0) {
+                          setTp(num);
                         }
-                      }}
-                      onBlur={() => {
-                        const num = parseDecimalInput(tpInput);
-                        if (isNaN(num) || num < 1) {
-                          updateTp(1);
-                        } else {
-                          updateTp(num);
+                      }
+                    }}
+                    onBlur={() => {
+                      const num = parseDecimalInput(tpInput);
+                      if (isNaN(num) || num < 1) {
+                        updateTp(1);
+                      } else {
+                        updateTp(num);
+                      }
+                    }}
+                    className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
+                      isDark
+                        ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
+                        : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
+                    }`}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] text-zinc-500">Stop Loss ($)</label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    disabled={running}
+                    value={slInput}
+                    onChange={(e) => {
+                      const val = normalizeDecimalInput(e.target.value);
+                      if (isDecimalInput(val)) {
+                        setSlInput(val);
+                        const num = parseDecimalInput(val);
+                        if (!isNaN(num) && num > 0) {
+                          setSl(num);
                         }
-                      }}
-                      className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
-                        isDark
-                          ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
-                          : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
-                      }`}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[11px] text-zinc-500">Stop Loss ($)</label>
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      disabled={running}
-                      value={slInput}
-                      onChange={(e) => {
-                        const val = normalizeDecimalInput(e.target.value);
-                        if (isDecimalInput(val)) {
-                          setSlInput(val);
-                          const num = parseDecimalInput(val);
-                          if (!isNaN(num) && num > 0) {
-                            setSl(num);
-                          }
-                        }
-                      }}
-                      onBlur={() => {
-                        const num = parseDecimalInput(slInput);
-                        if (isNaN(num) || num < 1) {
-                          updateSl(1);
-                        } else {
-                          updateSl(num);
-                        }
-                      }}
-                      className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
-                        isDark
-                          ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
-                          : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
-                      }`}
-                    />
-                  </div>
+                      }
+                    }}
+                    onBlur={() => {
+                      const num = parseDecimalInput(slInput);
+                      if (isNaN(num) || num < 1) {
+                        updateSl(1);
+                      } else {
+                        updateSl(num);
+                      }
+                    }}
+                    className={`w-full rounded border px-3 py-1.5 text-xs font-semibold num outline-none ${
+                      isDark
+                        ? "border-zinc-800 bg-black text-white focus:border-zinc-600"
+                        : "border-slate-300 bg-white text-slate-900 focus:border-slate-500"
+                    }`}
+                  />
+                </div>
               </div>
             </section>
           </aside>
 
           {/* CENTER COLUMN: Last Digit, Tick Stream & Trade Log */}
-          <div className={`space-y-5 lg:space-y-6 min-w-0 ${mobileTab === "market" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <div
+            className={`space-y-5 lg:space-y-6 min-w-0 ${mobileTab === "market" || mobileTab === "all" ? "block" : "hidden lg:block"}`}
+          >
             {/* Top Row: Last Digit & Tick Stream Side by Side */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5 lg:gap-6">
-
               {/* CARD 1: LAST DIGIT */}
-              <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
-                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-              }`}>
+              <section
+                className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
+                  isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                }`}
+              >
                 {/* Header */}
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-2">
@@ -2266,26 +2775,35 @@ function TradeTerminal() {
                   </div>
 
                   {/* Quick Market Toggle Pills */}
-                  <div className={"flex w-full flex-wrap gap-0.5 rounded border p-0.5 " + (
-                    isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
-                  )}>
+                  <div
+                    className={
+                      "flex w-full flex-wrap gap-0.5 rounded border p-0.5 " +
+                      (isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100")
+                    }
+                  >
                     {MARKET_LIST.map((m) => {
                       const isSelected = marketSymbol === m.id;
                       return (
                         <button
                           key={m.id}
                           type="button"
-                          disabled={running}
+                          disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
                           onClick={() => handleSelectMarket(m.id)}
-                          className={"flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-[10px] font-bold uppercase transition-colors " + (
-                            isSelected
+                          className={
+                            "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-[10px] font-bold uppercase transition-colors " +
+                            (isSelected
                               ? isDark
                                 ? "bg-zinc-800 text-white shadow-sm"
                                 : "bg-white text-slate-900 shadow-sm"
-                              : "text-zinc-500 hover:text-white disabled:opacity-40"
-                          )}
+                              : "text-zinc-500 hover:text-white disabled:opacity-40")
+                          }
                         >
-                          <span className={"h-1 w-1 rounded-full " + (isSelected ? "bg-emerald-400" : "bg-zinc-600")} />
+                          <span
+                            className={
+                              "h-1 w-1 rounded-full " +
+                              (isSelected ? "bg-emerald-400" : "bg-zinc-600")
+                            }
+                          />
                           {m.id}
                         </button>
                       );
@@ -2295,23 +2813,42 @@ function TradeTerminal() {
                   <div className="flex items-end justify-between gap-4">
                     <div>
                       <div className="text-[10px] text-zinc-500">PRICE</div>
-                      <div className={"text-sm font-bold num " + (isDark ? "text-white" : "text-slate-900")}>
+                      <div
+                        className={
+                          "text-sm font-bold num " + (isDark ? "text-white" : "text-slate-900")
+                        }
+                      >
                         {price !== null ? price.toFixed(marketPipDecimals) : "—"}
                       </div>
                     </div>
                     <div className="max-w-[65%] text-right">
-                      <div className={"text-[11px] font-semibold num " + (
-                        analysis.diff <= maxDiff
-                          ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
-                          : isDark ? "text-zinc-400" : "text-slate-600"
-                      )}>
-                        SPREAD Δ {analysis.diff.toFixed(2)}% <span className="opacity-60">/ {maxDiff}%</span>
+                      <div
+                        className={
+                          "text-[11px] font-semibold num " +
+                          (analysis.diff <= maxDiff
+                            ? isDark
+                              ? "text-emerald-400 font-bold"
+                              : "text-emerald-600 font-bold"
+                            : isDark
+                              ? "text-zinc-400"
+                              : "text-slate-600")
+                        }
+                      >
+                        SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
+                        <span className="opacity-60">/ {maxDiff}%</span>
                       </div>
-                      <div className={"text-[10px] font-semibold " + (
-                        analysis.diff <= maxDiff
-                          ? isDark ? "text-emerald-400" : "text-emerald-600"
-                          : isDark ? "text-zinc-400" : "text-slate-600"
-                      )}>
+                      <div
+                        className={
+                          "text-[10px] font-semibold " +
+                          (analysis.diff <= maxDiff
+                            ? isDark
+                              ? "text-emerald-400"
+                              : "text-emerald-600"
+                            : isDark
+                              ? "text-zinc-400"
+                              : "text-slate-600")
+                        }
+                      >
                         {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
                       </div>
                     </div>
@@ -2319,15 +2856,25 @@ function TradeTerminal() {
                 </div>
                 {/* Giant Digit Display */}
                 <div className="flex items-baseline gap-4">
-                  <span className={`text-6xl sm:text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <span
+                    className={`text-6xl sm:text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
                     {currentDigit !== undefined ? currentDigit : "—"}
                   </span>
                   <div className="space-y-0.5 text-xs">
                     <div className="text-zinc-500">
-                      ENTRY DIGIT: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{analysis.most}</span> ({analysis.mostPct.toFixed(1)}%)
+                      ENTRY DIGIT:{" "}
+                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                        {analysis.most}
+                      </span>{" "}
+                      ({analysis.mostPct.toFixed(1)}%)
                     </div>
                     <div className="text-zinc-500">
-                      MATCH TARGET: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{analysis.second}</span> ({analysis.secondPct.toFixed(1)}%)
+                      MATCH TARGET:{" "}
+                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                        {analysis.second}
+                      </span>{" "}
+                      ({analysis.secondPct.toFixed(1)}%)
                     </div>
                   </div>
                 </div>
@@ -2344,7 +2891,9 @@ function TradeTerminal() {
                       <span
                         key={i}
                         className={`rounded border py-1 font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-zinc-200 bg-zinc-50 text-zinc-700"
+                          isDark
+                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-700"
                         }`}
                       >
                         {d}
@@ -2357,7 +2906,9 @@ function TradeTerminal() {
                       <span
                         key={i + 11}
                         className={`rounded border py-1 font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-zinc-200 bg-zinc-50 text-zinc-700"
+                          isDark
+                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-700"
                         }`}
                       >
                         {d}
@@ -2377,8 +2928,8 @@ function TradeTerminal() {
                                 ? "border-zinc-100 bg-zinc-100 text-zinc-950 font-bold ring-2 ring-zinc-700"
                                 : "border-zinc-900 bg-zinc-900 text-white font-bold ring-2 ring-zinc-400"
                               : isDark
-                              ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                              : "border-zinc-200 bg-zinc-50 text-zinc-700"
+                                ? "border-zinc-800 bg-zinc-900 text-zinc-300"
+                                : "border-zinc-200 bg-zinc-50 text-zinc-700"
                           }`}
                         >
                           {d}
@@ -2390,37 +2941,52 @@ function TradeTerminal() {
               </section>
 
               {/* CARD 2: TICK STREAM */}
-              <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-3 ${
-                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-              }`}>
-                <div className={`flex items-center justify-between border-b pb-2 ${
-                  isDark ? "border-zinc-900" : "border-slate-200"
-                }`}>
+              <section
+                className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-3 ${
+                  isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                }`}
+              >
+                <div
+                  className={`flex items-center justify-between border-b pb-2 ${
+                    isDark ? "border-zinc-900" : "border-slate-200"
+                  }`}
+                >
                   <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                     TICK STREAM
                   </span>
                   <span className="text-[10px] text-zinc-500 num">
-                    {digits.length >= WINDOW ? "1,000 / 1,000 (READY)" : `${digits.length} / ${WINDOW} (BUFFERING)`}
+                    {digits.length >= WINDOW
+                      ? "1,000 / 1,000 (READY)"
+                      : `${digits.length} / ${WINDOW} (BUFFERING)`}
                   </span>
                 </div>
 
                 <div className="overflow-hidden text-xs num">
                   <table className="w-full text-left">
-                    <tbody className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}>
+                    <tbody
+                      className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}
+                    >
                       {recentTicks.slice(0, 13).map((tick, idx) => (
-                        <tr key={idx} className={isDark ? "hover:bg-zinc-900/50" : "hover:bg-slate-50"}>
-                          <td className="py-1 text-zinc-500 text-[11px]">
-                            {tick.time}
-                          </td>
-                          <td className={`py-1 font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                        <tr
+                          key={idx}
+                          className={isDark ? "hover:bg-zinc-900/50" : "hover:bg-slate-50"}
+                        >
+                          <td className="py-1 text-zinc-500 text-[11px]">{tick.time}</td>
+                          <td
+                            className={`py-1 font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                          >
                             {tick.price.toFixed(marketPipDecimals)}
                           </td>
                           <td className="py-1 text-right font-bold">
-                            <span className={`inline-block px-1.5 py-0.2 rounded text-[11px] ${
-                              idx === 0
-                                ? isDark ? "bg-white text-black font-bold" : "bg-slate-900 text-white font-bold"
-                                : "text-zinc-400"
-                            }`}>
+                            <span
+                              className={`inline-block px-1.5 py-0.2 rounded text-[11px] ${
+                                idx === 0
+                                  ? isDark
+                                    ? "bg-white text-black font-bold"
+                                    : "bg-slate-900 text-white font-bold"
+                                  : "text-zinc-400"
+                              }`}
+                            >
                               -{tick.digit}
                             </span>
                           </td>
@@ -2433,12 +2999,17 @@ function TradeTerminal() {
             </div>
 
             {/* Adaptive next-digit predictor */}
-            <section hidden className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
-              <div className={`flex flex-wrap items-start justify-between gap-3 border-b pb-3 ${
-                isDark ? "border-zinc-900" : "border-slate-200"
-              }`}>
+            <section
+              hidden
+              className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
+              <div
+                className={`flex flex-wrap items-start justify-between gap-3 border-b pb-3 ${
+                  isDark ? "border-zinc-900" : "border-slate-200"
+                }`}
+              >
                 <div>
                   <h2 className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                     NEXT DIGIT FORECAST
@@ -2447,27 +3018,36 @@ function TradeTerminal() {
                     Adaptive pattern model trained on the latest 1,000 ticks.
                   </p>
                 </div>
-                <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
-                  nextPrediction
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
-                    : "border-amber-500/30 bg-amber-500/10 text-amber-500"
-                }`}>
-                  {nextPrediction ? "MODEL READY" : `TRAINING ${Math.min(digits.length, WINDOW)}/${WINDOW}`}
+                <span
+                  className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                    nextPrediction
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+                      : "border-amber-500/30 bg-amber-500/10 text-amber-500"
+                  }`}
+                >
+                  {nextPrediction
+                    ? "MODEL READY"
+                    : `TRAINING ${Math.min(digits.length, WINDOW)}/${WINDOW}`}
                 </span>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-[minmax(140px,0.7fr)_2fr]">
-                <div className={`flex flex-col items-center justify-center rounded-lg border p-4 text-center ${
-                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
-                }`}>
+                <div
+                  className={`flex flex-col items-center justify-center rounded-lg border p-4 text-center ${
+                    isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
                   <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                     PREDICTED NEXT DIGIT
                   </span>
-                  <span className={`my-1 text-6xl font-light num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <span
+                    className={`my-1 text-6xl font-light num ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
                     {nextPrediction?.digit ?? "—"}
                   </span>
                   <span className="text-[11px] text-zinc-500">
-                    Estimated chance {nextPrediction ? `${nextPrediction.confidence.toFixed(1)}%` : "—"}
+                    Estimated chance{" "}
+                    {nextPrediction ? `${nextPrediction.confidence.toFixed(1)}%` : "—"}
                   </span>
                   <span className="mt-2 text-[10px] uppercase tracking-wide text-zinc-500">
                     {nextPrediction?.method ?? "Awaiting 1,000 ticks"}
@@ -2480,60 +3060,115 @@ function TradeTerminal() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">LIVE ACCURACY</div>
-                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <div
+                    className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                      LIVE ACCURACY
+                    </div>
+                    <div
+                      className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
+                    >
                       {predictionAccuracy === null ? "—" : `${predictionAccuracy}%`}
                     </div>
-                    <div className="text-[10px] text-zinc-500">{predictionStats.correct} correct / {predictionStats.forecasts} scored</div>
+                    <div className="text-[10px] text-zinc-500">
+                      {predictionStats.correct} correct / {predictionStats.forecasts} scored
+                    </div>
                   </div>
-                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">LAST 100</div>
-                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <div
+                    className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                      LAST 100
+                    </div>
+                    <div
+                      className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
+                    >
                       {recentPredictionAccuracy === null ? "—" : `${recentPredictionAccuracy}%`}
                     </div>
-                    <div className="text-[10px] text-zinc-500">{predictionStats.recentResults.length} recent live ticks</div>
+                    <div className="text-[10px] text-zinc-500">
+                      {predictionStats.recentResults.length} recent live ticks
+                    </div>
                   </div>
-                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">MISSES</div>
-                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <div
+                    className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                      MISSES
+                    </div>
+                    <div
+                      className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
+                    >
                       {predictionStats.forecasts - predictionStats.correct}
                     </div>
                     <div className="text-[10px] text-zinc-500">Exact digit matches only</div>
                   </div>
-                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">CURRENT STREAK</div>
-                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                  <div
+                    className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}
+                  >
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                      CURRENT STREAK
+                    </div>
+                    <div
+                      className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}
+                    >
                       {predictionStats.currentStreak}
                     </div>
                     <div className="text-[10px] text-zinc-500">
-                      {predictionStats.lastResult === null ? "Waiting for the first live tick" : predictionStats.lastResult ? "consecutive correct" : "consecutive missed"}
+                      {predictionStats.lastResult === null
+                        ? "Waiting for the first live tick"
+                        : predictionStats.lastResult
+                          ? "consecutive correct"
+                          : "consecutive missed"}
                     </div>
                   </div>
                 </div>
               </div>
 
               <p className="text-[10px] leading-relaxed text-zinc-500">
-                The model counts each digit across the latest 1,000 ticks and checks two recency-weighted frequency views. It does not use digit pairs or transitions.
+                The model counts each digit across the latest 1,000 ticks and checks two
+                recency-weighted frequency views. It does not use digit pairs or transitions.
               </p>
               <p className="text-[10px] leading-relaxed text-zinc-500">
-                Past replay: {nextPrediction ? nextPrediction.selectedStrategy + " " + nextPrediction.validationAccuracy + "% vs all-digit frequency " + nextPrediction.baselineAccuracy + "% across " + nextPrediction.validationForecasts + " ticks." : "Waiting for 1,000 ticks."} {nextPrediction?.edgeDetected ? "A recency-based frequency model cleared the replay margin." : "No recency-based model beat all-digit frequency by the replay margin."} Live accuracy is scored separately; historical performance cannot guarantee future results. A 60-70% exact-digit rate is not a credible promise for a random 10-digit outcome.
+                Past replay:{" "}
+                {nextPrediction
+                  ? nextPrediction.selectedStrategy +
+                    " " +
+                    nextPrediction.validationAccuracy +
+                    "% vs all-digit frequency " +
+                    nextPrediction.baselineAccuracy +
+                    "% across " +
+                    nextPrediction.validationForecasts +
+                    " ticks."
+                  : "Waiting for 1,000 ticks."}{" "}
+                {nextPrediction?.edgeDetected
+                  ? "A recency-based frequency model cleared the replay margin."
+                  : "No recency-based model beat all-digit frequency by the replay margin."}{" "}
+                Live accuracy is scored separately; historical performance cannot guarantee future
+                results. A 60-70% exact-digit rate is not a credible promise for a random 10-digit
+                outcome.
               </p>
 
               <div>
                 <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">LIVE FORECAST CHECKS</h3>
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    LIVE FORECAST CHECKS
+                  </h3>
                   <span className="text-[10px] text-zinc-500">Latest {scoredTicks.length}</span>
                 </div>
                 {scoredTicks.length === 0 ? (
-                  <div className={`rounded-lg border px-3 py-4 text-center text-xs text-zinc-500 ${isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                  <div
+                    className={`rounded-lg border px-3 py-4 text-center text-xs text-zinc-500 ${isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"}`}
+                  >
                     Live tick predictions will be scored here after the model trains.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[440px] text-left text-[10px] num">
                       <thead>
-                        <tr className={`border-b uppercase tracking-wide text-zinc-500 ${isDark ? "border-zinc-900" : "border-slate-200"}`}>
+                        <tr
+                          className={`border-b uppercase tracking-wide text-zinc-500 ${isDark ? "border-zinc-900" : "border-slate-200"}`}
+                        >
                           <th className="py-2 pr-2">Time</th>
                           <th className="py-2 pr-2">Quote</th>
                           <th className="py-2 pr-2">Actual</th>
@@ -2541,14 +3176,26 @@ function TradeTerminal() {
                           <th className="py-2 text-right">Result</th>
                         </tr>
                       </thead>
-                      <tbody className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}>
+                      <tbody
+                        className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}
+                      >
                         {scoredTicks.map((tick, index) => (
                           <tr key={`${tick.time}-${index}`}>
                             <td className="py-2 pr-2 text-zinc-500">{tick.time}</td>
-                            <td className={`py-2 pr-2 ${isDark ? "text-zinc-300" : "text-slate-700"}`}>{tick.price.toFixed(marketPipDecimals)}</td>
-                            <td className={`py-2 pr-2 font-bold ${isDark ? "text-white" : "text-slate-900"}`}>{tick.digit}</td>
+                            <td
+                              className={`py-2 pr-2 ${isDark ? "text-zinc-300" : "text-slate-700"}`}
+                            >
+                              {tick.price.toFixed(marketPipDecimals)}
+                            </td>
+                            <td
+                              className={`py-2 pr-2 font-bold ${isDark ? "text-white" : "text-slate-900"}`}
+                            >
+                              {tick.digit}
+                            </td>
                             <td className="py-2 pr-2">{tick.predictedDigit}</td>
-                            <td className={`py-2 text-right font-bold ${tick.predictionCorrect ? "text-emerald-500" : "text-rose-500"}`}>
+                            <td
+                              className={`py-2 text-right font-bold ${tick.predictionCorrect ? "text-emerald-500" : "text-rose-500"}`}
+                            >
                               {tick.predictionCorrect ? "CORRECT" : "MISSED"}
                             </td>
                           </tr>
@@ -2561,18 +3208,24 @@ function TradeTerminal() {
             </section>
 
             {/* Bottom Row: TRADE LOG / SESSION HISTORY */}
-            <section className={`rounded-xl border shadow-sm ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
-              <div className={`flex items-center justify-between border-b px-4 sm:px-5 py-3 ${
-                isDark ? "border-zinc-900" : "border-slate-200"
-              }`}>
+            <section
+              className={`rounded-xl border shadow-sm ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
+              <div
+                className={`flex items-center justify-between border-b px-4 sm:px-5 py-3 ${
+                  isDark ? "border-zinc-900" : "border-slate-200"
+                }`}
+              >
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setCenterTab("trade_log")}
                     className={`rounded px-3 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
                       centerTab === "trade_log"
-                        ? isDark ? "bg-zinc-800 text-white" : "bg-slate-200 text-slate-900 font-bold"
+                        ? isDark
+                          ? "bg-zinc-800 text-white"
+                          : "bg-slate-200 text-slate-900 font-bold"
                         : "text-zinc-500 hover:text-white"
                     }`}
                   >
@@ -2582,7 +3235,9 @@ function TradeTerminal() {
                     onClick={() => setCenterTab("session_history")}
                     className={`rounded px-3 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
                       centerTab === "session_history"
-                        ? isDark ? "bg-zinc-800 text-white" : "bg-slate-200 text-slate-900 font-bold"
+                        ? isDark
+                          ? "bg-zinc-800 text-white"
+                          : "bg-slate-200 text-slate-900 font-bold"
                         : "text-zinc-500 hover:text-white"
                     }`}
                   >
@@ -2594,15 +3249,24 @@ function TradeTerminal() {
                     type="button"
                     onClick={saveCurrentSession}
                     disabled={running || trades.length === 0}
-                    title={running ? "Stop the bot before saving and clearing this session" : "Save session and clear current trades"}
-                    className={"rounded border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " + (isDark
-                      ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
-                      : "border-slate-300 bg-white text-slate-700 hover:text-slate-900")}
+                    title={
+                      running
+                        ? "Stop the bot before saving and clearing this session"
+                        : "Save session and clear current trades"
+                    }
+                    className={
+                      "rounded border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
+                      (isDark
+                        ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                        : "border-slate-300 bg-white text-slate-700 hover:text-slate-900")
+                    }
                   >
                     SAVE SESSION
                   </button>
                   <span className="text-xs text-zinc-500 num">
-                    {centerTab === "trade_log" ? trades.length + " trades" : savedSessions.length + " saved"}
+                    {centerTab === "trade_log"
+                      ? trades.length + " trades"
+                      : savedSessions.length + " saved"}
                   </span>
                 </div>
               </div>
@@ -2610,241 +3274,372 @@ function TradeTerminal() {
               <div className="p-4 sm:p-6">
                 {centerTab === "trade_log" ? (
                   <>
-                {trades.length === 0 ? (
+                    {trades.length === 0 ? (
+                      <div className="py-12 sm:py-16 text-center">
+                        <p className={`text-xs ${isDark ? "text-zinc-600" : "text-slate-400"}`}>
+                          Trades will appear here once the bot fires.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto text-xs num">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr
+                              className={`border-b text-zinc-500 pb-2 uppercase text-[10px] ${
+                                isDark ? "border-zinc-900" : "border-slate-200"
+                              }`}
+                            >
+                              <th className="py-2">Run</th>
+                              <th>Time</th>
+                              <th>Entry</th>
+                              <th>Target</th>
+                              <th>Exit</th>
+                              <th>Stake</th>
+                              <th>Status</th>
+                              <th className="text-right">P/L</th>
+                            </tr>
+                          </thead>
+                          <tbody
+                            className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}
+                          >
+                            {trades.map((t) => (
+                              <tr
+                                key={t.id}
+                                className={isDark ? "hover:bg-zinc-900/40" : "hover:bg-slate-50"}
+                              >
+                                <td
+                                  className={`py-2.5 font-bold ${isDark ? "text-white" : "text-slate-900"}`}
+                                >
+                                  #{t.runIndex}
+                                </td>
+                                <td className="text-zinc-500">{t.time}</td>
+                                <td>{t.entry}</td>
+                                <td
+                                  className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}
+                                >
+                                  {t.target}
+                                </td>
+                                <td
+                                  className={`font-bold ${isDark ? "text-white" : "text-slate-900"}`}
+                                >
+                                  {t.result}
+                                </td>
+                                <td>${t.stake.toFixed(2)}</td>
+                                <td>
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                      t.pnl > 0
+                                        ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
+                                        : "bg-red-500/15 text-red-500 border border-red-500/40"
+                                    }`}
+                                  >
+                                    {t.pnl > 0 ? "WON" : "LOST"}
+                                  </span>
+                                </td>
+                                <td
+                                  className={`text-right font-bold ${
+                                    t.pnl > 0 ? "text-emerald-500" : "text-red-500"
+                                  }`}
+                                >
+                                  {t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                ) : savedSessions.length === 0 ? (
                   <div className="py-12 sm:py-16 text-center">
-                    <p className={`text-xs ${isDark ? "text-zinc-600" : "text-slate-400"}`}>
-                      Trades will appear here once the bot fires.
+                    <p className={"text-xs " + (isDark ? "text-zinc-400" : "text-slate-600")}>
+                      No saved sessions yet.
+                    </p>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Saving stores the completed session in history and clears its current trades.
                     </p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto text-xs num">
-                    <table className="w-full text-left">
-                      <thead>
-                        <tr className={`border-b text-zinc-500 pb-2 uppercase text-[10px] ${
-                          isDark ? "border-zinc-900" : "border-slate-200"
-                        }`}>
-                          <th className="py-2">Run</th>
-                          <th>Time</th>
-                          <th>Entry</th>
-                          <th>Target</th>
-                          <th>Exit</th>
-                          <th>Stake</th>
-                          <th>Status</th>
-                          <th className="text-right">P/L</th>
-                        </tr>
-                      </thead>
-                      <tbody className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}>
-                        {trades.map((t) => (
-                          <tr key={t.id} className={isDark ? "hover:bg-zinc-900/40" : "hover:bg-slate-50"}>
-                            <td className={`py-2.5 font-bold ${isDark ? "text-white" : "text-slate-900"}`}>#{t.runIndex}</td>
-                            <td className="text-zinc-500">{t.time}</td>
-                            <td>{t.entry}</td>
-                            <td className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{t.target}</td>
-                            <td className={`font-bold ${isDark ? "text-white" : "text-slate-900"}`}>{t.result}</td>
-                            <td>${t.stake.toFixed(2)}</td>
-                            <td>
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                t.pnl > 0
-                                  ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
-                                  : "bg-red-500/15 text-red-500 border border-red-500/40"
-                              }`}>
-                                {t.pnl > 0 ? "WON" : "LOST"}
-                              </span>
-                            </td>
-                            <td className={`text-right font-bold ${
-                              t.pnl > 0
-                                ? "text-emerald-500"
-                                : "text-red-500"
-                            }`}>
-                              {t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                  </>
-                ) : (
-                  savedSessions.length === 0 ? (
-                    <div className="py-12 sm:py-16 text-center">
-                      <p className={"text-xs " + (isDark ? "text-zinc-400" : "text-slate-600")}>
-                        No saved sessions yet.
-                      </p>
-                      <p className="mt-2 text-xs text-zinc-500">
-                        Saving stores the completed session in history and clears its current trades.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {savedSessions.map((saved) => (
-                        <article
-                          key={saved.id}
-                          className={"rounded-lg border p-3 sm:p-4 " + (isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50")}
-                        >
-                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                            <div>
-                              <div className={"text-sm font-semibold " + (isDark ? "text-white" : "text-slate-900")}>
-                                {MARKETS[saved.marketSymbol].displayName}
-                              </div>
-                              <div className="mt-1 text-[11px] text-zinc-500">
-                                {new Date(saved.savedAt).toLocaleString()} · {MARKETS[saved.marketSymbol].classicSymbol}
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              aria-expanded={expandedHistoryId === saved.id}
-                              onClick={() => setExpandedHistoryId((current) => current === saved.id ? null : saved.id)}
-                              className={"rounded border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider " + (isDark
-                                ? "border-zinc-700 text-zinc-300 hover:bg-zinc-900"
-                                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100")}
+                  <div className="space-y-3">
+                    {savedSessions.map((saved) => (
+                      <article
+                        key={saved.id}
+                        className={
+                          "rounded-lg border p-3 sm:p-4 " +
+                          (isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50")
+                        }
+                      >
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <div
+                              className={
+                                "text-sm font-semibold " +
+                                (isDark ? "text-white" : "text-slate-900")
+                              }
                             >
-                              {expandedHistoryId === saved.id ? "HIDE TRADES" : "VIEW TRADES"}
-                            </button>
-                          </div>
-
-                          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
-                              <div className="text-[10px] text-zinc-500">NET P/L</div>
-                              <div className={"mt-1 text-sm font-semibold num " + (saved.totalPnl >= 0 ? "text-emerald-500" : "text-red-500")}>
-                                {saved.totalPnl >= 0 ? "+" : ""}{saved.totalPnl.toFixed(2)} USD
-                              </div>
+                              {saved.strategyMode === "x2x" ? "X2X Sniper / " : ""}
+                              {MARKETS[saved.marketSymbol].displayName}
                             </div>
-                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
-                              <div className="text-[10px] text-zinc-500">TRADES</div>
-                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
-                                {saved.trades.length}
-                              </div>
-                            </div>
-                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
-                              <div className="text-[10px] text-zinc-500">WINS / LOSSES</div>
-                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
-                                {saved.wins} / {saved.losses}
-                              </div>
-                            </div>
-                            <div className={"rounded border p-2 " + (isDark ? "border-zinc-800" : "border-slate-200 bg-white")}>
-                              <div className="text-[10px] text-zinc-500">WIN RATE</div>
-                              <div className={"mt-1 text-sm font-semibold num " + (isDark ? "text-white" : "text-slate-900")}>
-                                {saved.winRate}%
-                              </div>
+                            <div className="mt-1 text-[11px] text-zinc-500">
+                              {new Date(saved.savedAt).toLocaleString()} ·{" "}
+                              {MARKETS[saved.marketSymbol].classicSymbol}
                             </div>
                           </div>
+                          <button
+                            type="button"
+                            aria-expanded={expandedHistoryId === saved.id}
+                            onClick={() =>
+                              setExpandedHistoryId((current) =>
+                                current === saved.id ? null : saved.id,
+                              )
+                            }
+                            className={
+                              "rounded border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider " +
+                              (isDark
+                                ? "border-zinc-700 text-zinc-300 hover:bg-zinc-900"
+                                : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100")
+                            }
+                          >
+                            {expandedHistoryId === saved.id ? "HIDE TRADES" : "VIEW TRADES"}
+                          </button>
+                        </div>
 
-                          <div className="mt-3 text-[11px] text-zinc-500">
-                            Spread threshold {saved.spreadThreshold}% · Base stake {saved.baseStake.toFixed(2)} USD · Martingale {saved.martingaleEnabled ? "ON" : "OFF"}
+                        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <div
+                            className={
+                              "rounded border p-2 " +
+                              (isDark ? "border-zinc-800" : "border-slate-200 bg-white")
+                            }
+                          >
+                            <div className="text-[10px] text-zinc-500">NET P/L</div>
+                            <div
+                              className={
+                                "mt-1 text-sm font-semibold num " +
+                                (saved.totalPnl >= 0 ? "text-emerald-500" : "text-red-500")
+                              }
+                            >
+                              {saved.totalPnl >= 0 ? "+" : ""}
+                              {saved.totalPnl.toFixed(2)} USD
+                            </div>
                           </div>
+                          <div
+                            className={
+                              "rounded border p-2 " +
+                              (isDark ? "border-zinc-800" : "border-slate-200 bg-white")
+                            }
+                          >
+                            <div className="text-[10px] text-zinc-500">TRADES</div>
+                            <div
+                              className={
+                                "mt-1 text-sm font-semibold num " +
+                                (isDark ? "text-white" : "text-slate-900")
+                              }
+                            >
+                              {saved.trades.length}
+                            </div>
+                          </div>
+                          <div
+                            className={
+                              "rounded border p-2 " +
+                              (isDark ? "border-zinc-800" : "border-slate-200 bg-white")
+                            }
+                          >
+                            <div className="text-[10px] text-zinc-500">WINS / LOSSES</div>
+                            <div
+                              className={
+                                "mt-1 text-sm font-semibold num " +
+                                (isDark ? "text-white" : "text-slate-900")
+                              }
+                            >
+                              {saved.wins} / {saved.losses}
+                            </div>
+                          </div>
+                          <div
+                            className={
+                              "rounded border p-2 " +
+                              (isDark ? "border-zinc-800" : "border-slate-200 bg-white")
+                            }
+                          >
+                            <div className="text-[10px] text-zinc-500">WIN RATE</div>
+                            <div
+                              className={
+                                "mt-1 text-sm font-semibold num " +
+                                (isDark ? "text-white" : "text-slate-900")
+                              }
+                            >
+                              {saved.winRate}%
+                            </div>
+                          </div>
+                        </div>
 
-                          {expandedHistoryId === saved.id && (
-                            <div className="mt-4 overflow-x-auto text-xs num">
-                              <table className="w-full text-left">
-                                <thead>
-                                  <tr className={"border-b pb-2 uppercase text-[10px] text-zinc-500 " + (isDark ? "border-zinc-800" : "border-slate-200")}>
-                                    <th className="py-2">Run</th>
-                                    <th>Time</th>
-                                    <th>Entry</th>
-                                    <th>Target</th>
-                                    <th>Exit</th>
-                                    <th>Stake</th>
-                                    <th>Status</th>
-                                    <th className="text-right">P/L</th>
+                        <div className="mt-3 text-[11px] text-zinc-500">
+                          Spread threshold {saved.spreadThreshold}% · Base stake{" "}
+                          {saved.baseStake.toFixed(2)} USD · Martingale{" "}
+                          {saved.martingaleEnabled ? "ON" : "OFF"}
+                        </div>
+
+                        {expandedHistoryId === saved.id && (
+                          <div className="mt-4 overflow-x-auto text-xs num">
+                            <table className="w-full text-left">
+                              <thead>
+                                <tr
+                                  className={
+                                    "border-b pb-2 uppercase text-[10px] text-zinc-500 " +
+                                    (isDark ? "border-zinc-800" : "border-slate-200")
+                                  }
+                                >
+                                  <th className="py-2">Run</th>
+                                  <th>Time</th>
+                                  <th>Entry</th>
+                                  <th>Target</th>
+                                  <th>Exit</th>
+                                  <th>Stake</th>
+                                  <th>Status</th>
+                                  <th className="text-right">P/L</th>
+                                </tr>
+                              </thead>
+                              <tbody
+                                className={
+                                  "divide-y " + (isDark ? "divide-zinc-900" : "divide-slate-100")
+                                }
+                              >
+                                {saved.trades.map((trade) => (
+                                  <tr key={trade.id}>
+                                    <td className="py-2.5 font-bold">#{trade.runIndex}</td>
+                                    <td className="text-zinc-500">{trade.time}</td>
+                                    <td>{trade.entry}</td>
+                                    <td className="font-semibold">{trade.target}</td>
+                                    <td className="font-bold">{trade.result}</td>
+                                    <td>{trade.stake.toFixed(2)} USD</td>
+                                    <td
+                                      className={
+                                        trade.pnl > 0 ? "text-emerald-500" : "text-red-500"
+                                      }
+                                    >
+                                      {trade.pnl > 0 ? "WON" : "LOST"}
+                                    </td>
+                                    <td
+                                      className={
+                                        "text-right font-bold " +
+                                        (trade.pnl > 0 ? "text-emerald-500" : "text-red-500")
+                                      }
+                                    >
+                                      {trade.pnl > 0 ? "+" : ""}
+                                      {trade.pnl.toFixed(2)} USD
+                                    </td>
                                   </tr>
-                                </thead>
-                                <tbody className={"divide-y " + (isDark ? "divide-zinc-900" : "divide-slate-100")}>
-                                  {saved.trades.map((trade) => (
-                                    <tr key={trade.id}>
-                                      <td className="py-2.5 font-bold">#{trade.runIndex}</td>
-                                      <td className="text-zinc-500">{trade.time}</td>
-                                      <td>{trade.entry}</td>
-                                      <td className="font-semibold">{trade.target}</td>
-                                      <td className="font-bold">{trade.result}</td>
-                                      <td>{trade.stake.toFixed(2)} USD</td>
-                                      <td className={trade.pnl > 0 ? "text-emerald-500" : "text-red-500"}>
-                                        {trade.pnl > 0 ? "WON" : "LOST"}
-                                      </td>
-                                      <td className={"text-right font-bold " + (trade.pnl > 0 ? "text-emerald-500" : "text-red-500")}>
-                                        {trade.pnl > 0 ? "+" : ""}{trade.pnl.toFixed(2)} USD
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </article>
-                      ))}
-                    </div>
-                  )
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </article>
+                    ))}
+                  </div>
                 )}
               </div>
             </section>
           </div>
 
           {/* RIGHT COLUMN: Session & Bot Overview */}
-          <aside className={`space-y-5 lg:space-y-6 ${mobileTab === "session" || mobileTab === "all" ? "block" : "hidden lg:block"}`}>
+          <aside
+            className={`space-y-5 lg:space-y-6 ${mobileTab === "session" || mobileTab === "all" ? "block" : "hidden lg:block"}`}
+          >
             {/* SESSION */}
-            <section className={`rounded-xl border p-4 space-y-4 shadow-sm ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
+            <section
+              className={`rounded-xl border p-4 space-y-4 shadow-sm ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                 SESSION
               </span>
 
               {/* Net P/L Hero Card */}
-              <div className={`rounded-xl border p-4 space-y-2 ${
-                isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
-              }`}>
+              <div
+                className={`rounded-xl border p-4 space-y-2 ${
+                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
                 <div className="flex items-center justify-between text-xs font-semibold">
                   <span className="text-zinc-500">NET P/L</span>
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                    totalPnl >= 0
-                      ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
-                      : "bg-red-500/15 text-red-500 border border-red-500/40"
-                  }`}>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      totalPnl >= 0
+                        ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/40"
+                        : "bg-red-500/15 text-red-500 border border-red-500/40"
+                    }`}
+                  >
                     {totalPnl >= 0 ? "PROFIT" : "LOSS"}
                   </span>
                 </div>
-                <div className={`text-3xl font-light tracking-tight num ${totalPnl > 0 ? "text-emerald-500" : totalPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}>
-                  {totalPnl >= 0 ? "+" : ""}{totalPnl.toFixed(2)} <span className="text-xs font-normal text-zinc-500">USD</span>
+                <div
+                  className={`text-3xl font-light tracking-tight num ${totalPnl > 0 ? "text-emerald-500" : totalPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}
+                >
+                  {totalPnl >= 0 ? "+" : ""}
+                  {totalPnl.toFixed(2)}{" "}
+                  <span className="text-xs font-normal text-zinc-500">USD</span>
                 </div>
               </div>
 
               {/* 2x2 Stats Grid */}
               <div className="grid grid-cols-2 gap-3 num">
-                <div className={`rounded-lg border p-3 ${
-                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-                }`}>
+                <div
+                  className={`rounded-lg border p-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
                   <span className="text-[10px] font-semibold text-zinc-500">WINS</span>
-                  <div className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}>{wins}</div>
+                  <div
+                    className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {wins}
+                  </div>
                 </div>
 
-                <div className={`rounded-lg border p-3 ${
-                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-                }`}>
+                <div
+                  className={`rounded-lg border p-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
                   <span className="text-[10px] font-semibold text-zinc-500">LOSSES</span>
                   <div className="text-2xl font-light text-zinc-400 mt-1">{losses}</div>
                 </div>
 
-                <div className={`rounded-lg border p-3 ${
-                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-                }`}>
+                <div
+                  className={`rounded-lg border p-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
                   <span className="text-[10px] font-semibold text-zinc-500">TRADES</span>
-                  <div className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}>{trades.length}</div>
+                  <div
+                    className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {trades.length}
+                  </div>
                 </div>
 
-                <div className={`rounded-lg border p-3 ${
-                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-                }`}>
+                <div
+                  className={`rounded-lg border p-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
                   <span className="text-[10px] font-semibold text-zinc-500">WIN RATE</span>
-                  <div className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}>{winRate}%</div>
+                  <div
+                    className={`text-2xl font-light mt-1 ${isDark ? "text-white" : "text-slate-900"}`}
+                  >
+                    {winRate}%
+                  </div>
                 </div>
               </div>
             </section>
 
             {/* BOT (Clean Strategy Telemetry - No Reps) */}
-            <section className={`rounded-xl border p-4 space-y-3.5 shadow-sm text-xs num ${
-              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-            }`}>
+            <section
+              className={`rounded-xl border p-4 space-y-3.5 shadow-sm text-xs num ${
+                isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+              }`}
+            >
               <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                 BOT TELEMETRY
               </span>
@@ -2852,45 +3647,85 @@ function TradeTerminal() {
               <div className="grid grid-cols-2 gap-y-3 gap-x-2">
                 <div>
                   <div className="text-[10px] text-zinc-500">Status</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{botState}</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {botState}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500">1,000 Ticks</div>
-                  <div className={`font-semibold ${digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}>
-                    {digits.length >= WINDOW ? "VERIFIED" : `${digits.length}/${WINDOW}`}
+                  <div className="text-[10px] text-zinc-500">
+                    {strategyMode === "x2x" ? "Pattern Ticks" : "1,000 Ticks"}
+                  </div>
+                  <div
+                    className={`font-semibold ${strategyMode === "x2x" || digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}
+                  >
+                    {strategyMode === "x2x"
+                      ? `${x2xScannerState.recentDigits.length}/3 live`
+                      : digits.length >= WINDOW
+                        ? "VERIFIED"
+                        : `${digits.length}/${WINDOW}`}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Pending</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{pending.current ? "yes" : "no"}</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {pending.current ? "yes" : "no"}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Mode</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>Matches</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode === "x2x" ? "X2X Sniper" : "Matches"}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Session Trades</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{runCount}</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {runCount}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500">Entry Digit</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{analysis.most} ({analysis.mostPct.toFixed(1)}%)</div>
+                  <div className="text-[10px] text-zinc-500">
+                    {strategyMode === "x2x" ? "Live Digits" : "Entry Digit"}
+                  </div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode === "x2x"
+                      ? x2xScannerState.recentDigits.join(" / ") || "--"
+                      : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500">Match Target</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{analysis.second} ({analysis.secondPct.toFixed(1)}%)</div>
+                  <div className="text-[10px] text-zinc-500">
+                    {strategyMode === "x2x" ? "Stored LDP" : "Match Target"}
+                  </div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode === "x2x"
+                      ? ((x2xScannerState.signal?.phase === "awaiting-op"
+                          ? x2xScannerState.signal.ldp
+                          : pending.current?.target) ?? "--")
+                      : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
+                  </div>
                 </div>
                 <div>
-                  <div className="text-[10px] text-zinc-500">Spread Threshold</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>Δ ≤ {maxDiff}%</div>
+                  <div className="text-[10px] text-zinc-500">
+                    {strategyMode === "x2x" ? "OP Trigger" : "Spread Threshold"}
+                  </div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode === "x2x"
+                      ? (x2xScannerState.signal?.opTrigger ?? "--")
+                      : `Δ ≤ ${maxDiff}%`}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Symbol</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>{currentMarket.classicSymbol}</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {currentMarket.classicSymbol}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Duration</div>
-                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>1 tick</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    1 tick
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">Feed Status</div>
@@ -2899,18 +3734,24 @@ function TradeTerminal() {
               </div>
 
               {/* Bot Status Note */}
-              <div className={`rounded-lg border p-2.5 mt-2 text-[11px] leading-relaxed ${
-                isDark ? "border-zinc-900 bg-black text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-600"
-              }`}>
+              <div
+                className={`rounded-lg border p-2.5 mt-2 text-[11px] leading-relaxed ${
+                  isDark
+                    ? "border-zinc-900 bg-black text-zinc-400"
+                    : "border-slate-200 bg-slate-50 text-slate-600"
+                }`}
+              >
                 {note}
               </div>
             </section>
           </aside>
         </div>
         {/* Footer */}
-        <footer className={`mt-10 pt-6 border-t text-center font-mono text-xs transition-colors ${
-          isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
-        }`}>
+        <footer
+          className={`mt-10 pt-6 border-t text-center font-mono text-xs transition-colors ${
+            isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
+          }`}
+        >
           <div className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5">
             <span>Built by</span>
             <a
@@ -2948,13 +3789,19 @@ function TradeTerminal() {
             <button
               type="button"
               onClick={startBot}
-              disabled={digits.length < WINDOW}
+              disabled={digits.length < startTickRequirement}
               className={`flex-1 h-12 rounded-xl px-4 text-xs font-bold uppercase tracking-wider shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2 ${
-                isDark ? "bg-white text-black hover:bg-zinc-200" : "bg-slate-900 text-white hover:bg-slate-800"
+                isDark
+                  ? "bg-white text-black hover:bg-zinc-200"
+                  : "bg-slate-900 text-white hover:bg-slate-800"
               }`}
             >
-              <span className={`h-2 w-2 rounded-full ${digits.length >= WINDOW ? (isDark ? "bg-black" : "bg-emerald-400") : "bg-amber-300"}`} />
-              {digits.length < WINDOW ? `BUFFERING (${digits.length}/${WINDOW})` : "START BOT"}
+              <span
+                className={`h-2 w-2 rounded-full ${digits.length >= startTickRequirement ? (isDark ? "bg-black" : "bg-emerald-400") : "bg-amber-300"}`}
+              />
+              {digits.length < startTickRequirement
+                ? `BUFFERING (${digits.length}/${startTickRequirement})`
+                : "START BOT"}
             </button>
           )}
 
@@ -2963,7 +3810,9 @@ function TradeTerminal() {
             onClick={resetSession}
             title="Reset session"
             className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors ${
-              isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
+              isDark
+                ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
             RESET
@@ -2972,10 +3821,12 @@ function TradeTerminal() {
           <button
             type="button"
             onClick={triggerManualTestTrade}
-            disabled={digits.length < WINDOW || pending.current !== null}
+            disabled={strategyMode === "x2x" || digits.length < WINDOW || pending.current !== null}
             title="Run 1 test trade"
             className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-40 ${
-              isDark ? "border-zinc-700 bg-zinc-900 text-zinc-300" : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
+              isDark
+                ? "border-zinc-700 bg-zinc-900 text-zinc-300"
+                : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
             TEST 1
@@ -2985,15 +3836,25 @@ function TradeTerminal() {
 
       {showConnectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-md border p-5 sm:p-6 space-y-5 shadow-2xl ${
-            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
-          }`}>
-            <div className={`flex items-center justify-between border-b pb-3 ${
-              isDark ? "border-zinc-900" : "border-slate-200"
-            }`}>
+          <div
+            className={`w-full max-w-md border p-5 sm:p-6 space-y-5 shadow-2xl ${
+              isDark
+                ? "border-zinc-800 bg-zinc-950 text-white"
+                : "border-slate-300 bg-white text-slate-900"
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between border-b pb-3 ${
+                isDark ? "border-zinc-900" : "border-slate-200"
+              }`}
+            >
               <div className="space-y-0.5">
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Deriv</span>
-                <h3 className="font-display text-sm font-semibold uppercase tracking-wider">Connect account</h3>
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                  Deriv
+                </span>
+                <h3 className="font-display text-sm font-semibold uppercase tracking-wider">
+                  Connect account
+                </h3>
               </div>
               <button
                 onClick={() => {
@@ -3011,7 +3872,8 @@ function TradeTerminal() {
                   Deriv Auth 2.0
                 </span>
                 <p className="text-[11px] text-zinc-400 leading-relaxed">
-                  Authenticate securely via Deriv Auth 2.0 PKCE. All trading permissions and demo/real accounts will be loaded automatically.
+                  Authenticate securely via Deriv Auth 2.0 PKCE. All trading permissions and
+                  demo/real accounts will be loaded automatically.
                 </p>
               </div>
 
@@ -3024,7 +3886,8 @@ function TradeTerminal() {
               </button>
 
               <p className="text-[10px] text-zinc-500 text-center leading-tight">
-                Redirects to Deriv login. Demo and real accounts will be synchronized immediately upon return.
+                Redirects to Deriv login. Demo and real accounts will be synchronized immediately
+                upon return.
               </p>
             </div>
           </div>
@@ -3037,15 +3900,21 @@ function TradeTerminal() {
           <div
             style={{ paddingBottom: "max(env(safe-area-inset-bottom, 0px), 1.25rem)" }}
             className={`w-full max-w-lg rounded-t-2xl border-t p-5 pt-4 space-y-4 shadow-2xl animate-in slide-in-from-bottom duration-200 max-h-[90vh] overflow-y-auto ${
-              isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
+              isDark
+                ? "border-zinc-800 bg-zinc-950 text-white"
+                : "border-slate-300 bg-white text-slate-900"
             }`}
           >
-            <div className={`flex items-center justify-between border-b pb-3 ${
-              isDark ? "border-zinc-900" : "border-slate-200"
-            }`}>
+            <div
+              className={`flex items-center justify-between border-b pb-3 ${
+                isDark ? "border-zinc-900" : "border-slate-200"
+              }`}
+            >
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-zinc-300" />
-                <span className="text-xs font-bold uppercase tracking-wider">Terminal Settings</span>
+                <span className="text-xs font-bold uppercase tracking-wider">
+                  Terminal Settings
+                </span>
               </div>
               <button
                 onClick={() => setShowMobileMenu(false)}
@@ -3058,16 +3927,18 @@ function TradeTerminal() {
             {/* Market Index Selection */}
             <div className="space-y-1.5">
               <label className="text-xs text-zinc-500">Market Index</label>
-              <div className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
-                isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
-              }`}>
+              <div
+                className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                }`}
+              >
                 {MARKET_LIST.map((m) => {
                   const isSelected = marketSymbol === m.id;
                   return (
                     <button
                       key={m.id}
                       type="button"
-                      disabled={running}
+                      disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
                       onClick={() => handleSelectMarket(m.id)}
                       className={`rounded py-2 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
                         isSelected
@@ -3096,12 +3967,15 @@ function TradeTerminal() {
                 value={activeId || ""}
                 onChange={(e) => switchAccount(e.target.value)}
                 className={`w-full rounded border p-2.5 text-xs font-semibold outline-none ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-white" : "border-slate-300 bg-white text-slate-900"
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-white"
+                    : "border-slate-300 bg-white text-slate-900"
                 }`}
               >
                 {accounts.map((acc) => (
                   <option key={acc.account_id} value={acc.account_id}>
-                    {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — ${Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
+                    {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"}) — $
+                    {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
                   </option>
                 ))}
               </select>
@@ -3114,15 +3988,25 @@ function TradeTerminal() {
                 onClick={toggleNotifications}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
                   notifsEnabled
-                    ? isDark ? "border-zinc-600 bg-zinc-900 text-zinc-300" : "border-zinc-500 bg-zinc-100 text-zinc-800"
-                    : isDark ? "border-zinc-800 bg-zinc-900 text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-700"
+                    ? isDark
+                      ? "border-zinc-600 bg-zinc-900 text-zinc-300"
+                      : "border-zinc-500 bg-zinc-100 text-zinc-800"
+                    : isDark
+                      ? "border-zinc-800 bg-zinc-900 text-zinc-400"
+                      : "border-slate-200 bg-slate-50 text-slate-700"
                 }`}
               >
-                <span className={`h-1.5 w-1.5 rounded-full ${
-                notifsEnabled
-                  ? isDark ? "bg-emerald-400 animate-pulse" : "bg-emerald-600 animate-pulse"
-                  : isDark ? "bg-zinc-600" : "bg-slate-400"
-              }`} />
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    notifsEnabled
+                      ? isDark
+                        ? "bg-emerald-400 animate-pulse"
+                        : "bg-emerald-600 animate-pulse"
+                      : isDark
+                        ? "bg-zinc-600"
+                        : "bg-slate-400"
+                  }`}
+                />
                 NOTIF: {notifsEnabled ? "ON" : "OFF"}
               </button>
 
@@ -3131,8 +4015,12 @@ function TradeTerminal() {
                 onClick={toggleSound}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 ${
                   soundEnabled
-                    ? isDark ? "border-zinc-700 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
-                    : isDark ? "border-zinc-800 text-zinc-500" : "border-slate-200 text-slate-400"
+                    ? isDark
+                      ? "border-zinc-700 bg-zinc-900 text-zinc-200"
+                      : "border-slate-300 bg-slate-100 text-slate-800"
+                    : isDark
+                      ? "border-zinc-800 text-zinc-500"
+                      : "border-slate-200 text-slate-400"
                 }`}
               >
                 SOUND: {soundEnabled ? "ON" : "OFF"}
@@ -3142,7 +4030,9 @@ function TradeTerminal() {
                 type="button"
                 onClick={toggleTheme}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-200"
+                    : "border-slate-300 bg-slate-100 text-slate-800"
                 }`}
               >
                 THEME: {isDark ? "DARK" : "LIGHT"}
@@ -3151,8 +4041,11 @@ function TradeTerminal() {
               <button
                 type="button"
                 onClick={runBacktest1000Ticks}
+                disabled={strategyMode === "x2x"}
                 className={`rounded border p-2.5 text-xs font-bold uppercase tracking-wider ${
-                  isDark ? "border-zinc-800 bg-zinc-900 text-zinc-200" : "border-slate-300 bg-slate-100 text-slate-800"
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-200"
+                    : "border-slate-300 bg-slate-100 text-slate-800"
                 }`}
               >
                 TEST 1K TICKS
@@ -3181,7 +4074,9 @@ function TradeTerminal() {
                 setShowConnectModal(true);
               }}
               className={`w-full rounded border py-2.5 text-xs font-bold uppercase tracking-wider ${
-                isDark ? "border-zinc-700 text-zinc-300 bg-zinc-900/40" : "border-zinc-300 text-zinc-800 bg-zinc-100"
+                isDark
+                  ? "border-zinc-700 text-zinc-300 bg-zinc-900/40"
+                  : "border-zinc-300 text-zinc-800 bg-zinc-100"
               }`}
             >
               CONNECT DERIV ACCOUNT
@@ -3201,9 +4096,11 @@ function TradeTerminal() {
             </button>
 
             {/* Mobile Drawer Attribution */}
-            <div className={`pt-2 border-t text-center font-mono text-[11px] ${
-              isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
-            }`}>
+            <div
+              className={`pt-2 border-t text-center font-mono text-[11px] ${
+                isDark ? "border-zinc-900 text-zinc-500" : "border-slate-200 text-slate-500"
+              }`}
+            >
               <span>Built by </span>
               <a
                 href="https://architeq.co.za"
@@ -3221,13 +4118,21 @@ function TradeTerminal() {
       {/* 6. Backtest / Test Results Modal */}
       {showBacktestModal && backtest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-lg rounded-xl border p-5 sm:p-6 space-y-5 shadow-2xl ${
-            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-200 bg-white text-slate-900"
-          }`}>
-            <div className={`flex items-center justify-between border-b pb-3 ${
-              isDark ? "border-zinc-900" : "border-slate-200"
-            }`}>
-              <span className={`text-xs font-bold uppercase tracking-wider ${isDark ? "text-white" : "text-slate-900"}`}>
+          <div
+            className={`w-full max-w-lg rounded-xl border p-5 sm:p-6 space-y-5 shadow-2xl ${
+              isDark
+                ? "border-zinc-800 bg-zinc-950 text-white"
+                : "border-slate-200 bg-white text-slate-900"
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between border-b pb-3 ${
+                isDark ? "border-zinc-900" : "border-slate-200"
+              }`}
+            >
+              <span
+                className={`text-xs font-bold uppercase tracking-wider ${isDark ? "text-white" : "text-slate-900"}`}
+              >
                 1,000 TICKS BACKTEST RESULTS
               </span>
               <button
@@ -3239,27 +4144,39 @@ function TradeTerminal() {
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Calculated across the latest {backtest.totalTicks} real market ticks of {currentMarket.displayName} using the Deriv Matches strategy (spread ≤ {maxDiff}%, enter on most appearing digit, target second most appearing digit):
+              Calculated across the latest {backtest.totalTicks} real market ticks of{" "}
+              {currentMarket.displayName} using the Deriv Matches strategy (spread ≤ {maxDiff}%,
+              enter on most appearing digit, target second most appearing digit):
             </p>
 
-            <div className={`grid grid-cols-2 gap-4 rounded border p-4 num ${
-              isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-            }`}>
+            <div
+              className={`grid grid-cols-2 gap-4 rounded border p-4 num ${
+                isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+              }`}
+            >
               <div>
                 <span className="text-[10px] uppercase text-zinc-500">Signals Found</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>{backtest.signals}</div>
+                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
+                  {backtest.signals}
+                </div>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-zinc-500">Win Rate</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>{backtest.winRate.toFixed(1)}%</div>
+                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
+                  {backtest.winRate.toFixed(1)}%
+                </div>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-zinc-500">Wins / Losses</span>
-                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>{backtest.wins}W · {backtest.losses}L</div>
+                <div className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
+                  {backtest.wins}W · {backtest.losses}L
+                </div>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-zinc-500">Simulated Net P/L</span>
-                <div className={`text-2xl font-light ${backtest.netPnl > 0 ? "text-emerald-500" : backtest.netPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}>
+                <div
+                  className={`text-2xl font-light ${backtest.netPnl > 0 ? "text-emerald-500" : backtest.netPnl < 0 ? "text-red-500" : isDark ? "text-white" : "text-slate-900"}`}
+                >
                   {backtest.netPnl >= 0 ? "+" : ""}${backtest.netPnl.toFixed(2)}
                 </div>
               </div>
@@ -3278,15 +4195,19 @@ function TradeTerminal() {
       {/* 7. iOS PWA Install Guide Modal */}
       {showIOSInstallGuide && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className={`w-full max-w-sm rounded-xl border p-5 sm:p-6 space-y-4 shadow-2xl ${
-            isDark ? "border-zinc-800 bg-zinc-950 text-white" : "border-slate-300 bg-white text-slate-900"
-          }`}>
-            <div className={`flex items-center justify-between border-b pb-3 ${
-              isDark ? "border-zinc-900" : "border-slate-200"
-            }`}>
-              <span className="text-xs font-bold uppercase tracking-wider">
-                Install on iOS
-              </span>
+          <div
+            className={`w-full max-w-sm rounded-xl border p-5 sm:p-6 space-y-4 shadow-2xl ${
+              isDark
+                ? "border-zinc-800 bg-zinc-950 text-white"
+                : "border-slate-300 bg-white text-slate-900"
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between border-b pb-3 ${
+                isDark ? "border-zinc-900" : "border-slate-200"
+              }`}
+            >
+              <span className="text-xs font-bold uppercase tracking-wider">Install on iOS</span>
               <button
                 onClick={() => setShowIOSInstallGuide(false)}
                 className="text-xs font-bold uppercase text-zinc-500 hover:text-white"
@@ -3298,9 +4219,18 @@ function TradeTerminal() {
               To install ThDpst Matches as a full-screen app on your iPhone or iPad home screen:
             </p>
             <ol className="space-y-2.5 text-xs text-zinc-300 list-decimal list-inside leading-relaxed">
-              <li>Tap the <span className="font-semibold text-zinc-300">Share</span> button in Safari's bottom toolbar.</li>
-              <li>Scroll down and select <span className="font-semibold text-zinc-300">Add to Home Screen</span>.</li>
-              <li>Tap <span className="font-semibold text-zinc-300">Add</span> in the top-right corner.</li>
+              <li>
+                Tap the <span className="font-semibold text-zinc-300">Share</span> button in
+                Safari's bottom toolbar.
+              </li>
+              <li>
+                Scroll down and select{" "}
+                <span className="font-semibold text-zinc-300">Add to Home Screen</span>.
+              </li>
+              <li>
+                Tap <span className="font-semibold text-zinc-300">Add</span> in the top-right
+                corner.
+              </li>
             </ol>
             <button
               onClick={() => setShowIOSInstallGuide(false)}
