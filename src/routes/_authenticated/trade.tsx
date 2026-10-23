@@ -1452,7 +1452,7 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Trade #${p.runIndex} lost (${resultDigit} ≠${p.target}). Re-analyzing market distribution...`,
+        `Trade #${p.runIndex} lost (${resultDigit} ≠ ${p.target}). Re-analyzing market distribution...`,
       );
       return;
     }
