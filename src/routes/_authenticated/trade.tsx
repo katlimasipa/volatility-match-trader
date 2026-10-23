@@ -1786,7 +1786,7 @@ function TradeTerminal() {
       );
       return;
     }
-    if (!isConnectedToDeriv || !tradingReady) {
+    if (!isConnectedToDeriv) {
       setShowConnectModal(true);
       setNote("Connect Deriv Auth 2.0 so trades hit your account and the balance updates.");
       return;
@@ -1803,15 +1803,24 @@ function TradeTerminal() {
     lossStreakRef.current = 0;
     connectionLostAlertedRef.current = false;
     if (typeof window !== "undefined") {
-      localStorage.setItem("deriv_bot_is_running", "true");
+      try {
+        localStorage.setItem("deriv_bot_is_running", "true");
+      } catch {
+        setTradingStatusNote(
+          "Browser storage is unavailable. The bot will run in this tab but cannot auto-resume after refresh.",
+        );
+      }
     }
+    const tradingConnectionReady = tradingReady && Boolean(tradingRef.current?.isReady());
     setRunning(true);
     stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
-      strategyMode === "x2x"
-        ? `X2X Sniper active on ${activeAccount.account_id}. Scanning Volatility 100 tick digits for X2X signals...`
-        : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`,
+      tradingConnectionReady
+        ? strategyMode === "x2x"
+          ? `X2X Sniper active on ${activeAccount.account_id}. Scanning Volatility 100 tick digits for X2X signals...`
+          : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
+        : `Bot started on ${activeAccount.account_id}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
   }
@@ -1820,7 +1829,11 @@ function TradeTerminal() {
     const wasRunning = running || stateRef.current.running;
     cancelPendingX2XSignal("Bot stopped by user; the pending X2X signal was cancelled.");
     if (typeof window !== "undefined") {
-      localStorage.removeItem("deriv_bot_is_running");
+      try {
+        localStorage.removeItem("deriv_bot_is_running");
+      } catch {
+        // Stopping the bot must still work when browser storage is unavailable.
+      }
     }
     setRunning(false);
     stateRef.current.running = false;
@@ -1955,8 +1968,14 @@ function TradeTerminal() {
 
   // Auto-resume running state from localStorage if restored
   useEffect(() => {
-    const wasRunning =
-      typeof window !== "undefined" && localStorage.getItem("deriv_bot_is_running") === "true";
+    let wasRunning = false;
+    if (typeof window !== "undefined") {
+      try {
+        wasRunning = localStorage.getItem("deriv_bot_is_running") === "true";
+      } catch {
+        // Auto-resume is optional; the bot can still be started manually.
+      }
+    }
     if (
       wasRunning &&
       !running &&
