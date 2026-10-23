@@ -652,7 +652,7 @@ function TradeTerminal() {
     return () => unsub();
   }, []);
 
-  // Cross-device alerts: same Deriv account ÃƒÂ¢Ã¢â‚¬Â ’ Realtime + catch-up + Web Push
+  // Cross-device alerts: same Deriv account → Realtime + catch-up + Web Push
   useEffect(() => {
     const accountId = activeAccount?.account_id || getActiveAccountId();
     let cancelled = false;
@@ -1452,7 +1452,7 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Trade #${p.runIndex} lost (${resultDigit} Ã¢â€°Â  ${p.target}). Re-analyzing market distribution...`,
+        `Trade #${p.runIndex} lost (${resultDigit} ≠${p.target}). Re-analyzing market distribution...`,
       );
       return;
     }
@@ -2881,13 +2881,13 @@ function TradeTerminal() {
                   >
                     {x2xScannerState.recentDigits.length > 0
                       ? x2xScannerState.recentDigits.join(
-                          " ÃƒÂ¢Ã¢â‚¬Â ’ ",
+                          " → ",
                         )
                       : "Waiting for live ticks"}
                   </div>
                   <div className="text-[10px] leading-relaxed text-zinc-500">
                     {x2xScannerState.signal?.phase === "awaiting-ldp"
-                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} ÃƒÂ¢Ã¢â‚¬Â ’ OP ${x2xScannerState.signal.opTrigger}.`
+                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
                       : x2xScannerState.signal?.phase === "awaiting-op"
                         ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
                         : "Scanning consecutive live tick digits for X2X."}
@@ -2932,7 +2932,7 @@ function TradeTerminal() {
                         >
                           <span className="font-mono text-zinc-700 dark:text-zinc-300">
                             {signal.pattern} · {signal.referencePair}{" "}
-                            ÃƒÂ¢Ã¢â‚¬Â ’{" "}
+                            →{" "}
                             {signal.opTrigger ?? "rejected"}
                             {signal.ldp === null ? "" : ` · LDP ${signal.ldp}`}
                           </span>
@@ -2957,7 +2957,7 @@ function TradeTerminal() {
                                 (timestamp, index) =>
                                   `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
                               )
-                              .join(" ÃƒÂ¢Ã¢â‚¬Â ’ ")}
+                              .join(" → ")}
                           </span>
                           {signal.reason && (
                             <span className="text-right text-zinc-500">{signal.reason}</span>
@@ -4068,7 +4068,7 @@ function TradeTerminal() {
                               >
                                 <span className="font-mono">
                                   {signal.pattern} · {signal.referencePair}{" "}
-                                  ÃƒÂ¢Ã¢â‚¬Â ’{" "}
+                                  →{" "}
                                   {signal.opTrigger ?? "invalid"} · LDP{" "}
                                   {signal.ldp ?? "--"}
                                 </span>
@@ -4097,7 +4097,7 @@ function TradeTerminal() {
                                       (timestamp, index) =>
                                         `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
                                     )
-                                    .join(" ÃƒÂ¢Ã¢â‚¬Â ’ ")}
+                                    .join(" → ")}
                                 </span>
                                 {signal.reason && (
                                   <span className="text-right text-zinc-500">{signal.reason}</span>
@@ -4333,7 +4333,7 @@ function TradeTerminal() {
               rel="noopener noreferrer"
               className="font-bold text-zinc-400 hover:text-zinc-300 hover:underline transition-colors"
             >
-              Architeq Web Agency ÃƒÂ¢Ã¢â‚¬Â —
+              Architeq Web Agency ©
             </a>
           </div>
         </footer>
@@ -4682,7 +4682,7 @@ function TradeTerminal() {
                 rel="noopener noreferrer"
                 className="text-zinc-400 hover:text-zinc-300 font-bold hover:underline"
               >
-                Architeq Web Agency ÃƒÂ¢Ã¢â‚¬Â —
+                Architeq Web Agency ©
               </a>
             </div>
           </div>
