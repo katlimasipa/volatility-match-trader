@@ -652,7 +652,7 @@ function TradeTerminal() {
     return () => unsub();
   }, []);
 
-  // Cross-device alerts: same Deriv account ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ Realtime + catch-up + Web Push
+  // Cross-device alerts: same Deriv account ÃƒÂ¢Ã¢â‚¬Â ’ Realtime + catch-up + Web Push
   useEffect(() => {
     const accountId = activeAccount?.account_id || getActiveAccountId();
     let cancelled = false;
@@ -1452,7 +1452,7 @@ function TradeTerminal() {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
-        `Trade #${p.runIndex} lost (${resultDigit} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€š  ${p.target}). Re-analyzing market distribution...`,
+        `Trade #${p.runIndex} lost (${resultDigit} Ã¢â€°Â  ${p.target}). Re-analyzing market distribution...`,
       );
       return;
     }
@@ -1749,7 +1749,7 @@ function TradeTerminal() {
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread verified (ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${a.diff.toFixed(2)}% ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
+        `Spread verified (ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
       );
     } else {
       setBotState("ANALYZING");
@@ -2745,7 +2745,7 @@ function TradeTerminal() {
                     >
                       {tradingReady
                         ? "LIVE TRADING"
-                        : "AUTHED ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· SOCKETÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦"}
+                        : "AUTHED · SOCKET…"}
                     </button>
                     <button
                       onClick={refreshDerivBalances}
@@ -2821,8 +2821,8 @@ function TradeTerminal() {
                   <label className="text-xs text-zinc-500">Contract & Market</label>
                   <span className="text-[10px] text-zinc-500">
                     {strategyMode === "x2x"
-                      ? "X2X ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 1 TICK"
-                      : "Matches ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH"}
+                      ? "X2X · DIGITMATCH · 1 TICK"
+                      : "Matches · DIGITMATCH"}
                   </span>
                 </div>
                 <div
@@ -2859,7 +2859,7 @@ function TradeTerminal() {
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
                     ? "Volatility 100 only: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's two-decimal value minus 20."
-                    : `Enter on most appearing digit, match second most digit when spread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
+                    : `Enter on most appearing digit, match second most digit when spread ≤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
@@ -2873,21 +2873,21 @@ function TradeTerminal() {
                     X2X LIVE SCAN
                   </div>
                   <div className="text-[10px] text-zinc-500">
-                    Volatility 100 ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· DIGITMATCH ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· 1 tick
-                    ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Stake ${stake.toFixed(2)}
+                    Volatility 100 · DIGITMATCH · 1 tick
+                    · Stake ${stake.toFixed(2)}
                   </div>
                   <div
                     className={`font-mono text-xs ${isDark ? "text-zinc-200" : "text-zinc-800"}`}
                   >
                     {x2xScannerState.recentDigits.length > 0
                       ? x2xScannerState.recentDigits.join(
-                          " ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ",
+                          " ÃƒÂ¢Ã¢â‚¬Â ’ ",
                         )
                       : "Waiting for live ticks"}
                   </div>
                   <div className="text-[10px] leading-relaxed text-zinc-500">
                     {x2xScannerState.signal?.phase === "awaiting-ldp"
-                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ OP ${x2xScannerState.signal.opTrigger}.`
+                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} ÃƒÂ¢Ã¢â‚¬Â ’ OP ${x2xScannerState.signal.opTrigger}.`
                       : x2xScannerState.signal?.phase === "awaiting-op"
                         ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
                         : "Scanning consecutive live tick digits for X2X."}
@@ -2931,23 +2931,23 @@ function TradeTerminal() {
                           className="grid grid-cols-[1fr_auto] gap-x-2 py-1.5 text-[10px]"
                         >
                           <span className="font-mono text-zinc-700 dark:text-zinc-300">
-                            {signal.pattern} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.referencePair}{" "}
-                            ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢{" "}
+                            {signal.pattern} · {signal.referencePair}{" "}
+                            ÃƒÂ¢Ã¢â‚¬Â ’{" "}
                             {signal.opTrigger ?? "rejected"}
-                            {signal.ldp === null ? "" : ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· LDP ${signal.ldp}`}
+                            {signal.ldp === null ? "" : ` · LDP ${signal.ldp}`}
                           </span>
                           <span className="text-right uppercase text-zinc-500">
                             {signal.status.replaceAll("_", " ")}
                           </span>
                           <span className="text-zinc-500">
-                            {new Date(signal.detectedAt).toLocaleTimeString()} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·{" "}
+                            {new Date(signal.detectedAt).toLocaleTimeString()} ·{" "}
                             {signal.eligibleTicksElapsed}/10 eligible ticks
                             {signal.status === "cancelled" && signal.cancelledAt
                               ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
                               : ""}
-                            {` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.contractDuration} tick`}
+                            {` · ${signal.contractDuration} tick`}
                             {signal.contractId
-                              ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· contract ${signal.contractId}`
+                              ? ` · contract ${signal.contractId}`
                               : ""}
                           </span>
                           <span className="text-zinc-500">
@@ -2957,7 +2957,7 @@ function TradeTerminal() {
                                 (timestamp, index) =>
                                   `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
                               )
-                              .join(" ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ")}
+                              .join(" ÃƒÂ¢Ã¢â‚¬Â ’ ")}
                           </span>
                           {signal.reason && (
                             <span className="text-right text-zinc-500">{signal.reason}</span>
@@ -2979,7 +2979,7 @@ function TradeTerminal() {
                       </span>
                       <div className="flex items-center gap-1">
                         <span className="text-zinc-500 text-[10px]">
-                          ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤
+                          ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ≤
                         </span>
                         <input
                           type="text"
@@ -3034,8 +3034,8 @@ function TradeTerminal() {
                     </div>
                     <p className="text-[10px] text-zinc-500 leading-tight">
                       {maxDiff === 0.3
-                        ? "Strict rule: requires top 2 digits to differ by ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 0.3% (ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ 3 ticks out of 1,000)."
-                        : `Relaxed threshold: triggers trade entry when spread is ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%.`}
+                        ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
+                        : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
                     </p>
                   </div>
                 </>
@@ -3895,7 +3895,7 @@ function TradeTerminal() {
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
                             <div className="mt-1 text-[11px] text-zinc-500">
-                              {new Date(saved.savedAt).toLocaleString()} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·{" "}
+                              {new Date(saved.savedAt).toLocaleString()} ·{" "}
                               {MARKETS[saved.marketSymbol].classicSymbol}
                             </div>
                           </div>
@@ -3987,11 +3987,11 @@ function TradeTerminal() {
                         </div>
 
                         <div className="mt-3 text-[11px] text-zinc-500">
-                          Spread threshold {saved.spreadThreshold}% ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Base stake{" "}
-                          {saved.baseStake.toFixed(2)} USD ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· Martingale{" "}
+                          Spread threshold {saved.spreadThreshold}% · Base stake{" "}
+                          {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
                           {saved.x2xSignals?.length
-                            ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· X2X signals ${saved.x2xSignals.length}`
+                            ? ` · X2X signals ${saved.x2xSignals.length}`
                             : ""}
                         </div>
 
@@ -4067,9 +4067,9 @@ function TradeTerminal() {
                                 }`}
                               >
                                 <span className="font-mono">
-                                  {signal.pattern} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.referencePair}{" "}
-                                  ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢{" "}
-                                  {signal.opTrigger ?? "invalid"} ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· LDP{" "}
+                                  {signal.pattern} · {signal.referencePair}{" "}
+                                  ÃƒÂ¢Ã¢â‚¬Â ’{" "}
+                                  {signal.opTrigger ?? "invalid"} · LDP{" "}
                                   {signal.ldp ?? "--"}
                                 </span>
                                 <span className="text-right uppercase text-zinc-500">
@@ -4077,17 +4077,17 @@ function TradeTerminal() {
                                 </span>
                                 <span className="text-zinc-500">
                                   {new Date(signal.detectedAt).toLocaleString()}{" "}
-                                  ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {signal.eligibleTicksElapsed}/10 eligible
+                                  · {signal.eligibleTicksElapsed}/10 eligible
                                   ticks
                                   {signal.status === "cancelled" && signal.cancelledAt
                                     ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
                                     : ""}
-                                  {` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.contractDuration} tick`}
+                                  {` · ${signal.contractDuration} tick`}
                                   {signal.contractId
-                                    ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· contract ${signal.contractId}`
+                                    ? ` · contract ${signal.contractId}`
                                     : ""}
                                   {signal.result
-                                    ? ` ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· ${signal.result.toUpperCase()}`
+                                    ? ` · ${signal.result.toUpperCase()}`
                                     : ""}
                                 </span>
                                 <span className="text-zinc-500">
@@ -4097,7 +4097,7 @@ function TradeTerminal() {
                                       (timestamp, index) =>
                                         `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
                                     )
-                                    .join(" ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ ")}
+                                    .join(" ÃƒÂ¢Ã¢â‚¬Â ’ ")}
                                 </span>
                                 {signal.reason && (
                                   <span className="text-right text-zinc-500">{signal.reason}</span>
@@ -4285,7 +4285,7 @@ function TradeTerminal() {
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
-                      : `ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%`}
+                      : `ÃƒÆ’Ã…Â½ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ≤ ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -4333,7 +4333,7 @@ function TradeTerminal() {
               rel="noopener noreferrer"
               className="font-bold text-zinc-400 hover:text-zinc-300 hover:underline transition-colors"
             >
-              Architeq Web Agency ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+              Architeq Web Agency ÃƒÂ¢Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
             </a>
           </div>
         </footer>
@@ -4682,7 +4682,7 @@ function TradeTerminal() {
                 rel="noopener noreferrer"
                 className="text-zinc-400 hover:text-zinc-300 font-bold hover:underline"
               >
-                Architeq Web Agency ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+                Architeq Web Agency ÃƒÂ¢Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
               </a>
             </div>
           </div>
@@ -4722,7 +4722,7 @@ function TradeTerminal() {
             <p className="text-xs text-zinc-400 leading-relaxed">
               {backtest.strategyMode === "x2x"
                 ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent Volatility 100 quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
-                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°Ãƒâ€šÃ‚Â¤ ${maxDiff}%, enter on most appearing digit, target second most appearing digit).`}
+                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ≤ ${maxDiff}%, enter on most appearing digit, target second most appearing digit).`}
             </p>
 
             {backtest.x2x ? (
@@ -4780,7 +4780,7 @@ function TradeTerminal() {
                   <div
                     className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
                   >
-                    {backtest.wins}W ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â· {backtest.losses}L
+                    {backtest.wins}W · {backtest.losses}L
                   </div>
                 </div>
                 <div>
