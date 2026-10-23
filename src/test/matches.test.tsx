@@ -112,10 +112,10 @@ describe("Volatility 100 Matches strategy", () => {
     expect(a.mostPct).toBe(15.0);
     expect(a.secondPct).toBe(14.8);
     expect(a.diff).toBe(0.2);
-    expect(a.ok).toBe(true);
+    expect(a.ok).toBe(false);
   });
 
-  it("allows trade when difference is <= 0.3 (default MAX_DIFF)", () => {
+  it("allows trade when difference exactly matches 0.3 (default MAX_DIFF)", () => {
     // Exactly 1000 ticks: 120/1000 = 12.0%, 117/1000 = 11.7% -> diff exactly 0.3
     const counts = [95, 95, 95, 120, 95, 95, 95, 117, 94, 99];
     const a = analyze(build(counts));
@@ -124,8 +124,8 @@ describe("Volatility 100 Matches strategy", () => {
     expect(a.ok).toBe(true);
   });
 
-  it("blocks trade when difference exceeds 0.3 (default MAX_DIFF)", () => {
-    // Exactly 1000 ticks: 120/1000 = 12.0%, 116/1000 = 11.6% -> diff 0.4 > 0.3
+  it("blocks trade when difference does not exactly match 0.3 (default MAX_DIFF)", () => {
+    // Exactly 1000 ticks: 120/1000 = 12.0%, 116/1000 = 11.6% -> diff 0.4 != 0.3
     const counts = [98, 98, 98, 120, 98, 98, 98, 116, 88, 88];
     const a = analyze(build(counts));
     expect(a.most).toBe(3);
@@ -133,19 +133,23 @@ describe("Volatility 100 Matches strategy", () => {
     expect(a.ok).toBe(false);
   });
 
-  it("supports configurable spread threshold", () => {
-    const counts = [95, 95, 95, 125, 95, 95, 95, 115, 90, 100]; // 1000 ticks, diff 1.0%
+  it("requires the configured spread target to match exactly", () => {
+    const counts = [95, 95, 95, 122, 95, 95, 95, 115, 93, 100]; // 1000 ticks, diff 0.7%
     const strictAnalysis = analyze(build(counts), 0.3);
-    expect(strictAnalysis.diff).toBe(1.0);
+    expect(strictAnalysis.diff).toBe(0.7);
     expect(strictAnalysis.ok).toBe(false);
 
-    const relaxedAnalysis = analyze(build(counts), 1.5);
-    expect(relaxedAnalysis.diff).toBe(1.0);
-    expect(relaxedAnalysis.ok).toBe(true);
+    const exactAnalysis = analyze(build(counts), 0.7);
+    expect(exactAnalysis.diff).toBe(0.7);
+    expect(exactAnalysis.ok).toBe(true);
+
+    const differentAnalysis = analyze(build(counts), 1.5);
+    expect(differentAnalysis.diff).toBe(0.7);
+    expect(differentAnalysis.ok).toBe(false);
   });
 
   it("uses the most appearing digit as entry trigger", () => {
-    const counts = [98, 98, 98, 120, 98, 98, 98, 118, 87, 87];
+    const counts = [98, 98, 98, 120, 98, 98, 98, 117, 88, 87];
     const a = analyze(build(counts));
     expect(a.most).toBe(3);
     expect(a.second).toBe(7);

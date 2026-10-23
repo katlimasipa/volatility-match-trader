@@ -46,6 +46,9 @@ import {
   lastTwoQuoteDigits,
   rememberUniqueX2XTick,
   runX2XBacktest,
+  normalizeX2XOpWaitTicks,
+  X2X_MAX_OP_WAIT_TICKS,
+  X2X_OP_WINDOW_TICKS,
   type X2XBacktestResult,
   type X2XQuoteDigit,
   type X2XScannerEvent,
@@ -143,6 +146,7 @@ interface X2XSignalRecord {
   ldp: number | null;
   contractDuration: 1;
   eligibleTicksElapsed: number;
+  eligibleTicksLimit?: number | null;
   status: X2XSignalStatus;
   updatedAt: string;
   cancelledAt?: string | undefined;
@@ -167,12 +171,14 @@ interface SavedSession {
   martingaleEnabled: boolean;
   strategyMode?: StrategyMode;
   x2xSignals?: X2XSignalRecord[];
+  x2xOpWaitTicks?: number | null;
 }
 
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
 const STRATEGY_MODE_STORAGE_KEY = "thdpst_strategy_mode_v1";
 const X2X_SIGNAL_HISTORY_STORAGE_KEY = "thdpst_x2x_signal_history_v1";
 const X2X_SCANNER_STORAGE_KEY = "thdpst_x2x_scanner_state_v1";
+const X2X_OP_WAIT_TICKS_STORAGE_KEY = "thdpst_x2x_op_wait_ticks_v1";
 const X2X_SEEN_TICK_IDS_STORAGE_KEY = "thdpst_x2x_seen_tick_ids_v1";
 const MAX_SAVED_SESSIONS = 50;
 const MAX_X2X_AUDIT_SIGNALS = 200;
@@ -259,6 +265,11 @@ function isSavedSession(value: unknown): value is SavedSession {
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x") &&
+    (saved.x2xOpWaitTicks === undefined ||
+      saved.x2xOpWaitTicks === null ||
+      (Number.isInteger(saved.x2xOpWaitTicks) &&
+        saved.x2xOpWaitTicks >= 1 &&
+        saved.x2xOpWaitTicks <= X2X_MAX_OP_WAIT_TICKS)) &&
     (saved.x2xSignals === undefined ||
       (Array.isArray(saved.x2xSignals) && saved.x2xSignals.every(isX2XSignalRecord)))
   );
@@ -299,6 +310,9 @@ function isX2XSignalRecord(value: unknown): value is X2XSignalRecord {
         signal.ldp <= 9)) &&
     signal.contractDuration === 1 &&
     Number.isInteger(signal.eligibleTicksElapsed) &&
+    (signal.eligibleTicksLimit === undefined ||
+      signal.eligibleTicksLimit === null ||
+      (Number.isInteger(signal.eligibleTicksLimit) && signal.eligibleTicksLimit >= 1)) &&
     [
       "signal_created",
       "monitoring",
@@ -356,6 +370,24 @@ function loadX2XScannerState(): X2XScannerState {
   } catch {
     return createX2XScannerState();
   }
+}
+
+function loadX2XOpWaitTicks(): number | null {
+  if (typeof window === "undefined") return X2X_OP_WINDOW_TICKS;
+  try {
+    const stored = localStorage.getItem(X2X_OP_WAIT_TICKS_STORAGE_KEY);
+    if (stored === null) return X2X_OP_WINDOW_TICKS;
+    return normalizeX2XOpWaitTicks(JSON.parse(stored));
+  } catch {
+    return X2X_OP_WINDOW_TICKS;
+  }
+}
+
+function formatX2XWaitProgress(elapsed: number, limit: number | null | undefined): string {
+  const effectiveLimit = limit === undefined ? X2X_OP_WINDOW_TICKS : limit;
+  return effectiveLimit === null
+    ? `${elapsed} eligible ticks · no expiry`
+    : `${elapsed}/${effectiveLimit} eligible ticks`;
 }
 
 function loadX2XSeenTickIds(): Set<string> {
@@ -508,8 +540,13 @@ function TradeTerminal() {
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("connecting");
 
   // Strategy & Bot configuration (Strictly Matches strategy parameters)
-  const [maxDiff, setMaxDiff] = useState<number>(0.3); // 0.3% is the user's strict requirement, configurable for testing
-  const [maxDiffInput, setMaxDiffInput] = useState<string>("0.3");
+  const [maxDiff, setMaxDiff] = useState<number>(MAX_DIFF);
+  const [maxDiffInput, setMaxDiffInput] = useState<string>(String(MAX_DIFF));
+  const [x2xOpWaitTicks, setX2xOpWaitTicks] = useState<number | null>(loadX2XOpWaitTicks);
+  const [x2xOpWaitTicksInput, setX2xOpWaitTicksInput] = useState<string>(() => {
+    const limit = loadX2XOpWaitTicks();
+    return limit === null ? "" : String(limit);
+  });
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
@@ -539,6 +576,17 @@ function TradeTerminal() {
   function updateMaxDiff(val: number, strVal?: string) {
     setMaxDiff(val);
     setMaxDiffInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateX2XOpWaitTicks(value: number | null) {
+    const normalized = normalizeX2XOpWaitTicks(value);
+    setX2xOpWaitTicks(normalized);
+    setX2xOpWaitTicksInput(normalized === null ? "" : String(normalized));
+    try {
+      localStorage.setItem(X2X_OP_WAIT_TICKS_STORAGE_KEY, JSON.stringify(normalized));
+    } catch {
+      // The current page setting still applies when local storage is unavailable.
+    }
   }
 
   function handleSelectMarket(m: MarketSymbol) {
@@ -765,6 +813,7 @@ function TradeTerminal() {
     martingaleEnabled,
     activeId,
     maxDiff,
+    x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
     marketSymbol,
@@ -782,6 +831,7 @@ function TradeTerminal() {
     martingaleEnabled,
     activeId,
     maxDiff,
+    x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
     marketSymbol,
@@ -841,6 +891,7 @@ function TradeTerminal() {
         detectedAt: event.detectedAt,
         referencePair: event.referencePair,
         opTrigger: event.opTrigger,
+        eligibleTicksLimit: event.eligibleTicksLimit,
         ldp: null,
         contractDuration: 1,
         eligibleTicksElapsed: 0,
@@ -879,7 +930,7 @@ function TradeTerminal() {
       triggerAt: event.type === "trigger" ? event.timestamp : undefined,
       reason:
         event.type === "expired"
-          ? "OP trigger did not appear within 10 eligible ticks."
+          ? `OP trigger did not appear within ${event.eligibleTicksLimit} eligible ticks.`
           : undefined,
     });
   }
@@ -897,6 +948,10 @@ function TradeTerminal() {
         detectedAt: signal.detectedAt,
         referencePair: signal.referencePair,
         opTrigger: signal.opTrigger,
+        eligibleTicksLimit:
+          signal.eligibleTicksLimit === undefined
+            ? X2X_OP_WINDOW_TICKS
+            : signal.eligibleTicksLimit,
         ldp: signal.ldp,
         contractDuration: 1,
         eligibleTicksElapsed: signal.eligibleTicksElapsed,
@@ -1158,10 +1213,10 @@ function TradeTerminal() {
         }
         setRecentTicks(initialTicks);
 
-        const a = analyze(dList);
+        const a = analyze(dList, stateRef.current.maxDiff);
         setBotState((cur) => (cur === "BUFFERING" ? "IDLE" : cur));
         setNote(
-          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (Threshold: <= ${MAX_DIFF}%). Ready to run.`,
+          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (exact target: ${stateRef.current.maxDiff}%). ${a.ok ? "Target matched; ready to evaluate entries." : "Target not matched; scanning until the spread equals the selected value."}`,
         );
       }
     });
@@ -1544,7 +1599,12 @@ function TradeTerminal() {
       const tradeBusy = Boolean(pending.current?.live || tradingRef.current?.isBuyInFlight());
       const opEligible =
         !tradeBusy && lossCooldownTicks.current === 0 && Boolean(tradingRef.current?.isReady());
-      const step = advanceX2XScanner(x2xScannerRef.current, tickInfo, opEligible);
+      const step = advanceX2XScanner(
+        x2xScannerRef.current,
+        tickInfo,
+        opEligible,
+        s.x2xOpWaitTicks,
+      );
       saveX2XScannerState(step.state);
       x2xEvent = step.event;
       recordX2XScannerEvent(step.event, step.state);
@@ -1658,12 +1718,14 @@ function TradeTerminal() {
       } else if (x2xEvent?.type === "ldp") {
         setBotState("WAITING ENTRY");
         setNote(
-          `X2X LDP ${x2xEvent.ldp} stored. Waiting for quote suffix ${x2xEvent.opTrigger} within the next 10 eligible ticks...`,
+          x2xScannerRef.current.signal?.eligibleTicksLimit === null
+            ? `X2X LDP ${x2xEvent.ldp} stored. Waiting for quote suffix ${x2xEvent.opTrigger} with no expiry...`
+            : `X2X LDP ${x2xEvent.ldp} stored. Waiting for quote suffix ${x2xEvent.opTrigger} within ${x2xScannerRef.current.signal?.eligibleTicksLimit ?? X2X_OP_WINDOW_TICKS} eligible ticks...`,
         );
       } else if (x2xEvent?.type === "expired") {
         setBotState("ANALYZING");
         setNote(
-          `X2X signal expired: OP ${x2xEvent.opTrigger} did not appear within 10 eligible ticks.`,
+          `X2X signal expired: OP ${x2xEvent.opTrigger} did not appear within ${x2xEvent.eligibleTicksLimit} eligible ticks.`,
         );
       } else if (x2xEvent?.type === "invalid-reference") {
         setBotState("ANALYZING");
@@ -1750,12 +1812,12 @@ function TradeTerminal() {
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread verified (Δ ${a.diff.toFixed(2)}% ≤ ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
+        `Spread matched exact target (Δ ${a.diff.toFixed(2)}% = ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
       );
     } else {
       setBotState("ANALYZING");
       setNote(
-        `Spread Δ ${a.diff.toFixed(2)}% > ${s.maxDiff}%. Analyzing last 1,000 ticks...`,
+        `Spread Δ ${a.diff.toFixed(2)}% does not equal target ${s.maxDiff}%. Analyzing last 1,000 ticks...`,
       );
     }
   }
@@ -1874,6 +1936,7 @@ function TradeTerminal() {
       martingaleEnabled,
       strategyMode,
       x2xSignals: signalHistory.map((signal) => ({ ...signal })),
+      ...(strategyMode === "x2x" ? { x2xOpWaitTicks } : {}),
     };
     const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
     if (!persistSavedSessions(nextHistory)) {
@@ -2016,6 +2079,7 @@ function TradeTerminal() {
       const replay = runX2XBacktest(x2xTicksRef.current.slice(-WINDOW), {
         reAnalyzeOnLoss,
         cooldownTicks: 5,
+        opWaitTicks: x2xOpWaitTicks,
       });
       setBacktest({
         strategyMode: "x2x",
@@ -2038,22 +2102,24 @@ function TradeTerminal() {
     }
 
     const windowDigits = digits.slice(-WINDOW);
-    const a = analyze(windowDigits);
+    const a = analyze(windowDigits, maxDiff);
     let signals = 0;
     let wins = 0;
     let losses = 0;
     let pnl = 0;
 
-    for (let i = 0; i < windowDigits.length - 1; i++) {
-      if (windowDigits[i] === a.most) {
-        signals++;
-        const nextDigit = windowDigits[i + 1];
-        if (nextDigit === a.second) {
-          wins++;
-          pnl += calculateMatchesPayout(stake, configuredMarkup).netWinProfit;
-        } else {
-          losses++;
-          pnl -= stake;
+    if (a.ok) {
+      for (let i = 0; i < windowDigits.length - 1; i++) {
+        if (windowDigits[i] === a.most) {
+          signals++;
+          const nextDigit = windowDigits[i + 1];
+          if (nextDigit === a.second) {
+            wins++;
+            pnl += calculateMatchesPayout(stake, configuredMarkup).netWinProfit;
+          } else {
+            losses++;
+            pnl -= stake;
+          }
         }
       }
     }
@@ -2633,7 +2699,7 @@ function TradeTerminal() {
                     : isDark
                       ? "text-zinc-400"
                       : "text-slate-600"
-                  : analysis.diff <= maxDiff
+                  : analysis.ok
                     ? isDark
                       ? "text-emerald-400 font-bold"
                       : "text-emerald-600 font-bold"
@@ -2879,7 +2945,7 @@ function TradeTerminal() {
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
                     ? "Volatility 100 only: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's two-decimal value minus 20."
-                    : `Enter on most appearing digit, match second most digit when spread ≤ ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
+                    : `Enter on the most appearing digit only when the spread exactly equals ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
@@ -2909,8 +2975,61 @@ function TradeTerminal() {
                     {x2xScannerState.signal?.phase === "awaiting-ldp"
                       ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
                       : x2xScannerState.signal?.phase === "awaiting-op"
-                        ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
+                        ? x2xScannerState.signal.eligibleTicksLimit === null
+                          ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} with no expiry (${x2xScannerState.signal.eligibleTicksElapsed} eligible ticks observed).`
+                          : `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
                         : "Scanning consecutive live tick digits for X2X."}
+                  </div>
+                  <div
+                    className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 ${
+                      isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <label className="flex items-center gap-2 text-[10px] font-semibold text-zinc-500">
+                      <input
+                        type="checkbox"
+                        checked={x2xOpWaitTicks === null}
+                        onChange={(event) =>
+                          updateX2XOpWaitTicks(event.target.checked ? null : X2X_OP_WINDOW_TICKS)
+                        }
+                        className="accent-emerald-500"
+                      />
+                      No expiry
+                    </label>
+                    <label className="flex items-center gap-2 text-[10px] text-zinc-500">
+                      Wait ticks
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        max={X2X_MAX_OP_WAIT_TICKS}
+                        step={1}
+                        value={x2xOpWaitTicksInput}
+                        disabled={x2xOpWaitTicks === null}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          if (!/^[0-9]*$/.test(value)) return;
+                          setX2xOpWaitTicksInput(value);
+                          const parsed = Number(value);
+                          if (value && parsed >= 1 && parsed <= X2X_MAX_OP_WAIT_TICKS) {
+                            updateX2XOpWaitTicks(parsed);
+                          }
+                        }}
+                        onBlur={() =>
+                          setX2xOpWaitTicksInput(
+                            x2xOpWaitTicks === null ? "" : String(x2xOpWaitTicks),
+                          )
+                        }
+                        className={`w-20 rounded border px-2 py-1 text-right font-mono text-xs outline-none disabled:opacity-40 ${
+                          isDark
+                            ? "border-zinc-800 bg-black text-zinc-200"
+                            : "border-slate-300 bg-white text-slate-800"
+                        }`}
+                      />
+                    </label>
+                  </div>
+                  <div className="text-[10px] leading-relaxed text-zinc-600">
+                    Choose a tick limit or no expiry for testing. Only eligible OP ticks count; the setting applies to new signals.
                   </div>
                   <div className="text-[10px] leading-relaxed text-zinc-600">
                     One signal is tracked at a time; patterns seen before it ends are ignored. OP
@@ -2961,7 +3080,7 @@ function TradeTerminal() {
                           </span>
                           <span className="text-zinc-500">
                             {new Date(signal.detectedAt).toLocaleTimeString()} ·{" "}
-                            {signal.eligibleTicksElapsed}/10 eligible ticks
+                            {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
                             {signal.status === "cancelled" && signal.cancelledAt
                               ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
                               : ""}
@@ -2995,11 +3114,11 @@ function TradeTerminal() {
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-zinc-500">
-                        Max Spread Δ Threshold
+                        Exact Spread Δ Target
                       </span>
                       <div className="flex items-center gap-1">
                         <span className="text-zinc-500 text-[10px]">
-                          Δ ≤
+                          Δ =
                         </span>
                         <input
                           type="text"
@@ -3018,7 +3137,7 @@ function TradeTerminal() {
                           onBlur={() => {
                             const num = parseDecimalInput(maxDiffInput);
                             if (isNaN(num) || num < 0.1) {
-                              updateMaxDiff(0.3);
+                              updateMaxDiff(MAX_DIFF);
                             } else {
                               updateMaxDiff(num);
                             }
@@ -3048,14 +3167,13 @@ function TradeTerminal() {
                                 : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
                           }`}
                         >
-                          {val === 0.3 ? "0.3% (SPEC)" : `${val}%`}
+                          {`${val}%`}
                         </button>
                       ))}
                     </div>
                     <p className="text-[10px] text-zinc-500 leading-tight">
-                      {maxDiff === 0.3
-                        ? "Strict rule: requires top 2 digits to differ by ≤ 0.3% (≤ 3 ticks out of 1,000)."
-                        : `Relaxed threshold: triggers trade entry when spread is ≤ ${maxDiff}%.`}
+                      The spread must equal {maxDiff}%. With 1,000 ticks, observed spread
+                      differences move in 0.1% steps.
                     </p>
                   </div>
                 </>
@@ -3347,7 +3465,7 @@ function TradeTerminal() {
                       <div
                         className={
                           "text-[11px] font-semibold num " +
-                          (analysis.diff <= maxDiff
+                          (analysis.ok
                             ? isDark
                               ? "text-emerald-400 font-bold"
                               : "text-emerald-600 font-bold"
@@ -3357,12 +3475,12 @@ function TradeTerminal() {
                         }
                       >
                         SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
-                        <span className="opacity-60">/ {maxDiff}%</span>
+                        <span className="opacity-60">= {maxDiff}% target</span>
                       </div>
                       <div
                         className={
                           "text-[10px] font-semibold " +
-                          (analysis.diff <= maxDiff
+                          (analysis.ok
                             ? isDark
                               ? "text-emerald-400"
                               : "text-emerald-600"
@@ -3371,7 +3489,7 @@ function TradeTerminal() {
                               : "text-slate-600")
                         }
                       >
-                        {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
+                        {analysis.ok ? "(READY)" : "(WAITING)"}
                       </div>
                     </div>
                   </div>
@@ -4007,7 +4125,10 @@ function TradeTerminal() {
                         </div>
 
                         <div className="mt-3 text-[11px] text-zinc-500">
-                          Spread threshold {saved.spreadThreshold}% · Base stake{" "}
+                          {saved.strategyMode === "x2x"
+                            ? `X2X OP wait ${saved.x2xOpWaitTicks === null ? "No expiry" : `${saved.x2xOpWaitTicks ?? X2X_OP_WINDOW_TICKS} ticks`}`
+                            : `Exact spread target ${saved.spreadThreshold}%`}
+                          {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
                           {saved.x2xSignals?.length
@@ -4097,8 +4218,7 @@ function TradeTerminal() {
                                 </span>
                                 <span className="text-zinc-500">
                                   {new Date(signal.detectedAt).toLocaleString()}{" "}
-                                  · {signal.eligibleTicksElapsed}/10 eligible
-                                  ticks
+                                  · {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
                                   {signal.status === "cancelled" && signal.cancelledAt
                                     ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
                                     : ""}
@@ -4300,12 +4420,12 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "OP Trigger" : "Spread Threshold"}
+                    {strategyMode === "x2x" ? "OP Trigger" : "Spread Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
-                      : `Δ ≤ ${maxDiff}%`}
+                      : `Δ = ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -4742,7 +4862,7 @@ function TradeTerminal() {
             <p className="text-xs text-zinc-400 leading-relaxed">
               {backtest.strategyMode === "x2x"
                 ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent Volatility 100 quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
-                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ≤ ${maxDiff}%, enter on most appearing digit, target second most appearing digit).`}
+                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread must equal ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the observed spread does not equal the target, no entries are counted.`}
             </p>
 
             {backtest.x2x ? (

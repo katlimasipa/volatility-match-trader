@@ -20,6 +20,8 @@ export interface X2XScannerSignal {
   ldp: number | null;
   eligibleTicksElapsed: number;
   eligibleTicksRemaining: number;
+  /** null means the OP signal does not expire; undefined is a legacy 10-tick signal. */
+  eligibleTicksLimit?: number | null;
 }
 
 export interface X2XScannerState {
@@ -43,6 +45,7 @@ export type X2XScannerEvent =
       detectedAt: string;
       referencePair: string;
       opTrigger: string;
+      eligibleTicksLimit: number | null;
     }
   | {
       type: "ldp";
@@ -76,6 +79,7 @@ export type X2XScannerEvent =
       opTrigger: string;
       ldp: number;
       eligibleTicksElapsed: number;
+      eligibleTicksLimit: number | null;
       timestamp: string;
     }
   | {
@@ -111,6 +115,13 @@ export interface X2XBacktestResult {
 }
 
 export const X2X_OP_WINDOW_TICKS = 10;
+export const X2X_MAX_OP_WAIT_TICKS = 10000;
+
+export function normalizeX2XOpWaitTicks(value: unknown): number | null {
+  if (value === null) return null;
+  if (!Number.isInteger(value) || Number(value) < 1) return X2X_OP_WINDOW_TICKS;
+  return Math.min(Number(value), X2X_MAX_OP_WAIT_TICKS);
+}
 
 export function createX2XScannerState(): X2XScannerState {
   return {
@@ -164,7 +175,10 @@ export function isX2XScannerState(value: unknown): value is X2XScannerState {
         typeof state.signal.opTrigger === "string" &&
         (typeof state.signal.ldp === "number" || state.signal.ldp === null) &&
         Number.isInteger(state.signal.eligibleTicksElapsed) &&
-        Number.isInteger(state.signal.eligibleTicksRemaining)))
+        Number.isInteger(state.signal.eligibleTicksRemaining) &&
+        (state.signal.eligibleTicksLimit === undefined ||
+          state.signal.eligibleTicksLimit === null ||
+          (Number.isInteger(state.signal.eligibleTicksLimit) && state.signal.eligibleTicksLimit >= 1))))
   );
 }
 
@@ -202,13 +216,15 @@ export function lastTwoQuoteDigits(quote: number, decimals = 2): string {
 
 /**
  * Advance one chronological tick. X2X is three successive tick digits X-2-X;
- * the next tick supplies LDP, and only the following ten eligible ticks can
- * match OP. While a signal is active, later X2X patterns are deliberately ignored.
+ * the next tick supplies LDP, then OP is checked for the configured number of
+ * eligible ticks (or indefinitely when the limit is null). While a signal is
+ * active, later X2X patterns are deliberately ignored.
  */
 export function advanceX2XScanner(
   state: X2XScannerState,
   tick: X2XQuoteDigit,
   eligibleForOp: boolean,
+  opWaitTicks: number | null = X2X_OP_WINDOW_TICKS,
 ): X2XScannerStep {
   const timestamp = tick.timestamp ?? new Date().toISOString();
   const recentDigits = [...state.recentDigits, tick.digit].slice(-3);
@@ -231,12 +247,17 @@ export function advanceX2XScanner(
   };
 
   if (signal?.phase === "awaiting-ldp") {
+    const eligibleTicksLimit =
+      signal.eligibleTicksLimit === undefined
+        ? normalizeX2XOpWaitTicks(opWaitTicks)
+        : signal.eligibleTicksLimit;
     const nextSignal: X2XScannerSignal = {
       ...signal,
       phase: "awaiting-op",
       ldp: tick.digit,
       eligibleTicksElapsed: 0,
-      eligibleTicksRemaining: X2X_OP_WINDOW_TICKS,
+      eligibleTicksRemaining: eligibleTicksLimit ?? 0,
+      eligibleTicksLimit,
     };
     return {
       state: { ...baseState, signal: nextSignal },
@@ -257,6 +278,10 @@ export function advanceX2XScanner(
   if (signal?.phase === "awaiting-op") {
     if (!eligibleForOp) return { state: { ...baseState, signal }, event: null };
 
+    const eligibleTicksLimit =
+      signal.eligibleTicksLimit === undefined
+        ? X2X_OP_WINDOW_TICKS
+        : signal.eligibleTicksLimit;
     const eligibleTicksElapsed = signal.eligibleTicksElapsed + 1;
     if (tick.lastTwoQuoteDigits === signal.opTrigger) {
       return {
@@ -276,7 +301,7 @@ export function advanceX2XScanner(
       };
     }
 
-    if (eligibleTicksElapsed >= X2X_OP_WINDOW_TICKS) {
+    if (eligibleTicksLimit !== null && eligibleTicksElapsed >= eligibleTicksLimit) {
       return {
         state: { ...baseState, ...clearDigitWindow, signal: null },
         event: {
@@ -288,6 +313,7 @@ export function advanceX2XScanner(
           opTrigger: signal.opTrigger,
           ldp: signal.ldp as number,
           eligibleTicksElapsed,
+          eligibleTicksLimit,
           timestamp,
         },
       };
@@ -299,7 +325,8 @@ export function advanceX2XScanner(
         signal: {
           ...signal,
           eligibleTicksElapsed,
-          eligibleTicksRemaining: X2X_OP_WINDOW_TICKS - eligibleTicksElapsed,
+          eligibleTicksRemaining:
+            eligibleTicksLimit === null ? 0 : eligibleTicksLimit - eligibleTicksElapsed,
         },
       },
       event: null,
@@ -350,6 +377,7 @@ export function advanceX2XScanner(
     ldp: null,
     eligibleTicksElapsed: 0,
     eligibleTicksRemaining: 0,
+    eligibleTicksLimit: normalizeX2XOpWaitTicks(opWaitTicks),
   };
   return {
     state: { ...baseState, nextSignalSequence, signal: nextSignal },
@@ -363,6 +391,7 @@ export function advanceX2XScanner(
       detectedAt: timestamp,
       referencePair,
       opTrigger,
+      eligibleTicksLimit: nextSignal.eligibleTicksLimit ?? null,
     },
   };
 }
@@ -370,7 +399,11 @@ export function advanceX2XScanner(
 /** Replay historical quotes through the exact live scanner without placing trades. */
 export function runX2XBacktest(
   ticks: X2XQuoteDigit[],
-  options: { reAnalyzeOnLoss?: boolean; cooldownTicks?: number } = {},
+  options: {
+    reAnalyzeOnLoss?: boolean;
+    cooldownTicks?: number;
+    opWaitTicks?: number | null;
+  } = {},
 ): X2XBacktestResult {
   let state = createX2XScannerState();
   let patternsDetected = 0;
@@ -391,7 +424,12 @@ export function runX2XBacktest(
     if (tick.tickId && !rememberUniqueX2XTick(seenTickIds, tick.tickId)) continue;
     const settlingTarget = contractTarget;
     const cooldownAtStart = cooldownRemaining;
-    const step = advanceX2XScanner(state, tick, settlingTarget === null && cooldownAtStart === 0);
+    const step = advanceX2XScanner(
+      state,
+      tick,
+      settlingTarget === null && cooldownAtStart === 0,
+      options.opWaitTicks === undefined ? X2X_OP_WINDOW_TICKS : options.opWaitTicks,
+    );
     state = step.state;
 
     if (settlingTarget !== null) {

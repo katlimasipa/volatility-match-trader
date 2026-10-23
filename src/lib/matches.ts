@@ -92,7 +92,7 @@ export const SYMBOL = CLASSIC_SYMBOL;
 export const DISPLAY_NAME = "Volatility 100";
 export const PIP_DECIMALS = 2;
 export const MARTINGALE_MULTIPLIER = 1.5;
-export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
+export const MAX_DIFF = 0.3; // exact spread-difference target by default
 export const WINDOW = 1000;
 
 export interface DigitPrediction {
@@ -255,15 +255,24 @@ export interface Analysis {
   secondPct: number;
   diff: number; // mostPct - secondPct
   ready: boolean; // strictly total >= WINDOW (1,000 ticks)
-  ok: boolean; // ready && diff <= maxDiff
+  ok: boolean; // ready && diff exactly matches the configured target
+}
+
+/**
+ * Spread values are rounded to three decimals before comparison. The tiny
+ * tolerance accounts only for floating-point representation, not a range.
+ */
+export function spreadMatchesThreshold(diff: number, threshold: number): boolean {
+  return Number.isFinite(diff) && Number.isFinite(threshold) && Math.abs(diff - threshold) < 1e-9;
 }
 
 /**
  * Compute frequency and percentage distribution of digits 0-9 across the last 1,000 ticks.
- * Determines most and second most appearing digits and verifies if spread <= maxDiff (defaults to 0.3%).
+ * Determines the most and second most appearing digits and verifies that their
+ * spread exactly matches the configured target (defaults to 0.3%).
  * Strictly requires at least 1,000 ticks buffered before condition (ok) can be met.
  */
-export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis {
+export function analyze(digits: number[], targetDiff: number = MAX_DIFF): Analysis {
   // Always evaluate against the rolling last 1,000 ticks
   const windowDigits = digits.length > WINDOW ? digits.slice(-WINDOW) : digits;
   const counts = new Array(10).fill(0);
@@ -296,14 +305,14 @@ export function analyze(digits: number[], maxDiff: number = MAX_DIFF): Analysis 
     secondPct,
     diff,
     ready,
-    ok: ready && diff <= maxDiff,
+    ok: ready && spreadMatchesThreshold(diff, targetDiff),
   };
 }
 
 /**
  * Trade entry condition:
  * 1. Exactly 1,000 ticks must have been analyzed (a.ready).
- * 2. Spread condition must be satisfied (diff <= 0.3% and a.ok).
+ * 2. Spread condition must be satisfied (diff exactly matches the configured target and a.ok).
  * 3. The current incoming digit must match the most appearing digit (entry point).
  */
 export function shouldEnter(a: Analysis, currentDigit: number): boolean {
