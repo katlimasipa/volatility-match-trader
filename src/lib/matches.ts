@@ -1,6 +1,6 @@
-// Matches strategy analysis for standard and 1-second Volatility 100 / 10 indices.
+// Matches strategy analysis for standard and 1-second Volatility 100 / 75 / 10 indices.
 
-export type MarketSymbol = "R_100" | "R_10" | "1HZ100V" | "1HZ10V";
+export type MarketSymbol = "R_100" | "R_75" | "R_10" | "1HZ100V" | "1HZ75V" | "1HZ10V";
 
 export interface MarketConfig {
   id: MarketSymbol;
@@ -20,6 +20,14 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     optionsSymbol: "R_100",
     pipDecimals: 2,
   },
+  R_75: {
+    id: "R_75",
+    displayName: "Volatility 75 Index",
+    shortName: "Vol 75",
+    classicSymbol: "R_75",
+    optionsSymbol: "R_75",
+    pipDecimals: 2,
+  },
   R_10: {
     id: "R_10",
     displayName: "Volatility 10 Index",
@@ -36,6 +44,14 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     optionsSymbol: "1HZ100V",
     pipDecimals: 2,
   },
+  "1HZ75V": {
+    id: "1HZ75V",
+    displayName: "Volatility 75 (1s) Index",
+    shortName: "Vol 75 (1s)",
+    classicSymbol: "1HZ75V",
+    optionsSymbol: "1HZ75V",
+    pipDecimals: 2,
+  },
   "1HZ10V": {
     id: "1HZ10V",
     displayName: "Volatility 10 (1s) Index",
@@ -48,11 +64,12 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
 
 export const MARKET_LIST: MarketConfig[] = [
   MARKETS.R_100,
+  MARKETS.R_75,
   MARKETS.R_10,
   MARKETS["1HZ100V"],
+  MARKETS["1HZ75V"],
   MARKETS["1HZ10V"],
 ];
-
 export function getMarketConfig(symbol?: string): MarketConfig {
   return MARKET_LIST.find((market) => market.id === symbol) ?? MARKETS.R_100;
 }

@@ -44,7 +44,7 @@ describe("Volatility 100 Matches strategy", () => {
     expect(getMarketConfig("1HZ10V").classicSymbol).toBe("1HZ10V");
     expect(getMarketConfig("R_100").classicSymbol).toBe("R_100");
     expect(getMarketConfig().classicSymbol).toBe("R_100");
-    expect(MARKET_LIST.map((m) => m.id)).toEqual(["R_100", "R_10", "1HZ100V", "1HZ10V"]);
+    expect(MARKET_LIST.map((m) => m.id)).toEqual(["R_100", "R_75", "R_10", "1HZ100V", "1HZ75V", "1HZ10V"]);
 
     expect(marketTradeSymbols(v10, "classic")).toEqual({
       preferred: "R_10",

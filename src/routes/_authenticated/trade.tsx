@@ -86,7 +86,7 @@ export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
     meta: [
       { title: "ThDpst Matches // Volatility Trader" },
-      { name: "description", content: "Deriv Matches trader for Volatility 100, Volatility 10, and their 1-second indices." },
+      { name: "description", content: "Deriv Matches trader for Volatility 75, Volatility 100, Volatility 10, and their 1-second indices." },
     ],
   }),
   component: TradeTerminal,
@@ -284,11 +284,12 @@ function TradeTerminal() {
   const activeAppId = getDerivClientId();
   const [configuredMarkup, setConfiguredMarkup] = useState<number>(() => getAppIdMarkup(activeAppId));
 
-  // Market Selection state (standard and 1-second Volatility 100 / 10 indices)
+  // Market Selection state (standard and 1-second Volatility 100 / 75 / 10 indices)
   const [marketSymbol, setMarketSymbol] = useState<MarketSymbol>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("thdpst_market_symbol");
-      if (saved === "R_10" || saved === "R_100" || saved === "1HZ100V" || saved === "1HZ10V") return saved;
+      const savedMarket = MARKET_LIST.find((market) => market.id === saved);
+      if (savedMarket) return savedMarket.id;
     }
     return "R_100";
   });
