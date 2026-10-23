@@ -1176,12 +1176,11 @@ function TradeTerminal() {
       if (typeof tick?.quote === "number") {
         updateFeedPipDecimals(tick.pip_size);
         const q = tick.quote;
+        // Deriv does not guarantee tick.id is unique; dedupe by quote time and value.
         const tickIdentity =
-          tick.id !== undefined
-            ? `${marketSymbol}:${tick.id}`
-            : tick.epoch !== undefined
-              ? `${marketSymbol}:${tick.epoch}:${q.toFixed(feedPipDecimals)}`
-              : null;
+          tick.epoch !== undefined
+            ? `${marketSymbol}:${tick.epoch}:${q.toFixed(feedPipDecimals)}`
+            : null;
         if (tickIdentity && !rememberX2XTick(tickIdentity)) return;
         const timeStr = tick.epoch
           ? new Date(tick.epoch * 1000).toLocaleTimeString()
@@ -1190,7 +1189,9 @@ function TradeTerminal() {
           digit: lastDigit(q, 2),
           lastTwoQuoteDigits: lastTwoQuoteDigits(q, 2),
           quote: q,
-          tickId: tick.id === undefined ? undefined : String(tick.id),
+          tickId:
+            tickIdentity ??
+            (tick.id === undefined ? undefined : `${marketSymbol}:${tick.id}:${Date.now()}`),
           timestamp: tick.epoch
             ? new Date(tick.epoch * 1000).toISOString()
             : new Date().toISOString(),
