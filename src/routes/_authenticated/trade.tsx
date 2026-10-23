@@ -2433,7 +2433,7 @@ function TradeTerminal() {
             </div>
 
             {/* Adaptive next-digit predictor */}
-            <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
+            <section hidden className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
               isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
             }`}>
               <div className={`flex flex-wrap items-start justify-between gap-3 border-b pb-3 ${
