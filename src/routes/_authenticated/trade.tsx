@@ -31,9 +31,11 @@ import {
   WINDOW,
   MARTINGALE_MULTIPLIER,
   calculateMartingaleStake,
+  predictNextDigit,
   MARKETS,
   MARKET_LIST,
   getMarketConfig,
+  type DigitPrediction,
   type MarketSymbol,
 } from "@/lib/matches";
 import {
@@ -210,6 +212,26 @@ interface TickItem {
   time: string;
   price: number;
   digit: number;
+  predictedDigit?: number;
+  predictionCorrect?: boolean;
+}
+
+interface PredictionStats {
+  forecasts: number;
+  correct: number;
+  recentResults: boolean[];
+  currentStreak: number;
+  lastResult: boolean | null;
+}
+
+function emptyPredictionStats(): PredictionStats {
+  return {
+    forecasts: 0,
+    correct: 0,
+    recentResults: [],
+    currentStreak: 0,
+    lastResult: null,
+  };
 }
 
 interface BacktestSummary {
@@ -283,6 +305,8 @@ function TradeTerminal() {
   const [digits, setDigits] = useState<number[]>([]);
   const [price, setPrice] = useState<number | null>(null);
   const [recentTicks, setRecentTicks] = useState<TickItem[]>([]);
+  const [nextPrediction, setNextPrediction] = useState<DigitPrediction | null>(null);
+  const [predictionStats, setPredictionStats] = useState<PredictionStats>(emptyPredictionStats);
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("connecting");
 
   // Strategy & Bot configuration (Strictly Matches strategy parameters)
@@ -331,8 +355,11 @@ function TradeTerminal() {
       localStorage.setItem("thdpst_market_symbol", m);
     }
     digitsRef.current = [];
+    predictionRef.current = null;
     setDigits([]);
     setRecentTicks([]);
+    setNextPrediction(null);
+    setPredictionStats(emptyPredictionStats());
     setPrice(null);
     setBotState("BUFFERING");
     setNote(`Switching to ${MARKETS[m].displayName}. Buffering last 1,000 market ticks...`);
@@ -474,6 +501,7 @@ function TradeTerminal() {
   const lossStreakRef = useRef(0);
   const pendingSetAt = useRef<number>(0); // timestamp when pending was set, for stuck-trade safety
   const digitsRef = useRef<number[]>([]); // synchronous market digits buffer, avoids state batching drops
+  const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
   const lastTickAt = useRef<number>(Date.now());
   const keepaliveCleanupRef = useRef<(() => void) | null>(null);
@@ -712,6 +740,9 @@ function TradeTerminal() {
         const dList = pList.map((p) => lastDigit(p, feedPipDecimals));
         digitsRef.current = dList;
         setDigits(dList);
+        predictionRef.current = predictNextDigit(dList);
+        setNextPrediction(predictionRef.current);
+        setPredictionStats(emptyPredictionStats());
         setPrice(pList[pList.length - 1] ?? null);
         lastTickAt.current = Date.now();
 
@@ -744,12 +775,34 @@ function TradeTerminal() {
         const q = tick.quote;
         const timeStr = tick.epoch ? new Date(tick.epoch * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
         const nextDigit = lastDigit(q, feedPipDecimals);
+        const priorPrediction = predictionRef.current;
+        const predictionCorrect = priorPrediction
+          ? priorPrediction.digit === nextDigit
+          : undefined;
         lastTickAt.current = Date.now();
 
         setPrice(q);
 
-        // Tick stream: prepend latest incoming tick to top
-        setRecentTicks((prev) => [{ time: timeStr, price: q, digit: nextDigit }, ...prev.slice(0, 14)]);
+        // Score the forecast made before this tick arrived, then show the actual result.
+        setRecentTicks((prev) => [{
+          time: timeStr,
+          price: q,
+          digit: nextDigit,
+          predictedDigit: priorPrediction?.digit,
+          predictionCorrect,
+        }, ...prev.slice(0, 14)]);
+        if (predictionCorrect !== undefined) {
+          setPredictionStats((previous) => ({
+            forecasts: previous.forecasts + 1,
+            correct: previous.correct + (predictionCorrect ? 1 : 0),
+            recentResults: [...previous.recentResults, predictionCorrect].slice(-100),
+            currentStreak:
+              previous.lastResult === predictionCorrect
+                ? previous.currentStreak + 1
+                : 1,
+            lastResult: predictionCorrect,
+          }));
+        }
 
         // Digits stream: append synchronously into ref to avoid state-updater batching issues
         digitsRef.current.push(nextDigit);
@@ -758,6 +811,8 @@ function TradeTerminal() {
         }
         const updatedDigits = [...digitsRef.current];
         setDigits(updatedDigits);
+        predictionRef.current = predictNextDigit(updatedDigits);
+        setNextPrediction(predictionRef.current);
 
         // Process trade event immediately with guaranteed current digits
         handleTickEventRef.current(updatedDigits, q, nextDigit);
@@ -1434,6 +1489,15 @@ function TradeTerminal() {
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.filter((t) => t.pnl < 0).length;
   const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0;
+  const predictionAccuracy = predictionStats.forecasts > 0
+    ? Math.round((predictionStats.correct / predictionStats.forecasts) * 100)
+    : null;
+  const recentPredictionAccuracy = predictionStats.recentResults.length > 0
+    ? Math.round((predictionStats.recentResults.filter(Boolean).length / predictionStats.recentResults.length) * 100)
+    : null;
+  const scoredTicks = recentTicks
+    .filter((tick) => tick.predictedDigit !== undefined)
+    .slice(0, 10);
 
   // Strictly chronological sequence of the latest 33 digits (incoming order from left to right)
   const recentDigits33 = digits.slice(-33);
@@ -2354,6 +2418,131 @@ function TradeTerminal() {
                 </div>
               </section>
             </div>
+
+            {/* Adaptive next-digit predictor */}
+            <section className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
+              isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+            }`}>
+              <div className={`flex flex-wrap items-start justify-between gap-3 border-b pb-3 ${
+                isDark ? "border-zinc-900" : "border-slate-200"
+              }`}>
+                <div>
+                  <h2 className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                    NEXT DIGIT FORECAST
+                  </h2>
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    Adaptive pattern model trained on the latest 1,000 ticks.
+                  </p>
+                </div>
+                <span className={`rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                  nextPrediction
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-500"
+                }`}>
+                  {nextPrediction ? "MODEL READY" : `TRAINING ${Math.min(digits.length, WINDOW)}/${WINDOW}`}
+                </span>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-[minmax(140px,0.7fr)_2fr]">
+                <div className={`flex flex-col items-center justify-center rounded-lg border p-4 text-center ${
+                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
+                }`}>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    PREDICTED NEXT DIGIT
+                  </span>
+                  <span className={`my-1 text-6xl font-light num ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {nextPrediction?.digit ?? "—"}
+                  </span>
+                  <span className="text-[11px] text-zinc-500">
+                    Estimated chance {nextPrediction ? `${nextPrediction.confidence.toFixed(1)}%` : "—"}
+                  </span>
+                  <span className="mt-2 text-[10px] uppercase tracking-wide text-zinc-500">
+                    {nextPrediction?.method ?? "Awaiting 1,000 ticks"}
+                  </span>
+                  {nextPrediction && nextPrediction.method !== "window frequency" && (
+                    <span className="text-[10px] text-zinc-600">
+                      {nextPrediction.contextSamples} matching patterns
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">LIVE ACCURACY</div>
+                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {predictionAccuracy === null ? "—" : `${predictionAccuracy}%`}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">{predictionStats.correct} correct / {predictionStats.forecasts} scored</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">LAST 100</div>
+                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {recentPredictionAccuracy === null ? "—" : `${recentPredictionAccuracy}%`}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">{predictionStats.recentResults.length} recent live ticks</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">MISSES</div>
+                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {predictionStats.forecasts - predictionStats.correct}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">Exact digit matches only</div>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                    <div className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">CURRENT STREAK</div>
+                    <div className={`mt-1 text-2xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {predictionStats.currentStreak}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">
+                      {predictionStats.lastResult === null ? "Waiting for the first live tick" : predictionStats.lastResult ? "consecutive correct" : "consecutive missed"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-[10px] leading-relaxed text-zinc-500">
+                The model refreshes from a rolling 1,000-tick window, using digit frequencies and one- or two-digit transitions. Accuracy counts only forecasts made before live ticks arrive; it cannot reveal or guarantee a hidden market algorithm.
+              </p>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">LIVE FORECAST CHECKS</h3>
+                  <span className="text-[10px] text-zinc-500">Latest {scoredTicks.length}</span>
+                </div>
+                {scoredTicks.length === 0 ? (
+                  <div className={`rounded-lg border px-3 py-4 text-center text-xs text-zinc-500 ${isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"}`}>
+                    Live tick predictions will be scored here after the model trains.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[440px] text-left text-[10px] num">
+                      <thead>
+                        <tr className={`border-b uppercase tracking-wide text-zinc-500 ${isDark ? "border-zinc-900" : "border-slate-200"}`}>
+                          <th className="py-2 pr-2">Time</th>
+                          <th className="py-2 pr-2">Quote</th>
+                          <th className="py-2 pr-2">Actual</th>
+                          <th className="py-2 pr-2">Forecast</th>
+                          <th className="py-2 text-right">Result</th>
+                        </tr>
+                      </thead>
+                      <tbody className={`divide-y ${isDark ? "divide-zinc-900" : "divide-slate-100"}`}>
+                        {scoredTicks.map((tick, index) => (
+                          <tr key={`${tick.time}-${index}`}>
+                            <td className="py-2 pr-2 text-zinc-500">{tick.time}</td>
+                            <td className={`py-2 pr-2 ${isDark ? "text-zinc-300" : "text-slate-700"}`}>{tick.price.toFixed(marketPipDecimals)}</td>
+                            <td className={`py-2 pr-2 font-bold ${isDark ? "text-white" : "text-slate-900"}`}>{tick.digit}</td>
+                            <td className="py-2 pr-2">{tick.predictedDigit}</td>
+                            <td className={`py-2 text-right font-bold ${tick.predictionCorrect ? "text-emerald-500" : "text-rose-500"}`}>
+                              {tick.predictionCorrect ? "CORRECT" : "MISSED"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </section>
 
             {/* Bottom Row: TRADE LOG / SESSION HISTORY */}
             <section className={`rounded-xl border shadow-sm ${

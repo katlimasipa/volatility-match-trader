@@ -12,6 +12,7 @@ Monochrome Deriv Matches bot for **Volatility 100**, **Volatility 10**, and thei
 6. Optionally enable 1.5× martingale: the next stake increases after each loss and returns to the base stake after a win. It increases risk and cannot guarantee recovery.
 7. **Balance updates after every trade** in the app and on Deriv — no fake paper balances while connected.
 8. **Cross-device alerts** — turn **NOTIF** on on each device (same Deriv account). Bot start/stop and trade results sync live via Realtime, catch up when you reopen the app, and use Web Push when the app is closed (needs VAPID keys + the SQL migration in `supabase/migrations/`).
+9. **Next-digit forecast** — adapts to the latest 1,000 digits and tracks exact live forecast accuracy, without claiming future results are guaranteed.
 
 ## Auth & PWA
 

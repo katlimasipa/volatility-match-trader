@@ -78,6 +78,91 @@ export const MARTINGALE_MULTIPLIER = 1.5;
 export const MAX_DIFF = 0.3; // difference between most and second most digit must not exceed 0.3% by default
 export const WINDOW = 1000;
 
+export interface DigitPrediction {
+  digit: number;
+  confidence: number;
+  method: "two-digit sequence" | "last-digit transition" | "window frequency";
+  contextSamples: number;
+  trainingTicks: number;
+}
+
+/**
+ * Make an empirical next-digit forecast from the latest 1,000 observed digits.
+ * It backs off from a two-digit transition to a one-digit transition, then to
+ * the overall window distribution when there are too few matching examples.
+ */
+export function predictNextDigit(digits: number[]): DigitPrediction | null {
+  const training = digits
+    .slice(-WINDOW)
+    .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
+  if (training.length < WINDOW) return null;
+
+  const frequencyCounts = new Array(10).fill(0) as number[];
+  for (const digit of training) frequencyCounts[digit]++;
+
+  const previousDigit = training[training.length - 1];
+  const previousPairFirst = training[training.length - 2];
+  const transitionCounts = new Array(10).fill(0) as number[];
+  let transitionSamples = 0;
+  const pairCounts = new Array(10).fill(0) as number[];
+  let pairSamples = 0;
+
+  for (let index = 0; index < training.length - 1; index++) {
+    if (training[index] === previousDigit) {
+      transitionCounts[training[index + 1]]++;
+      transitionSamples++;
+    }
+  }
+
+  for (let index = 0; index < training.length - 2; index++) {
+    if (
+      training[index] === previousPairFirst &&
+      training[index + 1] === previousDigit
+    ) {
+      pairCounts[training[index + 2]]++;
+      pairSamples++;
+    }
+  }
+
+  let method: DigitPrediction["method"];
+  let contextCounts: number[];
+  let contextSamples: number;
+  if (pairSamples >= 4) {
+    method = "two-digit sequence";
+    contextCounts = pairCounts;
+    contextSamples = pairSamples;
+  } else if (transitionSamples >= 6) {
+    method = "last-digit transition";
+    contextCounts = transitionCounts;
+    contextSamples = transitionSamples;
+  } else {
+    method = "window frequency";
+    contextCounts = frequencyCounts;
+    contextSamples = training.length;
+  }
+
+  const frequencyTotal = training.length;
+  const prior = frequencyCounts.map((count) => count / frequencyTotal);
+  const smoothingWeight = method === "window frequency" ? 0 : 5;
+  const denominator = contextSamples + smoothingWeight;
+  const probabilities = contextCounts.map((count, digit) =>
+    (count + prior[digit] * smoothingWeight) / denominator,
+  );
+  const predictedDigit = probabilities.reduce(
+    (bestDigit, probability, digit) =>
+      probability > probabilities[bestDigit] ? digit : bestDigit,
+    0,
+  );
+
+  return {
+    digit: predictedDigit,
+    confidence: probabilities[predictedDigit] * 100,
+    method,
+    contextSamples,
+    trainingTicks: training.length,
+  };
+}
+
 /** Base stake is multiplied by 1.5 for each consecutive settled loss. */
 export function calculateMartingaleStake(
   baseStake: number,
