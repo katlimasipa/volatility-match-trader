@@ -81,8 +81,8 @@ export const WINDOW = 1000;
 export interface DigitPrediction {
   digit: number;
   confidence: number;
-  method: "two-digit sequence" | "last-digit transition" | "recent frequency" | "window frequency";
-  selectedStrategy: "existing model" | "window frequency" | "recent frequency" | "last-digit transition" | "two-digit sequence";
+  method: "all-digit frequency" | "recent-500 frequency" | "recent-250 frequency";
+  selectedStrategy: "all-digit frequency" | "recent-500 frequency" | "recent-250 frequency";
   contextSamples: number;
   trainingTicks: number;
   validationAccuracy: number;
@@ -91,91 +91,31 @@ export interface DigitPrediction {
   edgeDetected: boolean;
 }
 
-type PredictionMethod = DigitPrediction["selectedStrategy"];
+type PredictionMethod = DigitPrediction["method"];
 
-function predictFromMethod(
+function predictFromFrequency(
   training: number[],
   method: PredictionMethod,
 ): Omit<DigitPrediction, "trainingTicks" | "validationAccuracy" | "baselineAccuracy" | "validationForecasts" | "edgeDetected" | "selectedStrategy"> {
-  const frequencyCounts = new Array(10).fill(0) as number[];
-  for (const digit of training) frequencyCounts[digit]++;
-  const prior = frequencyCounts.map((count) => count / training.length);
+  const allDigitCounts = new Array(10).fill(0) as number[];
+  for (const digit of training) allDigitCounts[digit]++;
+  const allDigitPrior = allDigitCounts.map((count) => count / training.length);
 
-  let contextCounts = frequencyCounts;
+  let contextCounts = allDigitCounts;
   let contextSamples = training.length;
   let smoothingWeight = 0;
-  let usedMethod: DigitPrediction["method"] =
-    method === "existing model" ? "window frequency" : method;
-
-  if (method === "recent frequency") {
-    const recent = training.slice(-250);
+  if (method !== "all-digit frequency") {
+    const windowSize = method === "recent-500 frequency" ? 500 : 250;
+    const recentTicks = training.slice(-windowSize);
     contextCounts = new Array(10).fill(0) as number[];
-    for (const digit of recent) contextCounts[digit]++;
-    contextSamples = recent.length;
-    smoothingWeight = 25;
-  } else if (
-    method === "last-digit transition" ||
-    method === "two-digit sequence" ||
-    method === "existing model"
-  ) {
-    const lastDigit = training[training.length - 1];
-    const transitionCounts = new Array(10).fill(0) as number[];
-    let transitionSamples = 0;
-    for (let index = 0; index < training.length - 1; index++) {
-      if (training[index] === lastDigit) {
-        transitionCounts[training[index + 1]]++;
-        transitionSamples++;
-      }
-    }
-
-    const pairCounts = new Array(10).fill(0) as number[];
-    let pairSamples = 0;
-    if (
-      (method === "two-digit sequence" || method === "existing model") &&
-      training.length >= 2
-    ) {
-      const previousDigit = training[training.length - 2];
-      for (let index = 0; index < training.length - 2; index++) {
-        if (training[index] === previousDigit && training[index + 1] === lastDigit) {
-          pairCounts[training[index + 2]]++;
-          pairSamples++;
-        }
-      }
-    }
-
-    if (method === "existing model") {
-      if (pairSamples >= 4) {
-        contextCounts = pairCounts;
-        contextSamples = pairSamples;
-        smoothingWeight = 5;
-        usedMethod = "two-digit sequence";
-      } else if (transitionSamples >= 6) {
-        contextCounts = transitionCounts;
-        contextSamples = transitionSamples;
-        smoothingWeight = 5;
-        usedMethod = "last-digit transition";
-      }
-    } else if (method === "two-digit sequence" && pairSamples >= 20) {
-      contextCounts = pairCounts;
-      contextSamples = pairSamples;
-      smoothingWeight = 40;
-    } else if (
-      (method === "last-digit transition" ||
-        (method === "two-digit sequence" && pairSamples < 20)) &&
-      transitionSamples >= 20
-    ) {
-      contextCounts = transitionCounts;
-      contextSamples = transitionSamples;
-      smoothingWeight = 25;
-      usedMethod = "last-digit transition";
-    } else {
-      usedMethod = "window frequency";
-    }
+    for (const digit of recentTicks) contextCounts[digit]++;
+    contextSamples = recentTicks.length;
+    smoothingWeight = method === "recent-500 frequency" ? 50 : 25;
   }
 
   const denominator = contextSamples + smoothingWeight;
   const probabilities = contextCounts.map((count, digit) =>
-    (count + prior[digit] * smoothingWeight) / denominator,
+    (count + allDigitPrior[digit] * smoothingWeight) / denominator,
   );
   const predictedDigit = probabilities.reduce(
     (bestDigit, probability, digit) =>
@@ -186,16 +126,16 @@ function predictFromMethod(
   return {
     digit: predictedDigit,
     confidence: probabilities[predictedDigit] * 100,
-    method: usedMethod,
+    method,
     contextSamples,
   };
 }
 
 /**
- * Compare the existing predictor with frequency, recency, and transition
- * strategies using a chronological replay of the latest 250 ticks. Every
- * replay forecast only sees ticks that came before its target. A challenger
- * must beat the existing model by at least two percentage points to replace it.
+ * Compare overall and recency-weighted digit frequencies with a chronological
+ * replay of the latest 250 ticks. The models use only individual digit counts,
+ * never digit sequences or transitions. A recent-frequency model must beat the
+ * all-digit baseline by at least two percentage points before it is selected.
  */
 export function predictNextDigit(digits: number[]): DigitPrediction | null {
   const training = digits
@@ -204,11 +144,9 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
   if (training.length < WINDOW) return null;
 
   const methods: PredictionMethod[] = [
-    "existing model",
-    "window frequency",
-    "recent frequency",
-    "last-digit transition",
-    "two-digit sequence",
+    "all-digit frequency",
+    "recent-500 frequency",
+    "recent-250 frequency",
   ];
   const validationStart = training.length - 250;
   const validationForecasts = training.length - validationStart;
@@ -220,23 +158,23 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
     const pastTicks = training.slice(0, targetIndex);
     const actualDigit = training[targetIndex];
     for (const method of methods) {
-      if (predictFromMethod(pastTicks, method).digit === actualDigit) {
+      if (predictFromFrequency(pastTicks, method).digit === actualDigit) {
         scores.set(method, (scores.get(method) ?? 0) + 1);
       }
     }
   }
 
-  const baselineCorrect = scores.get("existing model") ?? 0;
-  const bestChallenger = methods.slice(1).reduce<PredictionMethod>(
+  const baselineCorrect = scores.get("all-digit frequency") ?? 0;
+  const bestRecentMethod = methods.slice(1).reduce<PredictionMethod>(
     (best, method) =>
       (scores.get(method) ?? 0) > (scores.get(best) ?? 0) ? method : best,
-    "existing model",
+    "all-digit frequency",
   );
   const minimumImprovement = Math.max(5, Math.ceil(validationForecasts * 0.02));
   const edgeDetected =
-    (scores.get(bestChallenger) ?? 0) >= baselineCorrect + minimumImprovement;
-  const selectedStrategy = edgeDetected ? bestChallenger : "existing model";
-  const prediction = predictFromMethod(training, selectedStrategy);
+    (scores.get(bestRecentMethod) ?? 0) >= baselineCorrect + minimumImprovement;
+  const selectedStrategy = edgeDetected ? bestRecentMethod : "all-digit frequency";
+  const prediction = predictFromFrequency(training, selectedStrategy);
 
   return {
     ...prediction,

@@ -2459,9 +2459,9 @@ function TradeTerminal() {
                   <span className="mt-2 text-[10px] uppercase tracking-wide text-zinc-500">
                     {nextPrediction?.method ?? "Awaiting 1,000 ticks"}
                   </span>
-                  {nextPrediction && nextPrediction.method !== "window frequency" && (
+                  {nextPrediction && nextPrediction.method !== "all-digit frequency" && (
                     <span className="text-[10px] text-zinc-600">
-                      {nextPrediction.contextSamples} matching patterns
+                      {nextPrediction.contextSamples} digits in this frequency window
                     </span>
                   )}
                 </div>
@@ -2501,10 +2501,10 @@ function TradeTerminal() {
               </div>
 
               <p className="text-[10px] leading-relaxed text-zinc-500">
-                Each forecast replays the latest 250 past ticks against the current model and four challengers. It switches only when a challenger leads by at least 2 percentage points.
+                The model counts each digit across the latest 1,000 ticks and checks two recency-weighted frequency views. It does not use digit pairs or transitions.
               </p>
               <p className="text-[10px] leading-relaxed text-zinc-500">
-                Past replay: {nextPrediction ? nextPrediction.selectedStrategy + " " + nextPrediction.validationAccuracy + "% vs current model " + nextPrediction.baselineAccuracy + "% across " + nextPrediction.validationForecasts + " ticks." : "Waiting for 1,000 ticks."} {nextPrediction?.edgeDetected ? "A challenger cleared the replay margin." : "No challenger beat the current model by the replay margin."} Live accuracy is scored separately; historical performance cannot guarantee future results. A 60–70% exact-digit rate is not a credible promise for a random 10-digit outcome.
+                Past replay: {nextPrediction ? nextPrediction.selectedStrategy + " " + nextPrediction.validationAccuracy + "% vs all-digit frequency " + nextPrediction.baselineAccuracy + "% across " + nextPrediction.validationForecasts + " ticks." : "Waiting for 1,000 ticks."} {nextPrediction?.edgeDetected ? "A recency-based frequency model cleared the replay margin." : "No recency-based model beat all-digit frequency by the replay margin."} Live accuracy is scored separately; historical performance cannot guarantee future results. A 60-70% exact-digit rate is not a credible promise for a random 10-digit outcome.
               </p>
 
               <div>
