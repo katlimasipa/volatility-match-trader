@@ -81,69 +81,98 @@ export const WINDOW = 1000;
 export interface DigitPrediction {
   digit: number;
   confidence: number;
-  method: "two-digit sequence" | "last-digit transition" | "window frequency";
+  method: "two-digit sequence" | "last-digit transition" | "recent frequency" | "window frequency";
+  selectedStrategy: "existing model" | "window frequency" | "recent frequency" | "last-digit transition" | "two-digit sequence";
   contextSamples: number;
   trainingTicks: number;
+  validationAccuracy: number;
+  baselineAccuracy: number;
+  validationForecasts: number;
+  edgeDetected: boolean;
 }
 
-/**
- * Make an empirical next-digit forecast from the latest 1,000 observed digits.
- * It backs off from a two-digit transition to a one-digit transition, then to
- * the overall window distribution when there are too few matching examples.
- */
-export function predictNextDigit(digits: number[]): DigitPrediction | null {
-  const training = digits
-    .slice(-WINDOW)
-    .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
-  if (training.length < WINDOW) return null;
+type PredictionMethod = DigitPrediction["selectedStrategy"];
 
+function predictFromMethod(
+  training: number[],
+  method: PredictionMethod,
+): Omit<DigitPrediction, "trainingTicks" | "validationAccuracy" | "baselineAccuracy" | "validationForecasts" | "edgeDetected" | "selectedStrategy"> {
   const frequencyCounts = new Array(10).fill(0) as number[];
   for (const digit of training) frequencyCounts[digit]++;
+  const prior = frequencyCounts.map((count) => count / training.length);
 
-  const previousDigit = training[training.length - 1];
-  const previousPairFirst = training[training.length - 2];
-  const transitionCounts = new Array(10).fill(0) as number[];
-  let transitionSamples = 0;
-  const pairCounts = new Array(10).fill(0) as number[];
-  let pairSamples = 0;
+  let contextCounts = frequencyCounts;
+  let contextSamples = training.length;
+  let smoothingWeight = 0;
+  let usedMethod: DigitPrediction["method"] =
+    method === "existing model" ? "window frequency" : method;
 
-  for (let index = 0; index < training.length - 1; index++) {
-    if (training[index] === previousDigit) {
-      transitionCounts[training[index + 1]]++;
-      transitionSamples++;
+  if (method === "recent frequency") {
+    const recent = training.slice(-250);
+    contextCounts = new Array(10).fill(0) as number[];
+    for (const digit of recent) contextCounts[digit]++;
+    contextSamples = recent.length;
+    smoothingWeight = 25;
+  } else if (
+    method === "last-digit transition" ||
+    method === "two-digit sequence" ||
+    method === "existing model"
+  ) {
+    const lastDigit = training[training.length - 1];
+    const transitionCounts = new Array(10).fill(0) as number[];
+    let transitionSamples = 0;
+    for (let index = 0; index < training.length - 1; index++) {
+      if (training[index] === lastDigit) {
+        transitionCounts[training[index + 1]]++;
+        transitionSamples++;
+      }
     }
-  }
 
-  for (let index = 0; index < training.length - 2; index++) {
+    const pairCounts = new Array(10).fill(0) as number[];
+    let pairSamples = 0;
     if (
-      training[index] === previousPairFirst &&
-      training[index + 1] === previousDigit
+      (method === "two-digit sequence" || method === "existing model") &&
+      training.length >= 2
     ) {
-      pairCounts[training[index + 2]]++;
-      pairSamples++;
+      const previousDigit = training[training.length - 2];
+      for (let index = 0; index < training.length - 2; index++) {
+        if (training[index] === previousDigit && training[index + 1] === lastDigit) {
+          pairCounts[training[index + 2]]++;
+          pairSamples++;
+        }
+      }
+    }
+
+    if (method === "existing model") {
+      if (pairSamples >= 4) {
+        contextCounts = pairCounts;
+        contextSamples = pairSamples;
+        smoothingWeight = 5;
+        usedMethod = "two-digit sequence";
+      } else if (transitionSamples >= 6) {
+        contextCounts = transitionCounts;
+        contextSamples = transitionSamples;
+        smoothingWeight = 5;
+        usedMethod = "last-digit transition";
+      }
+    } else if (method === "two-digit sequence" && pairSamples >= 20) {
+      contextCounts = pairCounts;
+      contextSamples = pairSamples;
+      smoothingWeight = 40;
+    } else if (
+      (method === "last-digit transition" ||
+        (method === "two-digit sequence" && pairSamples < 20)) &&
+      transitionSamples >= 20
+    ) {
+      contextCounts = transitionCounts;
+      contextSamples = transitionSamples;
+      smoothingWeight = 25;
+      usedMethod = "last-digit transition";
+    } else {
+      usedMethod = "window frequency";
     }
   }
 
-  let method: DigitPrediction["method"];
-  let contextCounts: number[];
-  let contextSamples: number;
-  if (pairSamples >= 4) {
-    method = "two-digit sequence";
-    contextCounts = pairCounts;
-    contextSamples = pairSamples;
-  } else if (transitionSamples >= 6) {
-    method = "last-digit transition";
-    contextCounts = transitionCounts;
-    contextSamples = transitionSamples;
-  } else {
-    method = "window frequency";
-    contextCounts = frequencyCounts;
-    contextSamples = training.length;
-  }
-
-  const frequencyTotal = training.length;
-  const prior = frequencyCounts.map((count) => count / frequencyTotal);
-  const smoothingWeight = method === "window frequency" ? 0 : 5;
   const denominator = contextSamples + smoothingWeight;
   const probabilities = contextCounts.map((count, digit) =>
     (count + prior[digit] * smoothingWeight) / denominator,
@@ -157,12 +186,70 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
   return {
     digit: predictedDigit,
     confidence: probabilities[predictedDigit] * 100,
-    method,
+    method: usedMethod,
     contextSamples,
-    trainingTicks: training.length,
   };
 }
 
+/**
+ * Compare the existing predictor with frequency, recency, and transition
+ * strategies using a chronological replay of the latest 250 ticks. Every
+ * replay forecast only sees ticks that came before its target. A challenger
+ * must beat the existing model by at least two percentage points to replace it.
+ */
+export function predictNextDigit(digits: number[]): DigitPrediction | null {
+  const training = digits
+    .slice(-WINDOW)
+    .filter((digit) => Number.isInteger(digit) && digit >= 0 && digit <= 9);
+  if (training.length < WINDOW) return null;
+
+  const methods: PredictionMethod[] = [
+    "existing model",
+    "window frequency",
+    "recent frequency",
+    "last-digit transition",
+    "two-digit sequence",
+  ];
+  const validationStart = training.length - 250;
+  const validationForecasts = training.length - validationStart;
+  const scores = new Map<PredictionMethod, number>(
+    methods.map((method) => [method, 0]),
+  );
+
+  for (let targetIndex = validationStart; targetIndex < training.length; targetIndex++) {
+    const pastTicks = training.slice(0, targetIndex);
+    const actualDigit = training[targetIndex];
+    for (const method of methods) {
+      if (predictFromMethod(pastTicks, method).digit === actualDigit) {
+        scores.set(method, (scores.get(method) ?? 0) + 1);
+      }
+    }
+  }
+
+  const baselineCorrect = scores.get("existing model") ?? 0;
+  const bestChallenger = methods.slice(1).reduce<PredictionMethod>(
+    (best, method) =>
+      (scores.get(method) ?? 0) > (scores.get(best) ?? 0) ? method : best,
+    "existing model",
+  );
+  const minimumImprovement = Math.max(5, Math.ceil(validationForecasts * 0.02));
+  const edgeDetected =
+    (scores.get(bestChallenger) ?? 0) >= baselineCorrect + minimumImprovement;
+  const selectedStrategy = edgeDetected ? bestChallenger : "existing model";
+  const prediction = predictFromMethod(training, selectedStrategy);
+
+  return {
+    ...prediction,
+    selectedStrategy,
+    trainingTicks: training.length,
+    validationAccuracy: Math.round(
+      ((scores.get(selectedStrategy) ?? 0) / validationForecasts) * 100,
+    ),
+    baselineAccuracy: Math.round((baselineCorrect / validationForecasts) * 100),
+    validationForecasts,
+    edgeDetected,
+  };
+}
 /** Base stake is multiplied by 1.5 for each consecutive settled loss. */
 export function calculateMartingaleStake(
   baseStake: number,
