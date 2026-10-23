@@ -2255,56 +2255,68 @@ function TradeTerminal() {
                 isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
               }`}>
                 {/* Header */}
-                <div className="flex items-start justify-between gap-2">
-                  <div className="space-y-1.5">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 block">
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
                       LAST DIGIT
                     </span>
-                    {/* Quick Market Toggle Pills */}
-                    <div className={`inline-flex rounded border p-0.5 ${
-                      isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
-                    }`}>
-                      {MARKET_LIST.map((m) => {
-                        const isSelected = marketSymbol === m.id;
-                        return (
-                          <button
-                            key={m.id}
-                            type="button"
-                            disabled={running}
-                            onClick={() => handleSelectMarket(m.id)}
-                            className={`rounded py-0.5 px-2 text-[10px] font-bold uppercase transition-colors flex items-center gap-1 ${
-                              isSelected
-                                ? isDark
-                                  ? "bg-zinc-800 text-white shadow-sm"
-                                  : "bg-white text-slate-900 shadow-sm"
-                                : "text-zinc-500 hover:text-white disabled:opacity-40"
-                            }`}
-                          >
-                            <span className={`h-1 w-1 rounded-full ${isSelected ? "bg-emerald-400" : "bg-zinc-600"}`} />
-                            {m.id}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="text-right space-y-0.5">
-                    <span className="text-[11px] font-semibold text-zinc-500">
+                    <span className="max-w-[60%] text-right text-[11px] font-semibold leading-tight text-zinc-500">
                       {currentMarket.displayName}
                     </span>
-                    <div className="text-[10px] text-zinc-500">PRICE</div>
-                    <div className={`text-sm font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                      {price !== null ? price.toFixed(marketPipDecimals) : "—"}
+                  </div>
+
+                  {/* Quick Market Toggle Pills */}
+                  <div className={"flex w-full flex-wrap gap-0.5 rounded border p-0.5 " + (
+                    isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                  )}>
+                    {MARKET_LIST.map((m) => {
+                      const isSelected = marketSymbol === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          disabled={running}
+                          onClick={() => handleSelectMarket(m.id)}
+                          className={"flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-[10px] font-bold uppercase transition-colors " + (
+                            isSelected
+                              ? isDark
+                                ? "bg-zinc-800 text-white shadow-sm"
+                                : "bg-white text-slate-900 shadow-sm"
+                              : "text-zinc-500 hover:text-white disabled:opacity-40"
+                          )}
+                        >
+                          <span className={"h-1 w-1 rounded-full " + (isSelected ? "bg-emerald-400" : "bg-zinc-600")} />
+                          {m.id}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex items-end justify-between gap-4">
+                    <div>
+                      <div className="text-[10px] text-zinc-500">PRICE</div>
+                      <div className={"text-sm font-bold num " + (isDark ? "text-white" : "text-slate-900")}>
+                        {price !== null ? price.toFixed(marketPipDecimals) : "—"}
+                      </div>
                     </div>
-                    <div className={`text-[11px] font-semibold num ${
-                      analysis.diff <= maxDiff
-                        ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
-                        : isDark ? "text-zinc-400" : "text-slate-600"
-                    }`}>
-                      SPREAD Δ {analysis.diff.toFixed(2)}% <span className="opacity-60">/ {maxDiff}%</span> {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
+                    <div className="max-w-[65%] text-right">
+                      <div className={"text-[11px] font-semibold num " + (
+                        analysis.diff <= maxDiff
+                          ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                          : isDark ? "text-zinc-400" : "text-slate-600"
+                      )}>
+                        SPREAD Δ {analysis.diff.toFixed(2)}% <span className="opacity-60">/ {maxDiff}%</span>
+                      </div>
+                      <div className={"text-[10px] font-semibold " + (
+                        analysis.diff <= maxDiff
+                          ? isDark ? "text-emerald-400" : "text-emerald-600"
+                          : isDark ? "text-zinc-400" : "text-slate-600"
+                      )}>
+                        {analysis.diff <= maxDiff ? "(READY)" : "(WAITING)"}
+                      </div>
                     </div>
                   </div>
                 </div>
-
                 {/* Giant Digit Display */}
                 <div className="flex items-baseline gap-4">
                   <span className={`text-6xl sm:text-7xl font-light tracking-tight num ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -2332,7 +2344,7 @@ function TradeTerminal() {
                       <span
                         key={i}
                         className={`rounded border py-1 font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-700"
+                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-zinc-200 bg-zinc-50 text-zinc-700"
                         }`}
                       >
                         {d}
@@ -2345,7 +2357,7 @@ function TradeTerminal() {
                       <span
                         key={i + 11}
                         className={`rounded border py-1 font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-slate-200 bg-slate-100 text-slate-700"
+                          isDark ? "border-zinc-800 bg-zinc-900 text-zinc-300" : "border-zinc-200 bg-zinc-50 text-zinc-700"
                         }`}
                       >
                         {d}
@@ -2362,11 +2374,11 @@ function TradeTerminal() {
                           className={`rounded border py-1 font-semibold transition-all ${
                             isLatest
                               ? isDark
-                                ? "border-white bg-white text-black font-bold ring-2 ring-zinc-700"
-                                : "border-slate-900 bg-slate-900 text-white font-bold ring-2 ring-slate-400"
+                                ? "border-zinc-100 bg-zinc-100 text-zinc-950 font-bold ring-2 ring-zinc-700"
+                                : "border-zinc-900 bg-zinc-900 text-white font-bold ring-2 ring-zinc-400"
                               : isDark
                               ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                              : "border-slate-200 bg-slate-100 text-slate-700"
+                              : "border-zinc-200 bg-zinc-50 text-zinc-700"
                           }`}
                         >
                           {d}
