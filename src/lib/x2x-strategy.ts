@@ -1,6 +1,6 @@
 export interface X2XQuoteDigit {
   digit: number;
-  /** The quote's final two decimal places, kept as text (for example, "07"). */
+  /** The quote's final two displayed digits at its market precision (for example, "07"). */
   lastTwoQuoteDigits: string;
   quote?: number | undefined;
   tickId?: string | undefined;
@@ -199,8 +199,8 @@ export function rememberUniqueX2XTick(
 }
 
 /**
- * X2X's OP reference is the two decimal places from the quote on the third
- * pattern digit. Values below 20 are invalid under the PRD's non-negative rule.
+ * X2X's OP reference is the final two displayed digits from the quote on the
+ * third pattern digit. Values below 20 are invalid under the PRD's non-negative rule.
  */
 export function calculateX2XOpTrigger(referencePair: string): string | null {
   if (!/^\d{2}$/.test(referencePair)) return null;
@@ -209,7 +209,7 @@ export function calculateX2XOpTrigger(referencePair: string): string | null {
   return String(value - 20).padStart(2, "0");
 }
 
-/** Format a quote with its market precision and preserve its final two decimals. */
+/** Format a quote with its market precision and preserve its final two digits. */
 export function lastTwoQuoteDigits(quote: number, decimals = 2): string {
   return quote.toFixed(decimals).slice(-2);
 }

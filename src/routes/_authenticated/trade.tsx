@@ -189,11 +189,7 @@ type StrategyMode = "matches" | "x2x";
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
   try {
-    const savedMarket = localStorage.getItem("thdpst_market_symbol");
-    return localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) === "x2x" &&
-      (!savedMarket || savedMarket === "R_100")
-      ? "x2x"
-      : "matches";
+    return localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) === "x2x" ? "x2x" : "matches";
   } catch {
     return "matches";
   }
@@ -595,18 +591,13 @@ function TradeTerminal() {
       alert("Please stop the bot before switching markets.");
       return;
     }
-    if (strategyMode === "x2x" && m !== "R_100") {
-      setNote(
-        "X2X Sniper only supports Volatility 100 Index. Switch back to Matches before choosing another market.",
-      );
-      return;
-    }
     setMarketSymbol(m);
     setMarketPipDecimals(MARKETS[m].pipDecimals);
     if (typeof window !== "undefined") {
       localStorage.setItem("thdpst_market_symbol", m);
     }
     digitsRef.current = [];
+    x2xTicksRef.current = [];
     predictionRef.current = null;
     setDigits([]);
     setRecentTicks([]);
@@ -623,22 +614,18 @@ function TradeTerminal() {
     if (strategyMode === "x2x" && nextStrategy !== "x2x") {
       cancelPendingX2XSignal("X2X strategy disabled by user.");
     }
-    if (nextStrategy === "x2x" && marketSymbol !== "R_100") {
-      handleSelectMarket("R_100");
-    }
     setStrategyMode(nextStrategy);
     saveX2XScannerState(createX2XScannerState());
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem(STRATEGY_MODE_STORAGE_KEY, nextStrategy);
-        if (nextStrategy === "x2x") localStorage.setItem("thdpst_market_symbol", "R_100");
       } catch {
         // Strategy selection still works for this page if storage is unavailable.
       }
     }
     setNote(
       nextStrategy === "x2x"
-        ? "X2X Sniper selected on Volatility 100. Live pattern scanning starts when the bot starts."
+        ? `X2X Sniper selected on ${currentMarket.displayName}. Live pattern scanning starts when the bot starts.`
         : "Matches strategy selected.",
     );
   }
@@ -1183,8 +1170,8 @@ function TradeTerminal() {
           const sourceIndex = pList.length - Math.min(WINDOW, pList.length) + index;
           const epoch = tList[sourceIndex];
           return {
-            digit: lastDigit(historicalPrice, 2),
-            lastTwoQuoteDigits: lastTwoQuoteDigits(historicalPrice, 2),
+            digit: lastDigit(historicalPrice, feedPipDecimals),
+            lastTwoQuoteDigits: lastTwoQuoteDigits(historicalPrice, feedPipDecimals),
             quote: historicalPrice,
             timestamp: epoch ? new Date(epoch * 1000).toISOString() : undefined,
           };
@@ -1247,8 +1234,8 @@ function TradeTerminal() {
           ? new Date(tick.epoch * 1000).toLocaleTimeString()
           : new Date().toLocaleTimeString();
         const tickInfo: X2XQuoteDigit = {
-          digit: lastDigit(q, 2),
-          lastTwoQuoteDigits: lastTwoQuoteDigits(q, 2),
+          digit: lastDigit(q, feedPipDecimals),
+          lastTwoQuoteDigits: lastTwoQuoteDigits(q, feedPipDecimals),
           quote: q,
           tickId:
             tickIdentity ??
@@ -1601,7 +1588,7 @@ function TradeTerminal() {
 
     // Scan every incoming live tick in order, even while a contract settles.
     // The OP window only consumes ticks when the engine can accept a new trade.
-    if (s.running && s.strategyMode === "x2x" && s.marketSymbol === "R_100") {
+    if (s.running && s.strategyMode === "x2x") {
       const tradeBusy = Boolean(pending.current?.live || tradingRef.current?.isBuyInFlight());
       const opEligible =
         !tradeBusy && lossCooldownTicks.current === 0 && Boolean(tradingRef.current?.isReady());
@@ -1710,7 +1697,7 @@ function TradeTerminal() {
         pendingSetAt.current = Date.now();
         setBotState("IN TRADE");
         setNote(
-          `X2X OP ${x2xEvent.opTrigger} matched. Buying 1-tick DIGITMATCH on Volatility 100 with stored LDP ${x2xEvent.ldp}...`,
+          `X2X OP ${x2xEvent.opTrigger} matched. Buying 1-tick DIGITMATCH on ${currentMarket.displayName} with stored LDP ${x2xEvent.ldp}...`,
         );
         placeLiveMatch(pending.current);
         return;
@@ -1830,10 +1817,6 @@ function TradeTerminal() {
 
   function startBot() {
     initAudioContext();
-    if (strategyMode === "x2x" && marketSymbol !== "R_100") {
-      setNote("X2X Sniper only supports Volatility 100 Index. Select that market before starting.");
-      return;
-    }
     const currentSessionPnl = trades.reduce((total, trade) => total + trade.pnl, 0);
     if (tp > 0 && currentSessionPnl >= tp) {
       setNote(
@@ -1887,7 +1870,7 @@ function TradeTerminal() {
     setNote(
       tradingConnectionReady
         ? strategyMode === "x2x"
-          ? `X2X Sniper active on ${activeAccount.account_id}. Scanning Volatility 100 tick digits for X2X signals...`
+          ? `X2X Sniper active on ${activeAccount.account_id}. Scanning ${currentMarket.displayName} tick digits for X2X signals...`
           : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount.account_id}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
@@ -2059,7 +2042,7 @@ function TradeTerminal() {
       setBotState("ANALYZING");
       setNote(
         strategyMode === "x2x"
-          ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning Volatility 100 tick digits...`
+          ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning ${currentMarket.displayName} tick digits...`
           : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
       );
     }
@@ -2078,7 +2061,7 @@ function TradeTerminal() {
     if (strategyMode === "x2x") {
       if (x2xTicksRef.current.length < WINDOW) {
         setNote(
-          `X2X replay needs 1,000 Volatility 100 quotes (${x2xTicksRef.current.length}/1,000 loaded).`,
+          `X2X replay needs 1,000 ${currentMarket.displayName} quotes (${x2xTicksRef.current.length}/1,000 loaded).`,
         );
         return;
       }
@@ -2928,7 +2911,7 @@ function TradeTerminal() {
                       <button
                         key={m.id}
                         type="button"
-                        disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
+                        disabled={running}
                         onClick={() => handleSelectMarket(m.id)}
                         className={`rounded py-1.5 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
                           isSelected
@@ -2950,7 +2933,7 @@ function TradeTerminal() {
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
-                    ? "Volatility 100 only: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's two-decimal value minus 20."
+                    ? `On ${currentMarket.displayName}: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's last two displayed digits minus 20.`
                     : `Enter on the most appearing digit only when the spread exactly equals ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
@@ -2965,7 +2948,7 @@ function TradeTerminal() {
                     X2X LIVE SCAN
                   </div>
                   <div className="text-[10px] text-zinc-500">
-                    Volatility 100 · DIGITMATCH · 1 tick
+                    {currentMarket.displayName} · DIGITMATCH · 1 tick
                     · Stake ${stake.toFixed(2)}
                   </div>
                   <div
@@ -3431,7 +3414,7 @@ function TradeTerminal() {
                         <button
                           key={m.id}
                           type="button"
-                          disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
+                          disabled={running}
                           onClick={() => handleSelectMarket(m.id)}
                           className={
                             "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-[10px] font-bold uppercase transition-colors " +
@@ -4659,7 +4642,7 @@ function TradeTerminal() {
                     <button
                       key={m.id}
                       type="button"
-                      disabled={running || (strategyMode === "x2x" && m.id !== "R_100")}
+                      disabled={running}
                       onClick={() => handleSelectMarket(m.id)}
                       className={`rounded py-2 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
                         isSelected
@@ -4869,7 +4852,7 @@ function TradeTerminal() {
 
             <p className="text-xs text-zinc-400 leading-relaxed">
               {backtest.strategyMode === "x2x"
-                ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent Volatility 100 quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
+                ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent ${currentMarket.displayName} quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
                 : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread must equal ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the observed spread does not equal the target, no entries are counted.`}
             </p>
 
