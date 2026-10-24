@@ -92,13 +92,19 @@ describe("DerivWS connection resilience", () => {
     vi.useFakeTimers();
     const ws = new DerivWS("wss://mock.test", undefined, { autoReconnect: true });
     currentSocket().simulateOpen();
-    await ws.send({ ticks_history: "R_100", count: 1000, subscribe: 1 });
+    const pending = ws.send({ ticks_history: "R_100", count: 1000, subscribe: 1 });
+    const first = currentSocket().lastSent();
+    currentSocket().simulateMessage({
+      history: { prices: [1], times: [1] },
+      subscription: { id: "sub-1" },
+      req_id: first.req_id,
+    });
+    await pending;
 
     // Connection drops, DerivWS waits 2.5s and reconnects, then resubscribes.
     currentSocket().close();
     await vi.advanceTimersByTimeAsync(3000);
     currentSocket().simulateOpen();
-    currentSocket().simulateMessage({ echo_req: { ticks_history: "R_100" }, req_id: 999 });
 
     const resub = currentSocket().lastSent();
     expect(resub.ticks_history).toBe("R_100");
