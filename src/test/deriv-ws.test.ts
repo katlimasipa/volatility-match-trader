@@ -83,8 +83,8 @@ describe("DerivWS connection resilience", () => {
 
     const pending = ws.send<{ pong: number }>({ ping: 1 });
     const sent = currentSocket().lastSent();
-    currentSocket().simulateMessage({ pong: 1, req_id: sent.req_id });
-    await expect(pending).resolves.toEqual({ pong: 1, req_id: sent.req_id });
+    currentSocket().simulateMessage({ pong: 1, req_id: sent["req_id"] });
+    await expect(pending).resolves.toEqual({ pong: 1, req_id: sent["req_id"] });
     ws.dispose();
   });
 
@@ -97,7 +97,7 @@ describe("DerivWS connection resilience", () => {
     currentSocket().simulateMessage({
       history: { prices: [1], times: [1] },
       subscription: { id: "sub-1" },
-      req_id: first.req_id,
+      req_id: first["req_id"],
     });
     await pending;
 
@@ -107,8 +107,8 @@ describe("DerivWS connection resilience", () => {
     currentSocket().simulateOpen();
 
     const resub = currentSocket().lastSent();
-    expect(resub.ticks_history).toBe("R_100");
-    expect(resub.subscribe).toBe(1);
+    expect(resub["ticks_history"]).toBe("R_100");
+    expect(resub["subscribe"]).toBe(1);
     ws.dispose();
   });
 });
