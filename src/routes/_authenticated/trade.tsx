@@ -549,6 +549,7 @@ function TradeTerminal() {
     const limit = loadX2XOpWaitTicks();
     return limit === null ? "" : String(limit);
   });
+  const [x2xScanExpanded, setX2xScanExpanded] = useState(false);
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
@@ -2974,160 +2975,185 @@ function TradeTerminal() {
 
               {strategyMode === "x2x" && (
                 <div
-                  className={`rounded-lg border p-3 space-y-1.5 ${
+                  className={`rounded-lg border ${x2xScanExpanded ? "p-3" : "px-3 py-2"} ${
                     isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
                   }`}
                 >
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    X2X LIVE SCAN
-                  </div>
-                  <div className="text-[10px] text-zinc-500">
-                    {currentMarket.displayName} · DIGITMATCH · 1 tick
-                    · Stake ${stake.toFixed(2)}
-                  </div>
-                  <div
-                    className={`font-mono text-xs ${isDark ? "text-zinc-200" : "text-zinc-800"}`}
-                  >
-                    {x2xScannerState.recentDigits.length > 0
-                      ? x2xScannerState.recentDigits.join(
-                          " → ",
-                        )
-                      : "Waiting for live ticks"}
-                  </div>
-                  <div className="text-[10px] leading-relaxed text-zinc-500">
-                    {x2xScannerState.signal?.phase === "awaiting-ldp"
-                      ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
-                      : x2xScannerState.signal?.phase === "awaiting-op"
-                        ? x2xScannerState.signal.eligibleTicksLimit === null
-                          ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} with no expiry (${x2xScannerState.signal.eligibleTicksElapsed} eligible ticks observed).`
-                          : `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
-                        : "Scanning consecutive live tick digits for X2X."}
-                  </div>
-                  <div
-                    className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 ${
-                      isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-                    }`}
-                  >
-                    <label className="flex items-center gap-2 text-[10px] font-semibold text-zinc-500">
-                      <input
-                        type="checkbox"
-                        checked={x2xOpWaitTicks === null}
-                        onChange={(event) =>
-                          updateX2XOpWaitTicks(event.target.checked ? null : X2X_OP_WINDOW_TICKS)
-                        }
-                        className="accent-emerald-500"
-                      />
-                      No expiry
-                    </label>
-                    <label className="flex items-center gap-2 text-[10px] text-zinc-500">
-                      Wait ticks
-                      <input
-                        type="number"
-                        inputMode="numeric"
-                        min={1}
-                        max={X2X_MAX_OP_WAIT_TICKS}
-                        step={1}
-                        value={x2xOpWaitTicksInput}
-                        disabled={x2xOpWaitTicks === null}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          if (!/^[0-9]*$/.test(value)) return;
-                          setX2xOpWaitTicksInput(value);
-                          const parsed = Number(value);
-                          if (value && parsed >= 1 && parsed <= X2X_MAX_OP_WAIT_TICKS) {
-                            updateX2XOpWaitTicks(parsed);
-                          }
-                        }}
-                        onBlur={() =>
-                          setX2xOpWaitTicksInput(
-                            x2xOpWaitTicks === null ? "" : String(x2xOpWaitTicks),
-                          )
-                        }
-                        className={`w-20 rounded border px-2 py-1 text-right font-mono text-xs outline-none disabled:opacity-40 ${
-                          isDark
-                            ? "border-zinc-800 bg-black text-zinc-200"
-                            : "border-slate-300 bg-white text-slate-800"
-                        }`}
-                      />
-                    </label>
-                  </div>
-                  <div className="text-[10px] leading-relaxed text-zinc-600">
-                    Choose a tick limit or no expiry for testing. Only eligible OP ticks count; the setting applies to new signals.
-                  </div>
-                  <div className="text-[10px] leading-relaxed text-zinc-600">
-                    One signal is tracked at a time; patterns seen before it ends are ignored. OP
-                    ticks pause while a contract is open, during loss cooldown, or while trading
-                    reconnects. References below 20 are rejected because subtracting 20 is negative.
-                  </div>
-                  <div className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2 pt-1">
-                    {[
-                      ["Signals", x2xSignals.length],
-                      ["Triggers", x2xTriggeredCount],
-                      ["Submissions", x2xSubmittedCount],
-                      ["Contracts", x2xExecutedCount],
-                      ["W / L", `${x2xWins} / ${x2xLosses}`],
-                      ["Win rate", `${x2xWinRate}%`],
-                      ["Expired", x2xExpiredCount],
-                      ["Reject / cancel", x2xRejectedCount],
-                    ].map(([label, value]) => (
-                      <div
-                        key={String(label)}
-                        className={`rounded border px-2 py-1 ${
-                          isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
-                        }`}
-                      >
-                        <div className="text-[9px] uppercase tracking-wider text-zinc-500">
-                          {label}
-                        </div>
-                        <div className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200">
-                          {value}
-                        </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                        X2X LIVE SCAN
                       </div>
-                    ))}
+                      <div className="truncate text-[10px] text-zinc-500">
+                        {currentMarket.displayName} · DIGITMATCH · 1 tick · Stake ${stake.toFixed(2)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      aria-expanded={x2xScanExpanded}
+                      aria-controls="x2x-scan-details"
+                      aria-label={x2xScanExpanded ? "Minimize X2X live scan" : "Show X2X scan details"}
+                      onClick={() => setX2xScanExpanded((expanded) => !expanded)}
+                      className={`shrink-0 rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+                        isDark
+                          ? "border-zinc-800 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                          : "border-slate-200 bg-white text-slate-600 hover:border-slate-400 hover:text-slate-900"
+                      }`}
+                    >
+                      {x2xScanExpanded ? "Minimize" : "Details"}
+                      <span aria-hidden="true" className="ml-1">
+                        {x2xScanExpanded ? "⌃" : "⌄"}
+                      </span>
+                    </button>
                   </div>
-                  {x2xSignals.length > 0 && (
-                    <div className="max-h-40 overflow-y-auto divide-y divide-zinc-200 dark:divide-zinc-900">
-                      {x2xSignals.slice(0, 8).map((signal) => (
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 pt-1"
+                  >
+                    <span className={`font-mono text-xs ${isDark ? "text-zinc-200" : "text-zinc-800"}`}>
+                      {x2xScannerState.recentDigits.length > 0
+                        ? x2xScannerState.recentDigits.join(" → ")
+                        : "Waiting for live ticks"}
+                    </span>
+                    <span className="text-[10px] text-zinc-500">
+                      {x2xScannerState.signal?.phase === "awaiting-ldp"
+                        ? "Pattern found · LDP next"
+                        : x2xScannerState.signal?.phase === "awaiting-op"
+                          ? `Watching OP ${x2xScannerState.signal.opTrigger}${x2xScannerState.signal.eligibleTicksLimit === null ? " · no expiry" : ` · ${x2xScannerState.signal.eligibleTicksRemaining} ticks left`}`
+                          : "Scanning for X–2–X"}
+                    </span>
+                  </div>
+                  <div id="x2x-scan-details" hidden={!x2xScanExpanded} className="space-y-1.5 pt-2">
+                    <div className="text-[10px] leading-relaxed text-zinc-500">
+                      {x2xScannerState.signal?.phase === "awaiting-ldp"
+                        ? `Pattern ${x2xScannerState.signal.pattern} detected; next tick supplies LDP. Reference ${x2xScannerState.signal.referencePair} → OP ${x2xScannerState.signal.opTrigger}.`
+                        : x2xScannerState.signal?.phase === "awaiting-op"
+                          ? x2xScannerState.signal.eligibleTicksLimit === null
+                            ? `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} with no expiry (${x2xScannerState.signal.eligibleTicksElapsed} eligible ticks observed).`
+                            : `LDP ${x2xScannerState.signal.ldp}; watching for quote suffix ${x2xScannerState.signal.opTrigger} across ${x2xScannerState.signal.eligibleTicksRemaining} eligible ticks.`
+                          : "Scanning consecutive live tick digits for X2X."}
+                    </div>
+                    <div
+                      className={`flex flex-wrap items-center justify-between gap-2 rounded border px-2 py-2 ${
+                        isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                      }`}
+                    >
+                      <label className="flex items-center gap-2 text-[10px] font-semibold text-zinc-500">
+                        <input
+                          type="checkbox"
+                          checked={x2xOpWaitTicks === null}
+                          onChange={(event) =>
+                            updateX2XOpWaitTicks(event.target.checked ? null : X2X_OP_WINDOW_TICKS)
+                          }
+                          className="accent-emerald-500"
+                        />
+                        No expiry
+                      </label>
+                      <label className="flex items-center gap-2 text-[10px] text-zinc-500">
+                        Wait ticks
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={X2X_MAX_OP_WAIT_TICKS}
+                          step={1}
+                          value={x2xOpWaitTicksInput}
+                          disabled={x2xOpWaitTicks === null}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (!/^[0-9]*$/.test(value)) return;
+                            setX2xOpWaitTicksInput(value);
+                            const parsed = Number(value);
+                            if (value && parsed >= 1 && parsed <= X2X_MAX_OP_WAIT_TICKS) {
+                              updateX2XOpWaitTicks(parsed);
+                            }
+                          }}
+                          onBlur={() =>
+                            setX2xOpWaitTicksInput(
+                              x2xOpWaitTicks === null ? "" : String(x2xOpWaitTicks),
+                            )
+                          }
+                          className={`w-20 rounded border px-2 py-1 text-right font-mono text-xs outline-none disabled:opacity-40 ${
+                            isDark
+                              ? "border-zinc-800 bg-black text-zinc-200"
+                              : "border-slate-300 bg-white text-slate-800"
+                          }`}
+                        />
+                      </label>
+                    </div>
+                    <div className="text-[10px] leading-relaxed text-zinc-600">
+                      Choose a tick limit or no expiry for testing. Only eligible OP ticks count; the setting applies to new signals.
+                    </div>
+                    <div className="text-[10px] leading-relaxed text-zinc-600">
+                      One signal is tracked at a time; patterns seen before it ends are ignored. OP
+                      ticks pause while a contract is open, during loss cooldown, or while trading
+                      reconnects. References below 20 are rejected because subtracting 20 is negative.
+                    </div>
+                    <div className="grid grid-cols-[repeat(auto-fit,minmax(7rem,1fr))] gap-2 pt-1">
+                      {[
+                        ["Signals", x2xSignals.length],
+                        ["Triggers", x2xTriggeredCount],
+                        ["Submissions", x2xSubmittedCount],
+                        ["Contracts", x2xExecutedCount],
+                        ["W / L", `${x2xWins} / ${x2xLosses}`],
+                        ["Win rate", `${x2xWinRate}%`],
+                        ["Expired", x2xExpiredCount],
+                        ["Reject / cancel", x2xRejectedCount],
+                      ].map(([label, value]) => (
                         <div
-                          key={signal.signalId}
-                          className="grid grid-cols-[1fr_auto] gap-x-2 py-1.5 text-[10px]"
+                          key={String(label)}
+                          className={`rounded border px-2 py-1 ${
+                            isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                          }`}
                         >
-                          <span className="font-mono text-zinc-700 dark:text-zinc-300">
-                            {signal.pattern} · {signal.referencePair}{" "}
-                            →{" "}
-                            {signal.opTrigger ?? "rejected"}
-                            {signal.ldp === null ? "" : ` · LDP ${signal.ldp}`}
-                          </span>
-                          <span className="text-right uppercase text-zinc-500">
-                            {signal.status.replaceAll("_", " ")}
-                          </span>
-                          <span className="text-zinc-500">
-                            {new Date(signal.detectedAt).toLocaleTimeString()} ·{" "}
-                            {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
-                            {signal.status === "cancelled" && signal.cancelledAt
-                              ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
-                              : ""}
-                            {` · ${signal.contractDuration} tick`}
-                            {signal.contractId
-                              ? ` · contract ${signal.contractId}`
-                              : ""}
-                          </span>
-                          <span className="text-zinc-500">
-                            Source:{" "}
-                            {signal.patternTickTimestamps
-                              .map(
-                                (timestamp, index) =>
-                                  `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
-                              )
-                              .join(" → ")}
-                          </span>
-                          {signal.reason && (
-                            <span className="text-right text-zinc-500">{signal.reason}</span>
-                          )}
+                          <div className="text-[9px] uppercase tracking-wider text-zinc-500">
+                            {label}
+                          </div>
+                          <div className="font-mono text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                            {value}
+                          </div>
                         </div>
                       ))}
                     </div>
-                  )}
+                    {x2xSignals.length > 0 && (
+                      <div className="max-h-40 overflow-y-auto divide-y divide-zinc-200 dark:divide-zinc-900">
+                        {x2xSignals.slice(0, 8).map((signal) => (
+                          <div
+                            key={signal.signalId}
+                            className="grid grid-cols-[1fr_auto] gap-x-2 py-1.5 text-[10px]"
+                          >
+                            <span className="font-mono text-zinc-700 dark:text-zinc-300">
+                              {signal.pattern} · {signal.referencePair} → {signal.opTrigger ?? "rejected"}
+                              {signal.ldp === null ? "" : ` · LDP ${signal.ldp}`}
+                            </span>
+                            <span className="text-right uppercase text-zinc-500">
+                              {signal.status.replaceAll("_", " ")}
+                            </span>
+                            <span className="text-zinc-500">
+                              {new Date(signal.detectedAt).toLocaleTimeString()} ·{" "}
+                              {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
+                              {signal.status === "cancelled" && signal.cancelledAt
+                                ? ` | cancelled ${new Date(signal.cancelledAt).toLocaleString()}`
+                                : ""}
+                              {` · ${signal.contractDuration} tick`}
+                              {signal.contractId ? ` · contract ${signal.contractId}` : ""}
+                            </span>
+                            <span className="text-zinc-500">
+                              Source:{" "}
+                              {signal.patternTickTimestamps
+                                .map(
+                                  (timestamp, index) =>
+                                    `${new Date(timestamp).toLocaleTimeString()} ${signal.patternQuotes[index]?.toFixed(2) ?? "--"}`,
+                                )
+                                .join(" → ")}
+                            </span>
+                            {signal.reason && (
+                              <span className="text-right text-zinc-500">{signal.reason}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
