@@ -11,6 +11,8 @@ export interface MarketConfig {
   pipDecimals: number;
 }
 
+export type SpreadComparison = "exact" | "at_most";
+
 export const MARKETS: Record<MarketSymbol, MarketConfig> = {
   R_100: {
     id: "R_100",
@@ -259,20 +261,29 @@ export interface Analysis {
 }
 
 /**
- * Spread values are rounded to three decimals before comparison. The tiny
- * tolerance accounts only for floating-point representation, not a range.
+ * Spread values are rounded to three decimals before comparison. Exact mode
+ * uses a tiny floating-point tolerance; at_most compares directly to the cap.
  */
-export function spreadMatchesThreshold(diff: number, threshold: number): boolean {
-  return Number.isFinite(diff) && Number.isFinite(threshold) && Math.abs(diff - threshold) < 1e-9;
+export function spreadMatchesThreshold(
+  diff: number,
+  threshold: number,
+  comparison: SpreadComparison = "exact",
+): boolean {
+  if (!Number.isFinite(diff) || !Number.isFinite(threshold)) return false;
+  return comparison === "at_most" ? diff <= threshold : Math.abs(diff - threshold) < 1e-9;
 }
 
 /**
  * Compute frequency and percentage distribution of digits 0-9 across the last 1,000 ticks.
- * Determines the most and second most appearing digits and verifies that their
- * spread exactly matches the configured target (defaults to 0.3%).
+ * Determines the most and second most appearing digits and verifies their spread
+ * against the configured exact target or equal/under cap (defaults to exact 0.3%).
  * Strictly requires at least 1,000 ticks buffered before condition (ok) can be met.
  */
-export function analyze(digits: number[], targetDiff: number = MAX_DIFF): Analysis {
+export function analyze(
+  digits: number[],
+  targetDiff: number = MAX_DIFF,
+  comparison: SpreadComparison = "exact",
+): Analysis {
   // Always evaluate against the rolling last 1,000 ticks
   const windowDigits = digits.length > WINDOW ? digits.slice(-WINDOW) : digits;
   const counts = new Array(10).fill(0);
@@ -305,14 +316,14 @@ export function analyze(digits: number[], targetDiff: number = MAX_DIFF): Analys
     secondPct,
     diff,
     ready,
-    ok: ready && spreadMatchesThreshold(diff, targetDiff),
+    ok: ready && spreadMatchesThreshold(diff, targetDiff, comparison),
   };
 }
 
 /**
  * Trade entry condition:
  * 1. Exactly 1,000 ticks must have been analyzed (a.ready).
- * 2. Spread condition must be satisfied (diff exactly matches the configured target and a.ok).
+ * 2. The configured spread condition must be satisfied (a.ok).
  * 3. The current incoming digit must match the most appearing digit (entry point).
  */
 export function shouldEnter(a: Analysis, currentDigit: number): boolean {

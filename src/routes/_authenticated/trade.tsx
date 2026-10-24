@@ -35,6 +35,7 @@ import {
   MARKETS,
   MARKET_LIST,
   getMarketConfig,
+  type SpreadComparison,
   type DigitPrediction,
   type MarketSymbol,
 } from "@/lib/matches";
@@ -176,12 +177,14 @@ interface SavedSession {
   baseStake: number;
   martingaleEnabled: boolean;
   strategyMode?: StrategyMode;
+  spreadComparison?: SpreadComparison;
   x2xSignals?: X2XSignalRecord[];
   x2xOpWaitTicks?: number | null;
 }
 
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
 const STRATEGY_MODE_STORAGE_KEY = "thdpst_strategy_mode_v1";
+const SPREAD_COMPARISON_STORAGE_KEY = "thdpst_spread_comparison_v1";
 const X2X_SIGNAL_HISTORY_STORAGE_KEY = "thdpst_x2x_signal_history_v1";
 const X2X_SCANNER_STORAGE_KEY = "thdpst_x2x_scanner_state_v1";
 const X2X_OP_WAIT_TICKS_STORAGE_KEY = "thdpst_x2x_op_wait_ticks_v1";
@@ -198,6 +201,17 @@ function loadStrategyMode(): StrategyMode {
     return localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) === "x2x" ? "x2x" : "matches";
   } catch {
     return "matches";
+  }
+}
+
+function loadSpreadComparison(): SpreadComparison {
+  if (typeof window === "undefined") return "exact";
+  try {
+    return localStorage.getItem(SPREAD_COMPARISON_STORAGE_KEY) === "at_most"
+      ? "at_most"
+      : "exact";
+  } catch {
+    return "exact";
   }
 }
 
@@ -267,6 +281,9 @@ function isSavedSession(value: unknown): value is SavedSession {
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x") &&
+    (saved.spreadComparison === undefined ||
+      saved.spreadComparison === "exact" ||
+      saved.spreadComparison === "at_most") &&
     (saved.x2xOpWaitTicks === undefined ||
       saved.x2xOpWaitTicks === null ||
       (Number.isInteger(saved.x2xOpWaitTicks) &&
@@ -544,6 +561,7 @@ function TradeTerminal() {
   // Strategy & Bot configuration (Strictly Matches strategy parameters)
   const [maxDiff, setMaxDiff] = useState<number>(MAX_DIFF);
   const [maxDiffInput, setMaxDiffInput] = useState<string>(String(MAX_DIFF));
+  const [spreadComparison, setSpreadComparison] = useState<SpreadComparison>(loadSpreadComparison);
   const [x2xOpWaitTicks, setX2xOpWaitTicks] = useState<number | null>(loadX2XOpWaitTicks);
   const [x2xOpWaitTicksInput, setX2xOpWaitTicksInput] = useState<string>(() => {
     const limit = loadX2XOpWaitTicks();
@@ -579,6 +597,15 @@ function TradeTerminal() {
   function updateMaxDiff(val: number, strVal?: string) {
     setMaxDiff(val);
     setMaxDiffInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateSpreadComparison(value: SpreadComparison) {
+    setSpreadComparison(value);
+    try {
+      localStorage.setItem(SPREAD_COMPARISON_STORAGE_KEY, value);
+    } catch {
+      // Keep the selected comparison active for this page if storage is unavailable.
+    }
   }
 
   function updateX2XOpWaitTicks(value: number | null) {
@@ -808,6 +835,7 @@ function TradeTerminal() {
     martingaleEnabled,
     activeId,
     maxDiff,
+    spreadComparison,
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
@@ -826,6 +854,7 @@ function TradeTerminal() {
     martingaleEnabled,
     activeId,
     maxDiff,
+    spreadComparison,
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
@@ -1215,9 +1244,17 @@ function TradeTerminal() {
             `1,000 ticks loaded on ${marketInfo.displayName}. X2X scans the live chronological tick stream; the Matches spread target does not apply.`,
           );
         } else {
-          const a = analyze(dList, stateRef.current.maxDiff);
+          const a = analyze(
+            dList,
+            stateRef.current.maxDiff,
+            stateRef.current.spreadComparison,
+          );
+          const spreadRule =
+            stateRef.current.spreadComparison === "exact"
+              ? `exact target ${stateRef.current.maxDiff}%`
+              : `equal to or below ${stateRef.current.maxDiff}%`;
           setNote(
-            `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (exact target: ${stateRef.current.maxDiff}%). ${a.ok ? "Target matched; ready to evaluate entries." : "Target not matched; scanning until the spread equals the selected value."}`,
+            `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (${spreadRule}). ${a.ok ? "Target matched; ready to evaluate entries." : "Target not matched; continuing to scan."}`,
           );
         }
       }
@@ -1769,7 +1806,7 @@ function TradeTerminal() {
       setBotState("ANALYZING");
     }
 
-    const a = analyze(tickList, s.maxDiff);
+    const a = analyze(tickList, s.maxDiff, s.spreadComparison);
 
     if (shouldEnter(a, currentD)) {
       const targetRun = s.runCount + 1;
@@ -1815,12 +1852,14 @@ function TradeTerminal() {
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread matched exact target (Δ ${a.diff.toFixed(2)}% = ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
+        `Spread condition matched (Δ ${a.diff.toFixed(2)}% ${s.spreadComparison === "exact" ? "=" : "≤"} ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
       );
     } else {
       setBotState("ANALYZING");
       setNote(
-        `Spread Δ ${a.diff.toFixed(2)}% does not equal target ${s.maxDiff}%. Analyzing last 1,000 ticks...`,
+        s.spreadComparison === "exact"
+          ? `Spread Δ ${a.diff.toFixed(2)}% does not equal target ${s.maxDiff}%. Analyzing last 1,000 ticks...`
+          : `Spread Δ ${a.diff.toFixed(2)}% is above the ${s.maxDiff}% target. Analyzing last 1,000 ticks...`,
       );
     }
   }
@@ -1934,6 +1973,7 @@ function TradeTerminal() {
       baseStake: stake,
       martingaleEnabled,
       strategyMode,
+      spreadComparison,
       x2xSignals: signalHistory.map((signal) => ({ ...signal })),
       ...(strategyMode === "x2x" ? { x2xOpWaitTicks } : {}),
     };
@@ -2126,7 +2166,7 @@ function TradeTerminal() {
     }
 
     const windowDigits = digits.slice(-WINDOW);
-    const a = analyze(windowDigits, maxDiff);
+    const a = analyze(windowDigits, maxDiff, spreadComparison);
     let signals = 0;
     let wins = 0;
     let losses = 0;
@@ -2199,7 +2239,7 @@ function TradeTerminal() {
       setNote("Connect Deriv before placing a live test trade.");
       return;
     }
-    const a = analyze(digits, maxDiff);
+    const a = analyze(digits, maxDiff, spreadComparison);
     const targetRun = runCount + 1;
     const testStake = calculateMartingaleStake(stake, lossStreakRef.current, martingaleEnabled);
     const availableBalance = activeAccount
@@ -2238,7 +2278,7 @@ function TradeTerminal() {
     }
   }
 
-  const analysis = analyze(digits, maxDiff);
+  const analysis = analyze(digits, maxDiff, spreadComparison);
   const currentDigit = digits[digits.length - 1];
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0).length;
@@ -2969,7 +3009,7 @@ function TradeTerminal() {
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
                     ? `On ${currentMarket.displayName}: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's last two displayed digits minus 20.`
-                    : `Enter on the most appearing digit only when the spread exactly equals ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
+                    : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
@@ -3162,12 +3202,39 @@ function TradeTerminal() {
                   {/* Spread Threshold Δ Selector */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-500">
-                        Exact Spread Δ Target
-                      </span>
+                      <span className="text-zinc-500">Spread comparison</span>
+                      <div
+                        className={`flex rounded border p-0.5 ${
+                          isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                        }`}
+                      >
+                        {([
+                          ["exact", "Exact"],
+                          ["at_most", "Equal / under"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={spreadComparison === value}
+                            onClick={() => updateSpreadComparison(value)}
+                            className={`rounded px-2 py-1 text-[10px] font-semibold transition-colors ${
+                              spreadComparison === value
+                                ? isDark
+                                  ? "bg-zinc-800 text-white shadow-sm"
+                                  : "bg-white text-slate-900 shadow-sm"
+                                : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-zinc-500">Spread Δ target</span>
                       <div className="flex items-center gap-1">
                         <span className="text-zinc-500 text-[10px]">
-                          Δ =
+                          {spreadComparison === "exact" ? "Δ =" : "Δ ≤"}
                         </span>
                         <input
                           type="text"
@@ -3221,7 +3288,9 @@ function TradeTerminal() {
                       ))}
                     </div>
                     <p className="text-[10px] text-zinc-500 leading-tight">
-                      The spread must equal {maxDiff}%. With 1,000 ticks, observed spread
+                      {spreadComparison === "exact"
+                        ? `The spread must equal ${maxDiff}%.`
+                        : `The spread must be ${maxDiff}% or lower.`} With 1,000 ticks, observed spread
                       differences move in 0.1% steps.
                     </p>
                   </div>
@@ -3525,7 +3594,9 @@ function TradeTerminal() {
                           }
                         >
                           SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
-                          <span className="opacity-60">= {maxDiff}% target</span>
+                          <span className="opacity-60">
+                            {spreadComparison === "exact" ? "=" : "≤"} {maxDiff}% target
+                          </span>
                         </div>
                         <div
                           className={
@@ -4178,7 +4249,7 @@ function TradeTerminal() {
                         <div className="mt-3 text-[11px] text-zinc-500">
                           {saved.strategyMode === "x2x"
                             ? `X2X OP wait ${saved.x2xOpWaitTicks === null ? "No expiry" : `${saved.x2xOpWaitTicks ?? X2X_OP_WINDOW_TICKS} ticks`}`
-                            : `Exact spread target ${saved.spreadThreshold}%`}
+                            : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
@@ -4476,7 +4547,7 @@ function TradeTerminal() {
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
-                      : `Δ = ${maxDiff}%`}
+                      : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -4913,7 +4984,7 @@ function TradeTerminal() {
             <p className="text-xs text-zinc-400 leading-relaxed">
               {backtest.strategyMode === "x2x"
                 ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent ${currentMarket.displayName} quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
-                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread must equal ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the observed spread does not equal the target, no entries are counted.`}
+                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ${spreadComparison === "exact" ? "must equal" : "must be equal to or below"} ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the spread condition is not met, no entries are counted.`}
             </p>
 
             {backtest.x2x ? (
