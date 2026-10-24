@@ -41,6 +41,7 @@ export class DerivWS {
   private isDisposed = false;
   private isConnecting = false;
   private openWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  private pingInFlight = false;
 
   constructor(
     url?: string,
@@ -64,14 +65,33 @@ export class DerivWS {
   }
 
   public connect(): void {
-    if (this.isDisposed || this.isConnecting) return;
+    if (this.ws?.readyState === WebSocket.CLOSING) {
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    if (
+      this.isDisposed ||
+      this.isConnecting ||
+      this.ws?.readyState === WebSocket.OPEN ||
+      this.ws?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
     this.isConnecting = true;
     this.onStatusChange?.('connecting');
 
     try {
-      this.ws = new WebSocket(this.url);
+      const socket = new WebSocket(this.url);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
+        if (this.ws !== socket || this.isDisposed) return;
         this.isConnecting = false;
         this.onStatusChange?.('live');
         this.startPing();
@@ -89,11 +109,14 @@ export class DerivWS {
         }
       };
 
-      this.ws.onclose = () => {
+      socket.onclose = () => {
+        if (this.ws !== socket && !this.isDisposed) return;
+        if (this.ws === socket) this.ws = null;
         this.isConnecting = false;
         this.stopPing();
         this.onStatusChange?.('offline');
         this.onCloseCallback?.();
+        this.rejectPendingRequests(new Error('Deriv WebSocket closed'));
 
         const waiters = [...this.openWaiters];
         this.openWaiters = [];
@@ -118,12 +141,23 @@ export class DerivWS {
         }
       };
 
-      this.ws.onerror = (e) => {
+      socket.onerror = (e) => {
+        if (this.ws !== socket || this.isDisposed) return;
         console.warn('Deriv WebSocket error event:', e);
         this.onStatusChange?.('offline');
+        this.rejectPendingRequests(new Error('Deriv WebSocket encountered a network error'));
+        const waiters = [...this.openWaiters];
+        this.openWaiters = [];
+        waiters.forEach((waiter) =>
+          waiter.reject(new Error('Deriv WebSocket failed before opening'))
+        );
+        this.stopPing();
+        if (this.autoReconnect) this.reconnect();
+        else this.onCloseCallback?.();
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (this.ws !== socket || this.isDisposed) return;
         try {
           const data = JSON.parse(event.data) as Record<string, unknown>;
           const reqId = typeof data['req_id'] === 'number' ? data['req_id'] : null;
@@ -167,6 +201,13 @@ export class DerivWS {
   }
 
   public reconnect(): void {
+    if (this.isDisposed) return;
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    this.stopPing();
+    this.rejectPendingRequests(new Error('Deriv WebSocket is reconnecting'));
     if (this.ws) {
       this.ws.onclose = null;
       this.ws.onerror = null;
@@ -182,12 +223,13 @@ export class DerivWS {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
     return new Promise<void>((resolve, reject) => {
+      let waiter: { resolve: () => void; reject: (err: Error) => void };
       const timer = setTimeout(() => {
-        this.openWaiters = this.openWaiters.filter((w) => w.resolve !== resolve);
+        this.openWaiters = this.openWaiters.filter((current) => current !== waiter);
         reject(new Error(`WebSocket connection timeout after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      this.openWaiters.push({
+      waiter = {
         resolve: () => {
           clearTimeout(timer);
           resolve();
@@ -196,9 +238,14 @@ export class DerivWS {
           clearTimeout(timer);
           reject(err);
         },
-      });
+      };
+      this.openWaiters.push(waiter);
 
-      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+      if (
+        !this.ws ||
+        this.ws.readyState === WebSocket.CLOSED ||
+        this.ws.readyState === WebSocket.CLOSING
+      ) {
         this.connect();
       }
     });
@@ -207,10 +254,20 @@ export class DerivWS {
   private startPing(): void {
     this.stopPing();
     this.pingInterval = setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ ping: 1 }));
-      }
-    }, 30000);
+      if (this.pingInFlight || !this.isOpen()) return;
+      this.pingInFlight = true;
+      this.send({ ping: 1 }, 10000)
+        .catch((err) => {
+          if (this.isDisposed) return;
+          console.warn('Deriv WebSocket heartbeat failed:', err);
+          this.onStatusChange?.('offline');
+          if (this.autoReconnect) this.reconnect();
+          else this.onCloseCallback?.();
+        })
+        .finally(() => {
+          this.pingInFlight = false;
+        });
+    }, 15000);
   }
 
   private stopPing(): void {
@@ -218,6 +275,15 @@ export class DerivWS {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
+  }
+
+  private rejectPendingRequests(error: Error): void {
+    for (const request of this.pendingRequests.values()) request.reject(error);
+    this.pendingRequests.clear();
+  }
+
+  public isOpen(): boolean {
+    return !this.isDisposed && this.ws?.readyState === WebSocket.OPEN;
   }
 
   public async send<T = Record<string, unknown>>(
@@ -305,9 +371,11 @@ export class DerivWS {
       this.ws.close();
       this.ws = null;
     }
-    this.pendingRequests.clear();
+    this.rejectPendingRequests(new Error('Deriv WebSocket is disposed'));
     this.subscriptionHandlers.clear();
     this.activeSubscriptions.clear();
+    const waiters = [...this.openWaiters];
     this.openWaiters = [];
+    waiters.forEach((waiter) => waiter.reject(new Error('Deriv WebSocket is disposed')));
   }
 }

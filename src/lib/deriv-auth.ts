@@ -394,7 +394,10 @@ export async function fetchOptionsAccountsViaRest(
     return { success: false, accounts: [], error: 'Token cannot be empty.' };
   }
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 12000);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${cleanToken}`,
       'Content-Type': 'application/json',
@@ -404,6 +407,7 @@ export async function fetchOptionsAccountsViaRest(
     const response = await fetch('https://api.derivws.com/trading/v1/options/accounts', {
       method: 'GET',
       headers,
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -465,6 +469,8 @@ export async function fetchOptionsAccountsViaRest(
       accounts: [],
       error: err instanceof Error ? err.message : 'Failed to load Deriv accounts.',
     };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
@@ -477,7 +483,10 @@ export async function refreshAccessToken(
   const current = getStoredAuthInfo();
   if (!current?.refresh_token) return null;
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 12000);
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       client_id: clientId || HARDCODED_APP_ID,
@@ -488,6 +497,7 @@ export async function refreshAccessToken(
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      signal: controller.signal,
     });
 
     if (!response.ok) return null;
@@ -506,6 +516,8 @@ export async function refreshAccessToken(
     return authInfo;
   } catch {
     return null;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 

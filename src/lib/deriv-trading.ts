@@ -77,6 +77,13 @@ export async function resolveTradingToken(): Promise<string | null> {
   if (info?.refresh_token && info.expires_at && info.expires_at <= now + 90) {
     const refreshed = await refreshAccessToken(getDerivClientId());
     if (refreshed?.access_token) return refreshed.access_token;
+    if (info.expires_at <= now) {
+      return manual && manual !== info.access_token ? manual : null;
+    }
+  }
+
+  if (info?.expires_at && info.expires_at <= now) {
+    return manual && manual !== info.access_token ? manual : null;
   }
 
   return info?.access_token || manual || null;
@@ -95,7 +102,10 @@ export async function fetchAuthenticatedWsUrl(
     return null;
   }
 
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(), 12000);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -107,6 +117,7 @@ export async function fetchAuthenticatedWsUrl(
       {
         method: 'POST',
         headers,
+        signal: controller.signal,
       }
     );
 
@@ -121,6 +132,8 @@ export async function fetchAuthenticatedWsUrl(
   } catch (err) {
     console.warn('[deriv-trading] OTP request error:', err);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -147,6 +160,9 @@ export class DerivTradingSession {
   private lastBalance: number | null = null;
   private balancePollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectPromise: Promise<boolean> | null = null;
+  private reconnectAttempts = 0;
 
   onBalance(listener: BalanceListener): () => void {
     this.balanceListeners.add(listener);
@@ -164,7 +180,7 @@ export class DerivTradingSession {
   }
 
   isReady(): boolean {
-    return this.ready && !this.disposed;
+    return this.ready && !this.disposed && Boolean(this.ws?.isOpen());
   }
 
   isBuyInFlight(): boolean {
@@ -272,14 +288,26 @@ export class DerivTradingSession {
     }
   }
 
-  async connect(account: DerivAccount, retryAttempt = 0): Promise<boolean> {
+  connect(account: DerivAccount, retryAttempt = 0): Promise<boolean> {
+    if (this.connectPromise) return this.connectPromise;
+    const attempt = this.connectInternal(account, retryAttempt);
+    this.connectPromise = attempt;
+    void attempt.finally(() => {
+      if (this.connectPromise === attempt) this.connectPromise = null;
+    }).catch(() => {});
+    return attempt;
+  }
+
+  private async connectInternal(account: DerivAccount, retryAttempt: number): Promise<boolean> {
     if (this.disposed) return false;
     if (isFakeAccountId(account.account_id)) {
       this.emitStatus('error', 'Connect a real Deriv account before live trading.');
       return false;
     }
 
-    this.disconnectSocket();
+    // Keep any bought contract registered while its settlement subscription is
+    // restored on the new socket. A brief network drop must not mark it failed.
+    this.disconnectSocket(true);
     this.lastAccount = account;
     this.accountId = account.account_id;
     this.currency = account.currency || 'USD';
@@ -289,6 +317,7 @@ export class DerivTradingSession {
     const token = await resolveTradingToken();
     if (!token) {
       this.emitStatus('error', 'No Deriv authorization. Please sign in with Deriv Auth 2.0.');
+      this.scheduleAutoReconnect(retryAttempt);
       return false;
     }
 
@@ -326,14 +355,13 @@ export class DerivTradingSession {
   private scheduleAutoReconnect(attempt: number) {
     if (this.disposed || !this.lastAccount) return;
     if (this.reconnectTimer) return;
-    // After ~6 escalating failures stop auto-retrying; the UI heartbeat and
-    // manual connect can pick it up later.
-    if (attempt >= 6) return;
-    const delay = Math.min(30000, 2000 * Math.pow(2, attempt));
+    const nextAttempt = attempt + 1;
+    this.reconnectAttempts = nextAttempt;
+    const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(nextAttempt - 1, 5)));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.disposed && this.lastAccount) {
-        void this.connect(this.lastAccount, attempt + 1);
+        void this.connect(this.lastAccount, nextAttempt);
       }
     }, delay);
   }
@@ -352,13 +380,7 @@ export class DerivTradingSession {
           if (this.disposed || this.ws !== ws) return;
           this.ready = false;
           this.emitStatus('offline', 'Trading connection lost — reconnecting...');
-          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-          this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            if (!this.disposed && this.lastAccount) {
-              void this.connect(this.lastAccount);
-            }
-          }, 2000);
+          this.scheduleAutoReconnect(this.reconnectAttempts);
         },
       });
       await ws.waitForOpen(12000);
@@ -402,6 +424,18 @@ export class DerivTradingSession {
       this.ready = true;
       this.emitStatus('ready', mode);
       this.startBalancePoll();
+      if (this.stableConnectionTimer) clearTimeout(this.stableConnectionTimer);
+      this.stableConnectionTimer = setTimeout(() => {
+        this.stableConnectionTimer = null;
+        if (this.isReady()) this.reconnectAttempts = 0;
+      }, 30000);
+
+      // Restore contract monitoring before a recovered session can accept
+      // another purchase. Deriv returns the current state even if it settled
+      // while this client was reconnecting.
+      for (const contractId of this.openContracts.keys()) {
+        this.subscribeOpenContract(ws, contractId);
+      }
 
       // Confirm opening balance against REST (Auth 2.0 source of truth)
       this.syncBalanceFromRest().catch(() => {});
@@ -508,6 +542,16 @@ export class DerivTradingSession {
         pending.resolve(result);
         this.emitContract(result);
       })();
+    });
+  }
+
+  private subscribeOpenContract(ws: DerivWS, contractId: number): void {
+    void ws.send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 }).catch((err) => {
+      if (this.disposed || this.ws !== ws) return;
+      console.warn('[deriv-trading] Could not restore contract monitoring:', contractId, err);
+      this.ready = false;
+      this.emitStatus('offline', 'Restoring open contract monitoring — reconnecting...');
+      this.scheduleAutoReconnect(this.reconnectAttempts);
     });
   }
 
@@ -652,22 +696,18 @@ export class DerivTradingSession {
         this.emitBalance(loginid, roundMoney(this.lastBalance - buyPrice), currency);
       }
 
-      // Socket balance only here — REST after every buy was hitting Deriv's request limit.
-      await this.refreshBalance();
-
       const contractId = buy.contract_id;
-      await this.ws.send({
-        proposal_open_contract: 1,
-        contract_id: contractId,
-        subscribe: 1,
-      });
+      // Register settlement before sending its subscription. If the socket
+      // drops after Deriv accepted the buy, reconnect can restore this contract
+      // instead of reporting a false purchase failure or buying twice.
+      void this.refreshBalance();
 
       return await new Promise<ContractResult>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.openContracts.delete(contractId);
           this.ws?.send({ forget_all: 'proposal_open_contract' }).catch(() => {});
-          reject(new Error('Timed out waiting for contract settlement.'));
-        }, 45000);
+          reject(new Error('Timed out waiting for contract settlement after reconnect attempts.'));
+        }, 120000);
 
         this.openContracts.set(contractId, {
           stake: amount,
@@ -682,6 +722,9 @@ export class DerivTradingSession {
             reject(err);
           },
         });
+        const ws = this.ws;
+        if (ws && this.isReady()) this.subscribeOpenContract(ws, contractId);
+        else this.scheduleAutoReconnect(this.reconnectAttempts);
       });
     } catch (err) {
       if (isDerivLimitError(err)) {
@@ -725,10 +768,14 @@ export class DerivTradingSession {
     }
   }
 
-  private disconnectSocket() {
+  private disconnectSocket(preserveOpenContracts = false) {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.stableConnectionTimer) {
+      clearTimeout(this.stableConnectionTimer);
+      this.stableConnectionTimer = null;
     }
     this.stopBalancePoll();
     if (this.ws) {
@@ -737,10 +784,12 @@ export class DerivTradingSession {
     }
     this.ready = false;
     this.mode = null;
-    for (const [, pending] of this.openContracts) {
-      pending.reject(new Error('Trading session disconnected.'));
+    if (!preserveOpenContracts) {
+      for (const [, pending] of this.openContracts) {
+        pending.reject(new Error('Trading session disconnected.'));
+      }
+      this.openContracts.clear();
     }
-    this.openContracts.clear();
   }
 
   dispose() {
