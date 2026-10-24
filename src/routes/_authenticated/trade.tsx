@@ -1213,11 +1213,17 @@ function TradeTerminal() {
         }
         setRecentTicks(initialTicks);
 
-        const a = analyze(dList, stateRef.current.maxDiff);
         setBotState((cur) => (cur === "BUFFERING" ? "IDLE" : cur));
-        setNote(
-          `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (exact target: ${stateRef.current.maxDiff}%). ${a.ok ? "Target matched; ready to evaluate entries." : "Target not matched; scanning until the spread equals the selected value."}`,
-        );
+        if (stateRef.current.strategyMode === "x2x") {
+          setNote(
+            `1,000 ticks loaded on ${marketInfo.displayName}. X2X scans the live chronological tick stream; the Matches spread target does not apply.`,
+          );
+        } else {
+          const a = analyze(dList, stateRef.current.maxDiff);
+          setNote(
+            `1,000 ticks analyzed on ${marketInfo.displayName}: Entry [${a.most}] (${a.mostPct.toFixed(1)}%), Match Target [${a.second}] (${a.secondPct.toFixed(1)}%), Spread: ${a.diff.toFixed(2)}% (exact target: ${stateRef.current.maxDiff}%). ${a.ok ? "Target matched; ready to evaluate entries." : "Target not matched; scanning until the spread equals the selected value."}`,
+          );
+        }
       }
     });
 
@@ -3461,37 +3467,39 @@ function TradeTerminal() {
                           : "—"}
                       </div>
                     </div>
-                    <div className="max-w-[65%] text-right">
-                      <div
-                        className={
-                          "text-[11px] font-semibold num " +
-                          (analysis.ok
-                            ? isDark
-                              ? "text-emerald-400 font-bold"
-                              : "text-emerald-600 font-bold"
-                            : isDark
-                              ? "text-zinc-400"
-                              : "text-slate-600")
-                        }
-                      >
-                        SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
-                        <span className="opacity-60">= {maxDiff}% target</span>
+                    {strategyMode === "matches" && (
+                      <div className="max-w-[65%] text-right">
+                        <div
+                          className={
+                            "text-[11px] font-semibold num " +
+                            (analysis.ok
+                              ? isDark
+                                ? "text-emerald-400 font-bold"
+                                : "text-emerald-600 font-bold"
+                              : isDark
+                                ? "text-zinc-400"
+                                : "text-slate-600")
+                          }
+                        >
+                          SPREAD Δ {analysis.diff.toFixed(2)}%{" "}
+                          <span className="opacity-60">= {maxDiff}% target</span>
+                        </div>
+                        <div
+                          className={
+                            "text-[10px] font-semibold " +
+                            (analysis.ok
+                              ? isDark
+                                ? "text-emerald-400"
+                                : "text-emerald-600"
+                              : isDark
+                                ? "text-zinc-400"
+                                : "text-slate-600")
+                          }
+                        >
+                          {analysis.ok ? "(READY)" : "(WAITING)"}
+                        </div>
                       </div>
-                      <div
-                        className={
-                          "text-[10px] font-semibold " +
-                          (analysis.ok
-                            ? isDark
-                              ? "text-emerald-400"
-                              : "text-emerald-600"
-                            : isDark
-                              ? "text-zinc-400"
-                              : "text-slate-600")
-                        }
-                      >
-                        {analysis.ok ? "(READY)" : "(WAITING)"}
-                      </div>
-                    </div>
+                    )}
                   </div>
                 </div>
                 {/* Giant Digit Display */}
