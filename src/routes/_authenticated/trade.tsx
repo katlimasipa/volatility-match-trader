@@ -54,7 +54,13 @@ import {
   type X2XScannerEvent,
   type X2XScannerState,
 } from "@/lib/x2x-strategy";
-import { startBotKeepalive, stopBotKeepalive, requestScreenWakeLock } from "@/lib/bot-keepalive";
+import {
+  startAudioKeepalive,
+  stopAudioKeepalive,
+  requestScreenWakeLock,
+  releaseScreenWakeLock,
+  startWorkerHeartbeat,
+} from "@/lib/bot-keepalive";
 import {
   isNotificationSupported,
   isNotificationEnabled,
@@ -792,6 +798,8 @@ function TradeTerminal() {
   const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
   const lastTickAt = useRef<number>(Date.now());
+  const staleTickAttemptsRef = useRef(0);
+  const lastTradingReconnectAtRef = useRef(0);
   const keepaliveCleanupRef = useRef<(() => void) | null>(null);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
