@@ -800,7 +800,6 @@ function TradeTerminal() {
   const lastTickAt = useRef<number>(Date.now());
   const staleTickAttemptsRef = useRef(0);
   const lastTradingReconnectAtRef = useRef(0);
-  const keepaliveCleanupRef = useRef<(() => void) | null>(null);
   const wsRef = useRef<DerivWS | null>(null);
   const tradingRef = useRef<DerivTradingSession | null>(null);
   const connectionLostAlertedRef = useRef(false);
@@ -1204,6 +1203,7 @@ function TradeTerminal() {
         setPredictionStats(emptyPredictionStats());
         setPrice(pList[pList.length - 1] ?? null);
         lastTickAt.current = Date.now();
+        staleTickAttemptsRef.current = 0;
 
         // Prepopulate tick stream strictly in chronological order (newest first for table)
         const initialTicks: TickItem[] = [];
