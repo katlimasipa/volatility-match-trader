@@ -1982,41 +1982,62 @@ function TradeTerminal() {
     setNote("Synced balance from Deriv. Top up demo funds in your Deriv account if needed.");
   }
 
-  // Desktop PWA & Background Tab Keepalive Engine
+  // Connection watchdog helpers: detect stalled feeds and force recovery
+  function recoverTickFeed(force = false) {
+    const ws = wsRef.current;
+    if (!ws) return;
+    staleTickAttemptsRef.current += 1;
+    if (force || staleTickAttemptsRef.current >= 3) {
+      staleTickAttemptsRef.current = 0;
+      console.warn("[watchdog] Tick feed stalled — forcing reconnect");
+      ws.reconnect();
+      return;
+    }
+    // Half-open sockets accept sends silently, so a successful ping proves
+    // nothing. Escalate to a reconnect after a few stale heartbeats.
+    ws.send({ ping: 1 }).catch(() => {
+      ws.reconnect();
+    });
+  }
+
+  function reconnectTradingSession() {
+    const now = Date.now();
+    if (now - lastTradingReconnectAtRef.current < 10000) return;
+    lastTradingReconnectAtRef.current = now;
+    if (tradingRef.current && activeAccount) {
+      tradingRef.current.connect(activeAccount).catch(() => {});
+    }
+  }
+
+  // Desktop PWA & Background Tab Keepalive: inaudible audio + Wake Lock while the bot runs
   useEffect(() => {
     if (running) {
-      keepaliveCleanupRef.current = startBotKeepalive(() => {
-        // Background Web Worker heartbeat (fires unthrottled every 1s)
-        const now = Date.now();
-        // 1. Recover stalled tick feed (>8s)
-        if (now - lastTickAt.current > 8000) {
-          if (wsRef.current) {
-            wsRef.current.send({ ping: 1 }).catch(() => {
-              wsRef.current?.reconnect();
-            });
-          }
-        }
-        // 2. Recover trading session readiness
-        if (tradingRef.current && !tradingRef.current.isReady() && activeAccount) {
-          tradingRef.current.connect(activeAccount).catch(() => {});
-        }
-      });
-    } else {
-      if (keepaliveCleanupRef.current) {
-        keepaliveCleanupRef.current();
-        keepaliveCleanupRef.current = null;
-      }
-      stopBotKeepalive();
+      startAudioKeepalive();
+      void requestScreenWakeLock();
     }
-
     return () => {
-      if (keepaliveCleanupRef.current) {
-        keepaliveCleanupRef.current();
-        keepaliveCleanupRef.current = null;
-      }
-      stopBotKeepalive();
+      stopAudioKeepalive();
+      releaseScreenWakeLock();
     };
-  }, [running, activeAccount]);
+  }, [running]);
+
+  // Always-on connection watchdog: an unthrottled Web Worker heartbeat recovers
+  // a stalled tick feed and trading session even in background tabs and while
+  // the bot is idle, so the app never silently loses its connection.
+  useEffect(() => {
+    const stopHeartbeat = startWorkerHeartbeat(() => {
+      const staleFor = Date.now() - lastTickAt.current;
+      // 1. Recover the stalled tick feed (R_100 ticks every ~2s)
+      if (stateRef.current.running ? staleFor > 8000 : staleFor > 60000) {
+        recoverTickFeed();
+      }
+      // 2. Recover trading session readiness
+      if (tradingRef.current && !tradingRef.current.isReady() && activeAccount) {
+        reconnectTradingSession();
+      }
+    });
+    return stopHeartbeat;
+  }, [activeAccount]);
 
   // Screen Wake Lock & Socket Re-activation on visibility restore or focus
   useEffect(() => {
@@ -2026,12 +2047,16 @@ function TradeTerminal() {
           void requestScreenWakeLock();
         }
         if (wsRef.current) {
-          wsRef.current.send({ ping: 1 }).catch(() => {
-            wsRef.current?.reconnect();
-          });
+          if (Date.now() - lastTickAt.current > 10000) {
+            recoverTickFeed(true);
+          } else {
+            wsRef.current.send({ ping: 1 }).catch(() => {
+              wsRef.current?.reconnect();
+            });
+          }
         }
         if (tradingRef.current && !tradingRef.current.isReady() && activeAccount) {
-          tradingRef.current.connect(activeAccount).catch(() => {});
+          reconnectTradingSession();
         }
       }
     };
