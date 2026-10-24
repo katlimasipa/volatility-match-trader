@@ -1269,6 +1269,7 @@ function TradeTerminal() {
         const priorPrediction = predictionRef.current;
         const predictionCorrect = priorPrediction ? priorPrediction.digit === nextDigit : undefined;
         lastTickAt.current = Date.now();
+        staleTickAttemptsRef.current = 0;
 
         setPrice(q);
 
