@@ -272,7 +272,7 @@ export class DerivTradingSession {
     }
   }
 
-  async connect(account: DerivAccount): Promise<boolean> {
+  async connect(account: DerivAccount, retryAttempt = 0): Promise<boolean> {
     if (this.disposed) return false;
     if (isFakeAccountId(account.account_id)) {
       this.emitStatus('error', 'Connect a real Deriv account before live trading.');
@@ -314,8 +314,28 @@ export class DerivTradingSession {
     if (await connectClassic()) return true;
     if (isClassicToken && (await connectOtp())) return true;
 
+    this.scheduleAutoReconnect(retryAttempt);
     this.emitStatus('error', 'Could not open an authorized Deriv trading connection.');
     return false;
+  }
+
+  /**
+   * Retry a failed connect with exponential backoff so temporary network drops
+   * self-heal instead of leaving the session dead until manual action.
+   */
+  private scheduleAutoReconnect(attempt: number) {
+    if (this.disposed || !this.lastAccount) return;
+    if (this.reconnectTimer) return;
+    // After ~6 escalating failures stop auto-retrying; the UI heartbeat and
+    // manual connect can pick it up later.
+    if (attempt >= 6) return;
+    const delay = Math.min(30000, 2000 * Math.pow(2, attempt));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.disposed && this.lastAccount) {
+        void this.connect(this.lastAccount, attempt + 1);
+      }
+    }, delay);
   }
 
   private async openSocket(

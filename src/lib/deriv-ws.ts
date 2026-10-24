@@ -220,7 +220,10 @@ export class DerivWS {
     }
   }
 
-  public async send<T = Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> {
+  public async send<T = Record<string, unknown>>(
+    payload: Record<string, unknown>,
+    timeoutMs = 20000
+  ): Promise<T> {
     if (this.isDisposed) {
       throw new Error('WebSocket is disposed');
     }
@@ -254,11 +257,33 @@ export class DerivWS {
     }
 
     return new Promise<T>((resolve, reject) => {
+      // Requests must never hang forever on a half-open socket: Deriv replies
+      // within seconds, so anything still pending after timeoutMs is dead.
+      const timer = setTimeout(() => {
+        if (this.pendingRequests.has(reqId)) {
+          this.pendingRequests.delete(reqId);
+          reject(new Error(`Deriv request timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+
       this.pendingRequests.set(reqId, {
-        resolve: resolve as (data: Record<string, unknown>) => void,
-        reject,
+        resolve: (data) => {
+          clearTimeout(timer);
+          (resolve as (data: Record<string, unknown>) => void)(data);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
       });
-      this.ws!.send(JSON.stringify(msg));
+
+      try {
+        this.ws!.send(JSON.stringify(msg));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(reqId);
+        reject(err instanceof Error ? err : new Error('WebSocket send failed'));
+      }
     });
   }
 
