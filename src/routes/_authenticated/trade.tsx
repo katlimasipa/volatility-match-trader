@@ -14,15 +14,19 @@ import {
   storeAccounts,
   getActiveAccountId,
   setActiveAccountId,
-  getStoredAuthInfo,
+  hasUsableDerivAuthorization,
   clearAllDerivAuth,
   handleIncomingOAuth,
   authorizeWithToken,
-  getManualToken,
   type DerivAccount,
 } from "@/lib/deriv-auth";
 import { DerivWS } from "@/lib/deriv-ws";
-import { DerivTradingSession, isDerivLimitError, type ContractResult } from "@/lib/deriv-trading";
+import {
+  DerivTradingSession,
+  isDerivLimitError,
+  resolveTradingToken,
+  type ContractResult,
+} from "@/lib/deriv-trading";
 import {
   analyze,
   lastDigit,
@@ -1057,10 +1061,13 @@ function TradeTerminal() {
 
   // Refresh live balances from Deriv (never keep stale local demo balances)
   const refreshDerivBalances = useCallback(async () => {
-    const manualToken = getManualToken();
-    const authInfo = getStoredAuthInfo();
-    const token = authInfo?.access_token || manualToken;
-    if (!token) return;
+    const token = await resolveTradingToken();
+    if (!token) {
+      setIsConnectedToDeriv(false);
+      setTradingStatusNote("Deriv authorization expired. Sign in again to enable live trading.");
+      setShowConnectModal(true);
+      return;
+    }
 
     try {
       if (tradingRef.current?.isReady()) {
@@ -1085,6 +1092,11 @@ function TradeTerminal() {
           setActiveAccountId(chosen.account_id, chosen.account_type);
         }
         setIsConnectedToDeriv(true);
+        setTradingStatusNote("Authorization confirmed. Reconnecting live trading...");
+      } else if (/401|403|invalid token|expired|unauthori[sz]ed/i.test(res.error || "")) {
+        setIsConnectedToDeriv(false);
+        setTradingStatusNote("Deriv authorization expired. Sign in again to enable live trading.");
+        setShowConnectModal(true);
       }
     } catch {
       // Keep current balances on network error
@@ -1128,8 +1140,7 @@ function TradeTerminal() {
 
     const savedAccounts = getStoredAccounts();
     const storedActive = getActiveAccountId();
-    const authInfo = getStoredAuthInfo();
-    const manualToken = getManualToken();
+    const hasAuthorization = hasUsableDerivAuthorization();
 
     // Drop leftover fake accounts from older builds
     const realAccounts = savedAccounts.filter(
@@ -1143,14 +1154,15 @@ function TradeTerminal() {
       setAccounts(realAccounts);
       const chosen = realAccounts.find((a) => a.account_id === storedActive) ?? realAccounts[0];
       if (chosen) setActiveId(chosen.account_id);
-      setIsConnectedToDeriv(Boolean(authInfo || manualToken));
+      setIsConnectedToDeriv(hasAuthorization);
     } else {
       setAccounts([]);
       setActiveId(null);
-      setIsConnectedToDeriv(Boolean(manualToken || authInfo));
-      if (!authInfo && !manualToken) {
-        setShowConnectModal(true);
-      }
+      setIsConnectedToDeriv(hasAuthorization);
+    }
+    if (!hasAuthorization) {
+      setTradingStatusNote("Deriv authorization expired. Sign in again to enable live trading.");
+      setShowConnectModal(true);
     }
 
     refreshDerivBalances();
@@ -1373,8 +1385,7 @@ function TradeTerminal() {
 
   // Authorized trading socket (balance + live DIGITMATCH buys) for the active account
   useEffect(() => {
-    const token = getStoredAuthInfo()?.access_token || getManualToken();
-    if (!token || !activeAccount?.account_id) {
+    if (!hasUsableDerivAuthorization() || !activeAccount?.account_id) {
       setTradingReady(false);
       tradingRef.current?.dispose();
       tradingRef.current = null;
@@ -1419,6 +1430,15 @@ function TradeTerminal() {
       } else if (st === "error" || st === "offline") {
         setTradingReady(false);
         setTradingStatusNote(detail || "Trading socket offline");
+        const authorizationFailed =
+          /authorization (?:is )?(?:missing|expired|rejected)|sign in again|rejected the saved authorization/i.test(
+            detail || "",
+          );
+        if (authorizationFailed) {
+          setIsConnectedToDeriv(false);
+          setShowConnectModal(true);
+          setNote(detail || "Deriv authorization expired. Sign in again to enable live trading.");
+        }
         if (stateRef.current.running && !connectionLostAlertedRef.current) {
           connectionLostAlertedRef.current = true;
           notifyConnectionLost(
@@ -1439,7 +1459,7 @@ function TradeTerminal() {
       if (tradingRef.current === session) tradingRef.current = null;
       setTradingReady(false);
     };
-  }, [activeAccount?.account_id, applyBalanceToAccounts]);
+  }, [activeAccount?.account_id, applyBalanceToAccounts, isConnectedToDeriv]);
 
   function settleTradeResult(
     p: PendingTrade,
@@ -1852,7 +1872,7 @@ function TradeTerminal() {
     } else if (a.ok) {
       setBotState("WAITING ENTRY");
       setNote(
-        `Spread condition matched (Δ ${a.diff.toFixed(2)}% ${s.spreadComparison === "exact" ? "=" : "≤"} ${s.maxDiff}%). Waiting for entry digit ${a.most}...`,
+        `Spread condition matched (Δ ${a.diff.toFixed(2)}% ${s.spreadComparison === "exact" ? "=" : "≤"} ${s.maxDiff}%). Waiting for entry digit ${a.most}; current digit is ${currentD}.`,
       );
     } else {
       setBotState("ANALYZING");
@@ -2026,6 +2046,7 @@ function TradeTerminal() {
   }
 
   function reconnectTradingSession() {
+    if (!hasUsableDerivAuthorization()) return;
     const now = Date.now();
     if (now - lastTradingReconnectAtRef.current < 10000) return;
     lastTradingReconnectAtRef.current = now;

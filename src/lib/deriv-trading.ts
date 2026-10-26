@@ -66,6 +66,13 @@ export function isDerivLimitError(err: unknown): boolean {
   );
 }
 
+class DerivAuthorizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DerivAuthorizationError';
+  }
+}
+
 /**
  * Resolve a usable access token, refreshing Auth 2.0 when close to expiry.
  */
@@ -73,6 +80,13 @@ export async function resolveTradingToken(): Promise<string | null> {
   const info = getStoredAuthInfo();
   const manual = getManualToken();
   const now = Math.floor(Date.now() / 1000);
+
+  // Older builds saved classic API tokens as OAuth tokens with a false
+  // 24-hour expiry. A classic token remains usable until Deriv revokes it.
+  if (manual && looksLikeClassicApiToken(manual)) return manual;
+  if (info?.access_token && looksLikeClassicApiToken(info.access_token)) {
+    return info.access_token;
+  }
 
   if (info?.refresh_token && info.expires_at && info.expires_at <= now + 90) {
     const refreshed = await refreshAccessToken(getDerivClientId());
@@ -82,7 +96,7 @@ export async function resolveTradingToken(): Promise<string | null> {
     }
   }
 
-  if (info?.expires_at && info.expires_at <= now) {
+  if (info?.expires_at && info.expires_at > 0 && info.expires_at <= now) {
     return manual && manual !== info.access_token ? manual : null;
   }
 
@@ -124,12 +138,18 @@ export async function fetchAuthenticatedWsUrl(
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       console.warn('[deriv-trading] OTP failed:', response.status, text);
+      if (response.status === 401 || response.status === 403) {
+        throw new DerivAuthorizationError(
+          'Deriv rejected the saved authorization. Sign in again with Deriv Auth 2.0.',
+        );
+      }
       return null;
     }
 
     const data = (await response.json()) as { data?: { url?: string }; url?: string };
     return data.data?.url || data.url || null;
   } catch (err) {
+    if (err instanceof DerivAuthorizationError) throw err;
     console.warn('[deriv-trading] OTP request error:', err);
     return null;
   } finally {
@@ -163,6 +183,8 @@ export class DerivTradingSession {
   private stableConnectionTimer: ReturnType<typeof setTimeout> | null = null;
   private connectPromise: Promise<boolean> | null = null;
   private reconnectAttempts = 0;
+  private blockedAuthorization: string | null | undefined;
+  private blockedAuthorizationReason: string | null = null;
 
   onBalance(listener: BalanceListener): () => void {
     this.balanceListeners.add(listener);
@@ -316,14 +338,36 @@ export class DerivTradingSession {
 
     const token = await resolveTradingToken();
     if (!token) {
-      this.emitStatus('error', 'No Deriv authorization. Please sign in with Deriv Auth 2.0.');
-      this.scheduleAutoReconnect(retryAttempt);
+      this.blockedAuthorization = null;
+      this.blockedAuthorizationReason =
+        'Deriv authorization is missing or expired. Sign in again with Deriv Auth 2.0.';
+      this.emitStatus('error', this.blockedAuthorizationReason);
       return false;
     }
+    if (this.blockedAuthorization !== undefined && this.blockedAuthorization === token) {
+      this.emitStatus(
+        'error',
+        this.blockedAuthorizationReason ||
+          'Deriv rejected the saved authorization. Sign in again with Deriv Auth 2.0.',
+      );
+      return false;
+    }
+    this.blockedAuthorization = undefined;
+    this.blockedAuthorizationReason = null;
+
+    let authorizationFailure: string | null = null;
 
     const connectOtp = async () => {
-      const otpUrl = await fetchAuthenticatedWsUrl(account.account_id, token);
-      return otpUrl ? this.openSocket(otpUrl, 'otp', false) : false;
+      try {
+        const otpUrl = await fetchAuthenticatedWsUrl(account.account_id, token);
+        return otpUrl ? await this.openSocket(otpUrl, 'otp', false) : false;
+      } catch (err) {
+        if (err instanceof DerivAuthorizationError) {
+          authorizationFailure = err.message;
+          return false;
+        }
+        throw err;
+      }
     };
 
     const connectClassic = async () => {
@@ -333,7 +377,15 @@ export class DerivTradingSession {
         classicUrls.add(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(appId)}`);
       }
       for (const url of classicUrls) {
-        if (await this.openSocket(url, 'classic', true, token)) return true;
+        try {
+          if (await this.openSocket(url, 'classic', true, token)) return true;
+        } catch (err) {
+          if (err instanceof DerivAuthorizationError) {
+            authorizationFailure = err.message;
+            break;
+          }
+          throw err;
+        }
       }
       return false;
     };
@@ -342,6 +394,13 @@ export class DerivTradingSession {
     if (!isClassicToken && (await connectOtp())) return true;
     if (await connectClassic()) return true;
     if (isClassicToken && (await connectOtp())) return true;
+
+    if (authorizationFailure) {
+      this.blockedAuthorization = token;
+      this.blockedAuthorizationReason = authorizationFailure;
+      this.emitStatus('error', authorizationFailure);
+      return false;
+    }
 
     this.scheduleAutoReconnect(retryAttempt);
     this.emitStatus('error', 'Could not open an authorized Deriv trading connection.');
@@ -446,6 +505,16 @@ export class DerivTradingSession {
         ws?.dispose();
       } catch {
         // The socket may already be closed; cleanup is best-effort.
+      }
+      const message = errorMessage(err);
+      if (
+        /authorization[\s_-]*required|invalid[\s_-]*(?:api[\s_-]*)?token|token[\s_-]*(?:is[\s_-]*)?(?:expired|invalid)|not[\s_-]*authorized|authorization[\s_-]*(?:failed|denied)/i.test(
+          message,
+        )
+      ) {
+        throw new DerivAuthorizationError(
+          'Deriv rejected the saved authorization. Sign in again with Deriv Auth 2.0.',
+        );
       }
       return false;
     }

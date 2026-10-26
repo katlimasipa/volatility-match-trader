@@ -164,6 +164,37 @@ export function storeAuthInfo(info: AuthInfo): void {
   writeDual(STORAGE_KEYS.AUTH_INFO, JSON.stringify(info));
 }
 
+export function clearStoredAuthInfo(): void {
+  if (typeof window === 'undefined') return;
+  removeDual(STORAGE_KEYS.AUTH_INFO);
+}
+
+/**
+ * Whether the browser has a credential worth trying for a Deriv connection.
+ * Classic API tokens do not inherit the temporary OAuth expiry metadata older
+ * builds attached to them. OAuth tokens are usable until expiry, or while a
+ * refresh token is available.
+ */
+export function hasUsableDerivAuthorization(): boolean {
+  const info = getStoredAuthInfo();
+  const manual = getManualToken().trim();
+  if (manual && looksLikeClassicApiToken(manual)) return true;
+  if (info?.access_token && looksLikeClassicApiToken(info.access_token)) return true;
+  if (info?.refresh_token) return true;
+
+  const token = info?.access_token || manual;
+  if (!token) return false;
+  if (
+    info?.access_token === token &&
+    Number.isFinite(info.expires_at) &&
+    info.expires_at > 0 &&
+    info.expires_at <= Math.floor(Date.now() / 1000)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function getStoredAccounts(): DerivAccount[] {
   if (typeof window === 'undefined') return [];
   const raw = readDual(STORAGE_KEYS.ACCOUNTS);
@@ -323,11 +354,12 @@ export async function exchangeCodeForTokens(
   }
 
   const data = await response.json();
+  const expiresIn = Number(data.expires_in) || 3600;
   const authInfo: AuthInfo = {
     access_token: data.access_token,
     token_type: data.token_type || 'Bearer',
-    expires_in: data.expires_in,
-    expires_at: Math.floor(Date.now() / 1000) + (data.expires_in || 7200),
+    expires_in: expiresIn,
+    expires_at: Math.floor(Date.now() / 1000) + expiresIn,
     scope: data.scope,
     refresh_token: data.refresh_token,
   };
@@ -630,19 +662,14 @@ async function authorizeClassicWs(token: string): Promise<{
               accounts = accounts.filter((a) => Boolean(a.account_id));
               storeAccounts(accounts);
               setManualToken(cleanToken);
+              // Classic API tokens remain valid until revoked. Do not persist a
+              // fabricated 24-hour OAuth expiry for them.
+              clearStoredAuthInfo();
 
               const activeAcc = accounts.find((a) => a.account_id === auth.loginid) || accounts[0];
               if (activeAcc) {
                 setActiveAccountId(activeAcc.account_id, activeAcc.account_type);
               }
-
-              storeAuthInfo({
-                access_token: cleanToken,
-                token_type: 'Bearer',
-                expires_in: 86400,
-                expires_at: Math.floor(Date.now() / 1000) + 86400,
-                scope: 'trade account_manage',
-              });
 
               try {
                 ws.close();
@@ -701,14 +728,12 @@ export async function authorizeWithToken(token: string): Promise<{
   if (!looksLikeClassicApiToken(cleanToken)) {
     const rest = await fetchOptionsAccountsViaRest(cleanToken);
     if (rest.success && rest.accounts.length > 0) {
-      storeAuthInfo({
-        access_token: cleanToken,
-        token_type: 'Bearer',
-        expires_in: 7200,
-        expires_at: Math.floor(Date.now() / 1000) + 7200,
-        scope: 'trade account_manage',
-        ...(getStoredAuthInfo()?.refresh_token ? { refresh_token: getStoredAuthInfo()!.refresh_token } : {}),
-      });
+      const current = getStoredAuthInfo();
+      setManualToken(cleanToken);
+      // Revalidation must not extend a short-lived OAuth token. Its original
+      // expiry and refresh token were saved during the authorization-code
+      // exchange and remain authoritative.
+      if (current?.access_token !== cleanToken) clearStoredAuthInfo();
       const active =
         rest.accounts.find((a) => a.account_id === getActiveAccountId()) ||
         rest.accounts.find((a) => a.account_type === 'demo') ||
@@ -738,13 +763,9 @@ export async function authorizeWithToken(token: string): Promise<{
   // Last resort: Auth 2.0 REST for tokens that looked classic but weren't
   const restFallback = await fetchOptionsAccountsViaRest(cleanToken);
   if (restFallback.success && restFallback.accounts.length > 0) {
-    storeAuthInfo({
-      access_token: cleanToken,
-      token_type: 'Bearer',
-      expires_in: 7200,
-      expires_at: Math.floor(Date.now() / 1000) + 7200,
-      scope: 'trade account_manage',
-    });
+    const current = getStoredAuthInfo();
+    setManualToken(cleanToken);
+    if (current?.access_token !== cleanToken) clearStoredAuthInfo();
     const active =
       restFallback.accounts.find((a) => a.account_id === getActiveAccountId()) ||
       restFallback.accounts.find((a) => a.account_type === 'demo') ||

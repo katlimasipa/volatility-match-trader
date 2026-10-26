@@ -1,5 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
-import { looksLikeClassicApiToken, startDerivAuth } from "@/lib/deriv-auth";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getStoredAuthInfo,
+  hasUsableDerivAuthorization,
+  looksLikeClassicApiToken,
+  setManualToken,
+  startDerivAuth,
+  storeAuthInfo,
+  authorizeWithToken,
+  type AuthInfo,
+} from "@/lib/deriv-auth";
+import { resolveTradingToken } from "@/lib/deriv-trading";
+
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
 
 describe("Deriv token detection", () => {
   it("treats short opaque API tokens as classic", () => {
@@ -16,6 +31,72 @@ describe("Deriv token detection", () => {
   it("rejects empty tokens", () => {
     expect(looksLikeClassicApiToken("")).toBe(false);
     expect(looksLikeClassicApiToken("   ")).toBe(false);
+  });
+
+  it("keeps legacy classic API tokens usable after the old 24-hour expiry", async () => {
+    const token = "classic-api-token-123456";
+    const expiredAuthInfo: AuthInfo = {
+      access_token: token,
+      token_type: "Bearer",
+      expires_in: 86400,
+      expires_at: Math.floor(Date.now() / 1000) - 1,
+      scope: "trade account_manage",
+    };
+    storeAuthInfo(expiredAuthInfo);
+    setManualToken(token);
+
+    expect(hasUsableDerivAuthorization()).toBe(true);
+    await expect(resolveTradingToken()).resolves.toBe(token);
+  });
+
+  it("rejects an expired OAuth token when no refresh token is available", async () => {
+    const token =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZXJpdiIsImlhdCI6MTUxNjIzOTAyMn0.signature";
+    storeAuthInfo({
+      access_token: token,
+      token_type: "Bearer",
+      expires_in: 3600,
+      expires_at: Math.floor(Date.now() / 1000) - 1,
+      scope: "trade account_manage",
+    });
+    setManualToken(token);
+
+    expect(hasUsableDerivAuthorization()).toBe(false);
+    await expect(resolveTradingToken()).resolves.toBeNull();
+  });
+
+  it("does not extend OAuth expiry when account authorization is rechecked", async () => {
+    const token =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZXJpdiIsImlhdCI6MTUxNjIzOTAyMn0.signature";
+    const originalExpiry = Math.floor(Date.now() / 1000) + 900;
+    storeAuthInfo({
+      access_token: token,
+      token_type: "Bearer",
+      expires_in: 3600,
+      expires_at: originalExpiry,
+      scope: "trade account_manage",
+      refresh_token: "refresh-token",
+    });
+    setManualToken(token);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: [{ account_id: "VRTC123456", account_type: "demo", balance: 100, currency: "USD" }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    try {
+      const result = await authorizeWithToken(token);
+      expect(result.success).toBe(true);
+      expect(getStoredAuthInfo()?.expires_at).toBe(originalExpiry);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("starts OAuth without a prompt parameter", async () => {

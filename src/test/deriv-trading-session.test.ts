@@ -1,6 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DerivTradingSession, isDerivLimitError } from "@/lib/deriv-trading";
 import type { DerivWS } from "@/lib/deriv-ws";
+
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 /**
  * Settlement balance math:
@@ -44,6 +53,32 @@ describe("Live trade balance settlement", () => {
     // win +40 profit on 5 stake → payout 45
     bal = settleBalance(bal, 5, 40);
     expect(bal).toBe(535);
+  });
+});
+
+describe("Deriv authorization recovery", () => {
+  it("does not retry forever when there is no authorization to reconnect with", async () => {
+    const session = new DerivTradingSession();
+    const statuses: Array<{ status: string; detail?: string | undefined }> = [];
+    session.onStatus((status, detail) => statuses.push({ status, detail }));
+
+    const connected = await session.connect({
+      account_id: "VRTC123456",
+      account_type: "demo",
+      currency: "USD",
+      balance: "100.00",
+    });
+
+    expect(connected).toBe(false);
+    expect(statuses.at(-1)).toMatchObject({
+      status: "error",
+      detail: expect.stringContaining("Sign in again"),
+    });
+    expect(
+      (session as unknown as { reconnectTimer: ReturnType<typeof setTimeout> | null })
+        .reconnectTimer,
+    ).toBeNull();
+    session.dispose();
   });
 });
 
