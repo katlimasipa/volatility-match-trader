@@ -34,6 +34,7 @@ import {
   MAX_DIFF,
   WINDOW,
   MARTINGALE_MULTIPLIER,
+  MARTINGALE_MAX_LOSSES_PER_STEP,
   calculateMartingaleStake,
   predictNextDigit,
   MARKETS,
@@ -185,6 +186,7 @@ interface SavedSession {
   spreadThreshold: number;
   baseStake: number;
   martingaleEnabled: boolean;
+  martingaleLossesPerStep?: number;
   strategyMode?: StrategyMode;
   spreadComparison?: SpreadComparison;
   x2xSignals?: X2XSignalRecord[];
@@ -192,6 +194,7 @@ interface SavedSession {
 }
 
 const SESSION_HISTORY_STORAGE_KEY = "thdpst_session_history_v1";
+const MARTINGALE_LOSSES_PER_STEP_STORAGE_KEY = "thdpst_martingale_losses_per_step_v1";
 const STRATEGY_MODE_STORAGE_KEY = "thdpst_strategy_mode_v1";
 const SPREAD_COMPARISON_STORAGE_KEY = "thdpst_spread_comparison_v1";
 const X2X_SIGNAL_HISTORY_STORAGE_KEY = "thdpst_x2x_signal_history_v1";
@@ -222,6 +225,18 @@ function loadSpreadComparison(): SpreadComparison {
       : "exact";
   } catch {
     return "exact";
+  }
+}
+
+function loadMartingaleLossesPerStep(): number {
+  if (typeof window === "undefined") return 1;
+  try {
+    const value = Number(localStorage.getItem(MARTINGALE_LOSSES_PER_STEP_STORAGE_KEY));
+    return Number.isInteger(value) && value >= 1 && value <= MARTINGALE_MAX_LOSSES_PER_STEP
+      ? value
+      : 1;
+  } catch {
+    return 1;
   }
 }
 
@@ -292,6 +307,10 @@ function isSavedSession(value: unknown): value is SavedSession {
     typeof saved.baseStake === "number" &&
     Number.isFinite(saved.baseStake) &&
     typeof saved.martingaleEnabled === "boolean" &&
+    (saved.martingaleLossesPerStep === undefined ||
+      (Number.isInteger(saved.martingaleLossesPerStep) &&
+        saved.martingaleLossesPerStep >= 1 &&
+        saved.martingaleLossesPerStep <= MARTINGALE_MAX_LOSSES_PER_STEP)) &&
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x" ||
@@ -586,6 +605,9 @@ function TradeTerminal() {
   const [x2xScanExpanded, setX2xScanExpanded] = useState(false);
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
+  const [martingaleLossesPerStep, setMartingaleLossesPerStep] = useState(
+    loadMartingaleLossesPerStep,
+  );
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
@@ -613,6 +635,22 @@ function TradeTerminal() {
   function updateMaxDiff(val: number, strVal?: string) {
     setMaxDiff(val);
     setMaxDiffInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateMartingaleLossesPerStep(value: number) {
+    if (
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > MARTINGALE_MAX_LOSSES_PER_STEP
+    ) {
+      return;
+    }
+    setMartingaleLossesPerStep(value);
+    try {
+      localStorage.setItem(MARTINGALE_LOSSES_PER_STEP_STORAGE_KEY, String(value));
+    } catch {
+      // Keep the selected interval for this page if browser storage is unavailable.
+    }
   }
 
   function updateSpreadComparison(value: SpreadComparison) {
@@ -851,6 +889,7 @@ function TradeTerminal() {
     botState,
     reAnalyzeOnLoss,
     martingaleEnabled,
+    martingaleLossesPerStep,
     activeId,
     maxDiff,
     spreadComparison,
@@ -870,6 +909,7 @@ function TradeTerminal() {
     botState,
     reAnalyzeOnLoss,
     martingaleEnabled,
+    martingaleLossesPerStep,
     activeId,
     maxDiff,
     spreadComparison,
@@ -1755,6 +1795,7 @@ function TradeTerminal() {
           s.stake,
           lossStreakRef.current,
           s.martingaleEnabled,
+          s.martingaleLossesPerStep,
         );
         const availableBalance = activeAccount
           ? Number(activeAccount.balance)
@@ -1844,7 +1885,12 @@ function TradeTerminal() {
 
       const order = captureEntryMatchOrder(tickInfo, s.marketSymbol);
       const targetRun = s.runCount + 1;
-      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const nextStake = calculateMartingaleStake(
+        s.stake,
+        lossStreakRef.current,
+        s.martingaleEnabled,
+        s.martingaleLossesPerStep,
+      );
       const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
       if (nextStake > availableBalance) {
         stopBot(
@@ -1915,6 +1961,7 @@ function TradeTerminal() {
         s.stake,
         lossStreakRef.current,
         s.martingaleEnabled,
+        s.martingaleLossesPerStep,
       );
       const availableBalance = activeAccount
         ? Number(activeAccount.balance)
@@ -2065,6 +2112,7 @@ function TradeTerminal() {
       spreadThreshold: maxDiff,
       baseStake: stake,
       martingaleEnabled,
+      martingaleLossesPerStep,
       strategyMode,
       spreadComparison,
       x2xSignals: signalHistory.map((signal) => ({ ...signal })),
@@ -2343,7 +2391,12 @@ function TradeTerminal() {
     }
     const a = analyze(digits, maxDiff, spreadComparison);
     const targetRun = runCount + 1;
-    const testStake = calculateMartingaleStake(stake, lossStreakRef.current, martingaleEnabled);
+    const testStake = calculateMartingaleStake(
+      stake,
+      lossStreakRef.current,
+      martingaleEnabled,
+      martingaleLossesPerStep,
+    );
     const availableBalance = activeAccount
       ? Number(activeAccount.balance)
       : Number.POSITIVE_INFINITY;
@@ -3482,10 +3535,39 @@ function TradeTerminal() {
                     1.5× martingale after losses
                   </span>
                 </label>
+                <div className="flex items-center justify-between gap-3 rounded border border-slate-200 px-2.5 py-2 dark:border-zinc-800">
+                  <label
+                    htmlFor="martingale-losses-per-step"
+                    className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}
+                  >
+                    Losses before stake increase
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      id="martingale-losses-per-step"
+                      aria-label="Consecutive losses per martingale step"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MARTINGALE_MAX_LOSSES_PER_STEP}
+                      step={1}
+                      value={martingaleLossesPerStep}
+                      onChange={(event) =>
+                        updateMartingaleLossesPerStep(event.currentTarget.valueAsNumber)
+                      }
+                      className={`w-16 rounded border px-2 py-1 text-right text-xs font-mono outline-none ${
+                        isDark
+                          ? "border-zinc-700 bg-zinc-900 text-white"
+                          : "border-slate-300 bg-white text-slate-900"
+                      }`}
+                    />
+                    <span className="text-[10px] text-zinc-500">losses</span>
+                  </div>
+                </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {martingaleEnabled
-                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true).toFixed(2)}. It grows by ${MARTINGALE_MULTIPLIER}× after each loss and resets to the base stake after a win; this raises risk and cannot guarantee recovery.`
-                    : "Re-analyzes after a loss. Turn on 1.5× martingale to increase the next stake after each loss; a win resets it to your base stake."}
+                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true, martingaleLossesPerStep).toFixed(2)}. The same stake is used for ${martingaleLossesPerStep} consecutive losses, then it increases by ${MARTINGALE_MULTIPLIER}×. Any win resets it to base; it can still grow during a long losing streak.`
+                    : `Re-analyzes after a loss. When martingale is on, each stake level will be used for ${martingaleLossesPerStep} consecutive losses before increasing; any win resets to your base stake.`}
                   {stopOnWin ? ' "Stop after first win" stops the bot after a win.' : ""}
                 </p>
               </div>
@@ -4402,7 +4484,9 @@ function TradeTerminal() {
                               : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
-                          {saved.martingaleEnabled ? "ON" : "OFF"}
+                          {saved.martingaleEnabled
+                            ? `ON · every ${saved.martingaleLossesPerStep ?? 1} losses`
+                            : "OFF"}
                           {saved.x2xSignals?.length
                             ? ` · X2X signals ${saved.x2xSignals.length}`
                             : ""}

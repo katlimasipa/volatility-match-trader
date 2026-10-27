@@ -168,12 +168,24 @@ describe("Volatility 100 Matches strategy", () => {
     }
   });
 
-  it("applies 1.5× martingale progression only when enabled", () => {
+  it("applies the original 1.5× martingale progression when the block size is one", () => {
     expect(calculateMartingaleStake(1, 0, true)).toBe(1);
     expect(calculateMartingaleStake(1, 1, true)).toBe(1.5);
     expect(calculateMartingaleStake(1, 2, true)).toBe(2.25);
     expect(calculateMartingaleStake(1, 3, false)).toBe(1);
     expect(calculateMartingaleStake(0.35, 1, true)).toBe(0.53);
+  });
+
+  it("keeps the same stake for each chosen block of consecutive losses", () => {
+    const stakes = [0, 1, 2, 3, 4, 5].map((losses) =>
+      calculateMartingaleStake(1, losses, true, 2),
+    );
+    expect(stakes).toEqual([1, 1, 1.5, 1.5, 2.25, 2.25]);
+
+    expect(calculateMartingaleStake(1, 3, true, 3)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 2, true, 3)).toBe(1);
+    expect(calculateMartingaleStake(1, 0, true, 2)).toBe(1);
+    expect(calculateMartingaleStake(1, 4, false, 2)).toBe(1);
   });
 
   it("identifies most and second most appearing digits", () => {
