@@ -87,7 +87,6 @@ import {
   playAlertSound,
   dispatchNotification,
   presentRemoteAlert,
-  onInAppAlert,
   initAudioContext,
   isIOSSafariNotPWA,
 } from "@/lib/notifications";
@@ -514,6 +513,7 @@ function TradeTerminal() {
     setTheme(nextTheme);
     if (typeof window !== "undefined") {
       localStorage.setItem("thdpst_theme", nextTheme);
+      window.dispatchEvent(new Event("thdpst-theme-change"));
     }
   };
 
@@ -526,14 +526,6 @@ function TradeTerminal() {
 
   // Deriv connection modal (Auth 2.0 PKCE)
   const [showConnectModal, setShowConnectModal] = useState(false);
-
-  // In-app alert banner
-  const [inAppAlert, setInAppAlert] = useState<{
-    id: number;
-    title: string;
-    body: string;
-    type: string;
-  } | null>(null);
 
   // Mobile settings drawer/modal
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -707,18 +699,6 @@ function TradeTerminal() {
   const [isStandalone, setIsStandalone] = useState(false);
   const [showIOSInstallGuide, setShowIOSInstallGuide] = useState(false);
   const [mobileTab, setMobileTab] = useState<"controls" | "market" | "session" | "all">("market");
-
-  // In-app alert listener
-  useEffect(() => {
-    const unsub = onInAppAlert((alert) => {
-      setInAppAlert(alert);
-      const timer = setTimeout(() => {
-        setInAppAlert((cur) => (cur?.id === alert.id ? null : cur));
-      }, 5000);
-      return () => clearTimeout(timer);
-    });
-    return () => unsub();
-  }, []);
 
   // Web Audio Context initialization on first interaction
   useEffect(() => {
@@ -2423,57 +2403,6 @@ function TradeTerminal() {
         isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
       }`}
     >
-      {/* Floating In-App Alert Toast (Docked above mobile bottom bar, bottom-right on desktop) */}
-      {inAppAlert && (
-        <aside
-          role="status"
-          aria-live="polite"
-          style={{ bottom: "calc(max(env(safe-area-inset-bottom, 0px), 0.75rem) + 4.75rem)" }}
-          className="fixed left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-md animate-in fade-in slide-in-from-bottom-3 duration-200 lg:top-auto lg:bottom-6 lg:left-auto lg:right-6 lg:translate-x-0 lg:w-80 lg:slide-in-from-right-4"
-        >
-          <div
-            className={`rounded-xl border px-4 py-3 shadow-2xl flex items-center justify-between gap-3 backdrop-blur-md ${
-              inAppAlert.type === "win"
-                ? isDark
-                  ? "border-emerald-500/60 bg-zinc-950/95 text-emerald-400"
-                  : "border-emerald-500 bg-emerald-50/95 text-emerald-800 shadow-emerald-950/10"
-                : inAppAlert.type === "loss"
-                  ? isDark
-                    ? "border-red-500/60 bg-zinc-950/95 text-red-400"
-                    : "border-red-500 bg-red-50/95 text-red-800 shadow-red-950/10"
-                  : isDark
-                    ? "border-zinc-800 bg-zinc-950/95 text-white"
-                    : "border-slate-300 bg-white/95 text-slate-900 shadow-slate-950/10"
-            }`}
-          >
-            <div className="space-y-0.5 min-w-0 flex-1">
-              <div className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    inAppAlert.type === "win"
-                      ? "bg-emerald-400"
-                      : inAppAlert.type === "loss"
-                        ? "bg-rose-500"
-                        : "bg-sky-400"
-                  }`}
-                />
-                <span className="truncate">{inAppAlert.title}</span>
-              </div>
-              <div className="text-[11px] opacity-90 leading-snug break-words">
-                {inAppAlert.body}
-              </div>
-            </div>
-            <button
-              onClick={() => setInAppAlert(null)}
-              aria-label="Dismiss alert"
-              className="min-h-[44px] min-w-[44px] flex items-center justify-center -mr-2 -my-2 text-xs font-bold opacity-60 hover:opacity-100 transition-opacity"
-            >
-              [X]
-            </button>
-          </div>
-        </aside>
-      )}
-
       {/* 1. Header Bar: Responsive for Mobile, Tablet & Desktop */}
       <header
         style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 0.625rem)" }}
