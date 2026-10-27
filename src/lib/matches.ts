@@ -196,7 +196,6 @@ export const SYMBOL = CLASSIC_SYMBOL;
 export const DISPLAY_NAME = "Volatility 100";
 export const PIP_DECIMALS = 2;
 export const MARTINGALE_MULTIPLIER = 1.5;
-export const MARTINGALE_MAX_LOSSES_PER_STEP = 100;
 export const MAX_DIFF = 0.3; // exact spread-difference target by default
 export const WINDOW = 1000;
 
@@ -316,21 +315,14 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
     edgeDetected,
   };
 }
-/** Keep each stake level for a configured block of consecutive losses, then multiply it by 1.5. */
+/** Base stake is multiplied by 1.5 for each consecutive settled loss. */
 export function calculateMartingaleStake(
   baseStake: number,
   consecutiveLosses: number,
   enabled: boolean,
-  lossesPerStep = 1,
 ): number {
   if (!Number.isFinite(baseStake) || baseStake <= 0) return 0;
-  const blockSize = Number.isFinite(lossesPerStep)
-    ? Math.min(MARTINGALE_MAX_LOSSES_PER_STEP, Math.max(1, Math.floor(lossesPerStep)))
-    : 1;
-  const lossCount = Number.isFinite(consecutiveLosses)
-    ? Math.max(0, Math.floor(consecutiveLosses))
-    : 0;
-  const steps = enabled ? Math.floor(lossCount / blockSize) : 0;
+  const steps = enabled ? Math.max(0, Math.floor(consecutiveLosses)) : 0;
   const amount = baseStake * Math.pow(MARTINGALE_MULTIPLIER, steps);
   return Number.isFinite(amount) ? Math.round((amount + Number.EPSILON) * 100) / 100 : 0;
 }
