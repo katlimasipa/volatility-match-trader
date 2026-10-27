@@ -9,6 +9,7 @@ import {
   OPTIONS_SYMBOL,
   MARKETS,
   MARKET_LIST,
+  MARKET_GROUPS,
   getMarketConfig,
   marketTradeSymbols,
   calculateMartingaleStake,
@@ -36,8 +37,8 @@ const x2xTick = (quote: number, tickId?: string): X2XQuoteDigit => ({
 
 describe("Entry Match strategy", () => {
   it.each(MARKET_LIST)("captures a new prediction from each $id tick", (market) => {
-    const firstQuote = 1234.171;
-    const secondQuote = 1234.284;
+    const firstQuote = 1234.1234;
+    const secondQuote = 1234.5678;
     const firstDigit = lastDigit(firstQuote, market.pipDecimals);
     const secondDigit = lastDigit(secondQuote, market.pipDecimals);
     const firstOrder = captureEntryMatchOrder(
@@ -113,13 +114,28 @@ describe("Volatility 100 Matches strategy", () => {
     expect(getMarketConfig("R_100").classicSymbol).toBe("R_100");
     expect(getMarketConfig().classicSymbol).toBe("R_100");
     expect(MARKET_LIST.map((m) => m.id)).toEqual([
-      "R_100",
-      "R_75",
       "R_10",
-      "1HZ100V",
-      "1HZ75V",
+      "R_25",
+      "R_50",
+      "R_75",
+      "R_100",
       "1HZ10V",
+      "1HZ15V",
+      "1HZ25V",
+      "1HZ30V",
+      "1HZ50V",
+      "1HZ75V",
+      "1HZ90V",
+      "1HZ100V",
+      "1HZ150V",
+      "1HZ250V",
     ]);
+    expect(MARKET_GROUPS.map((group) => group.label)).toEqual(["STANDARD", "1 SECOND"]);
+    expect(MARKET_GROUPS[0]?.markets.every((market) => !market.id.startsWith("1HZ"))).toBe(true);
+    expect(MARKET_GROUPS[1]?.markets.every((market) => market.id.startsWith("1HZ"))).toBe(true);
+    expect(MARKETS.R_25.pipDecimals).toBe(3);
+    expect(MARKETS.R_50.pipDecimals).toBe(4);
+    expect(lastDigit(206.5547, MARKETS.R_50.pipDecimals)).toBe(7);
 
     expect(marketTradeSymbols(v10, "classic")).toEqual({
       preferred: "R_10",
@@ -144,6 +160,12 @@ describe("Volatility 100 Matches strategy", () => {
       preferred: "1HZ10V",
       fallback: "1HZ10V",
     });
+
+    for (const market of MARKET_LIST) {
+      expect(market.classicSymbol).toBe(market.id);
+      expect(market.optionsSymbol).toBe(market.id);
+      expect(getMarketConfig(market.id)).toBe(market);
+    }
   });
 
   it("applies 1.5× martingale progression only when enabled", () => {

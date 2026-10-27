@@ -1,6 +1,21 @@
-// Matches strategy analysis for standard and 1-second Volatility 100 / 75 / 10 indices.
+// Matches strategy analysis for Deriv standard and 1-second Volatility indices.
 
-export type MarketSymbol = "R_100" | "R_75" | "R_10" | "1HZ100V" | "1HZ75V" | "1HZ10V";
+export type MarketSymbol =
+  | "R_100"
+  | "R_75"
+  | "R_50"
+  | "R_25"
+  | "R_10"
+  | "1HZ100V"
+  | "1HZ90V"
+  | "1HZ75V"
+  | "1HZ50V"
+  | "1HZ30V"
+  | "1HZ25V"
+  | "1HZ15V"
+  | "1HZ10V"
+  | "1HZ150V"
+  | "1HZ250V";
 
 export interface MarketConfig {
   id: MarketSymbol;
@@ -30,6 +45,22 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     optionsSymbol: "R_75",
     pipDecimals: 2,
   },
+  R_50: {
+    id: "R_50",
+    displayName: "Volatility 50 Index",
+    shortName: "Vol 50",
+    classicSymbol: "R_50",
+    optionsSymbol: "R_50",
+    pipDecimals: 4,
+  },
+  R_25: {
+    id: "R_25",
+    displayName: "Volatility 25 Index",
+    shortName: "Vol 25",
+    classicSymbol: "R_25",
+    optionsSymbol: "R_25",
+    pipDecimals: 3,
+  },
   R_10: {
     id: "R_10",
     displayName: "Volatility 10 Index",
@@ -54,6 +85,62 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
     optionsSymbol: "1HZ75V",
     pipDecimals: 2,
   },
+  "1HZ50V": {
+    id: "1HZ50V",
+    displayName: "Volatility 50 (1s) Index",
+    shortName: "Vol 50 (1s)",
+    classicSymbol: "1HZ50V",
+    optionsSymbol: "1HZ50V",
+    pipDecimals: 2,
+  },
+  "1HZ25V": {
+    id: "1HZ25V",
+    displayName: "Volatility 25 (1s) Index",
+    shortName: "Vol 25 (1s)",
+    classicSymbol: "1HZ25V",
+    optionsSymbol: "1HZ25V",
+    pipDecimals: 2,
+  },
+  "1HZ15V": {
+    id: "1HZ15V",
+    displayName: "Volatility 15 (1s) Index",
+    shortName: "Vol 15 (1s)",
+    classicSymbol: "1HZ15V",
+    optionsSymbol: "1HZ15V",
+    pipDecimals: 3,
+  },
+  "1HZ30V": {
+    id: "1HZ30V",
+    displayName: "Volatility 30 (1s) Index",
+    shortName: "Vol 30 (1s)",
+    classicSymbol: "1HZ30V",
+    optionsSymbol: "1HZ30V",
+    pipDecimals: 3,
+  },
+  "1HZ90V": {
+    id: "1HZ90V",
+    displayName: "Volatility 90 (1s) Index",
+    shortName: "Vol 90 (1s)",
+    classicSymbol: "1HZ90V",
+    optionsSymbol: "1HZ90V",
+    pipDecimals: 3,
+  },
+  "1HZ150V": {
+    id: "1HZ150V",
+    displayName: "Volatility 150 (1s) Index",
+    shortName: "Vol 150 (1s)",
+    classicSymbol: "1HZ150V",
+    optionsSymbol: "1HZ150V",
+    pipDecimals: 2,
+  },
+  "1HZ250V": {
+    id: "1HZ250V",
+    displayName: "Volatility 250 (1s) Index",
+    shortName: "Vol 250 (1s)",
+    classicSymbol: "1HZ250V",
+    optionsSymbol: "1HZ250V",
+    pipDecimals: 2,
+  },
   "1HZ10V": {
     id: "1HZ10V",
     displayName: "Volatility 10 (1s) Index",
@@ -64,14 +151,29 @@ export const MARKETS: Record<MarketSymbol, MarketConfig> = {
   },
 };
 
-export const MARKET_LIST: MarketConfig[] = [
-  MARKETS.R_100,
-  MARKETS.R_75,
-  MARKETS.R_10,
-  MARKETS["1HZ100V"],
-  MARKETS["1HZ75V"],
-  MARKETS["1HZ10V"],
+export const MARKET_GROUPS: { label: string; markets: MarketConfig[] }[] = [
+  {
+    label: "STANDARD",
+    markets: [MARKETS.R_10, MARKETS.R_25, MARKETS.R_50, MARKETS.R_75, MARKETS.R_100],
+  },
+  {
+    label: "1 SECOND",
+    markets: [
+      MARKETS["1HZ10V"],
+      MARKETS["1HZ15V"],
+      MARKETS["1HZ25V"],
+      MARKETS["1HZ30V"],
+      MARKETS["1HZ50V"],
+      MARKETS["1HZ75V"],
+      MARKETS["1HZ90V"],
+      MARKETS["1HZ100V"],
+      MARKETS["1HZ150V"],
+      MARKETS["1HZ250V"],
+    ],
+  },
 ];
+
+export const MARKET_LIST: MarketConfig[] = MARKET_GROUPS.flatMap((group) => group.markets);
 export function getMarketConfig(symbol?: string): MarketConfig {
   return MARKET_LIST.find((market) => market.id === symbol) ?? MARKETS.R_100;
 }

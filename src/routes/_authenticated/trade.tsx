@@ -38,6 +38,7 @@ import {
   predictNextDigit,
   MARKETS,
   MARKET_LIST,
+  MARKET_GROUPS,
   getMarketConfig,
   type SpreadComparison,
   type DigitPrediction,
@@ -2145,7 +2146,7 @@ function TradeTerminal() {
   useEffect(() => {
     const stopHeartbeat = startWorkerHeartbeat(() => {
       const staleFor = Date.now() - lastTickAt.current;
-      // 1. Recover the stalled tick feed (R_100 ticks every ~2s)
+      // 1. Recover the stalled tick feed using the selected market's tick interval
       if (stateRef.current.running ? staleFor > 8000 : staleFor > 60000) {
         recoverTickFeed();
       }
@@ -3088,35 +3089,42 @@ function TradeTerminal() {
                   </span>
                 </div>
                 <div
-                  className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                  className={`grid grid-cols-3 gap-1 rounded border p-0.5 ${
                     isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                   }`}
                 >
-                  {MARKET_LIST.map((m) => {
-                    const isSelected = marketSymbol === m.id;
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        disabled={running}
-                        onClick={() => handleSelectMarket(m.id)}
-                        className={`rounded py-1.5 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-                          isSelected
-                            ? isDark
-                              ? "bg-zinc-800 text-white shadow-sm"
-                              : "bg-white text-slate-900 shadow-sm"
-                            : "text-zinc-500 hover:text-white disabled:opacity-40"
-                        }`}
-                      >
-                        <span
-                          className={`h-1.5 w-1.5 rounded-full ${
-                            isSelected ? "bg-emerald-400" : "bg-zinc-600"
-                          }`}
-                        />
-                        <span>{m.shortName}</span>
-                      </button>
-                    );
-                  })}
+                  {MARKET_GROUPS.map((group) => (
+                    <div key={group.label} className="contents">
+                      <div className="col-span-3 px-1 pt-1 text-[9px] font-bold tracking-wider text-zinc-500">
+                        {group.label}
+                      </div>
+                      {group.markets.map((m) => {
+                        const isSelected = marketSymbol === m.id;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            disabled={running}
+                            onClick={() => handleSelectMarket(m.id)}
+                            className={`rounded py-1.5 px-1 text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 ${
+                              isSelected
+                                ? isDark
+                                  ? "bg-zinc-800 text-white shadow-sm"
+                                  : "bg-white text-slate-900 shadow-sm"
+                                : "text-zinc-500 hover:text-white disabled:opacity-40"
+                            }`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                isSelected ? "bg-emerald-400" : "bg-zinc-600"
+                              }`}
+                            />
+                            <span className="truncate">{m.shortName}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
@@ -3647,37 +3655,44 @@ function TradeTerminal() {
                   {/* Quick Market Toggle Pills */}
                   <div
                     className={
-                      "flex w-full flex-wrap gap-0.5 rounded border p-0.5 " +
+                      "w-full space-y-0.5 rounded border p-0.5 " +
                       (isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100")
                     }
                   >
-                    {MARKET_LIST.map((m) => {
-                      const isSelected = marketSymbol === m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          type="button"
-                          disabled={running}
-                          onClick={() => handleSelectMarket(m.id)}
-                          className={
-                            "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-[10px] font-bold uppercase transition-colors " +
-                            (isSelected
-                              ? isDark
-                                ? "bg-zinc-800 text-white shadow-sm"
-                                : "bg-white text-slate-900 shadow-sm"
-                              : "text-zinc-500 hover:text-white disabled:opacity-40")
-                          }
-                        >
-                          <span
-                            className={
-                              "h-1 w-1 rounded-full " +
-                              (isSelected ? "bg-emerald-400" : "bg-zinc-600")
-                            }
-                          />
-                          {m.id}
-                        </button>
-                      );
-                    })}
+                    {MARKET_GROUPS.map((group) => (
+                      <div key={group.label} className="flex flex-wrap items-center gap-0.5">
+                        <span className="px-1 text-[8px] font-bold tracking-wider text-zinc-500">
+                          {group.label === "STANDARD" ? "STD" : "1S"}
+                        </span>
+                        {group.markets.map((m) => {
+                          const isSelected = marketSymbol === m.id;
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              disabled={running}
+                              onClick={() => handleSelectMarket(m.id)}
+                              className={
+                                "flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-1 text-[9px] font-bold uppercase transition-colors " +
+                                (isSelected
+                                  ? isDark
+                                    ? "bg-zinc-800 text-white shadow-sm"
+                                    : "bg-white text-slate-900 shadow-sm"
+                                  : "text-zinc-500 hover:text-white disabled:opacity-40")
+                              }
+                            >
+                              <span
+                                className={
+                                  "h-1 w-1 rounded-full " +
+                                  (isSelected ? "bg-emerald-400" : "bg-zinc-600")
+                                }
+                              />
+                              {m.id}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
                   </div>
 
                   <div className="flex items-end justify-between gap-4">
@@ -4906,35 +4921,42 @@ function TradeTerminal() {
             <div className="space-y-1.5">
               <label className="text-xs text-zinc-500">Market Index</label>
               <div
-                className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                className={`grid grid-cols-3 gap-1 rounded border p-0.5 ${
                   isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                 }`}
               >
-                {MARKET_LIST.map((m) => {
-                  const isSelected = marketSymbol === m.id;
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      disabled={running}
-                      onClick={() => handleSelectMarket(m.id)}
-                      className={`rounded py-2 px-2 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 ${
-                        isSelected
-                          ? isDark
-                            ? "bg-zinc-800 text-white shadow-sm"
-                            : "bg-white text-slate-900 shadow-sm"
-                          : "text-zinc-500 hover:text-white disabled:opacity-40"
-                      }`}
-                    >
-                      <span
-                        className={`h-1.5 w-1.5 rounded-full ${
-                          isSelected ? "bg-emerald-400" : "bg-zinc-600"
-                        }`}
-                      />
-                      <span>{m.displayName}</span>
-                    </button>
-                  );
-                })}
+                {MARKET_GROUPS.map((group) => (
+                  <div key={group.label} className="contents">
+                    <div className="col-span-3 px-1 pt-1 text-[9px] font-bold tracking-wider text-zinc-500">
+                      {group.label}
+                    </div>
+                    {group.markets.map((m) => {
+                      const isSelected = marketSymbol === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          disabled={running}
+                          onClick={() => handleSelectMarket(m.id)}
+                          className={`rounded py-2 px-1 text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 ${
+                            isSelected
+                              ? isDark
+                                ? "bg-zinc-800 text-white shadow-sm"
+                                : "bg-white text-slate-900 shadow-sm"
+                              : "text-zinc-500 hover:text-white disabled:opacity-40"
+                          }`}
+                        >
+                          <span
+                            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                              isSelected ? "bg-emerald-400" : "bg-zinc-600"
+                            }`}
+                          />
+                          <span className="truncate">{m.shortName}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
               </div>
             </div>
 

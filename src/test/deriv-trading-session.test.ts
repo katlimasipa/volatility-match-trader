@@ -275,8 +275,8 @@ describe("Entry Match Deriv purchases", () => {
         mode: "otp",
       });
 
-      const firstQuote = 1234.171;
-      const secondQuote = 1234.284;
+      const firstQuote = 1234.1234;
+      const secondQuote = 1234.5678;
       const firstOrder = captureEntryMatchOrder(
         {
           quote: firstQuote,
@@ -367,8 +367,8 @@ describe("Entry Match Deriv purchases", () => {
 
       const firstOrder = captureEntryMatchOrder(
         {
-          quote: 1234.171,
-          digit: lastDigit(1234.171, market.pipDecimals),
+          quote: 1234.1234,
+          digit: lastDigit(1234.1234, market.pipDecimals),
           tickId: `${market.id}-captured`,
           timestamp: "2026-10-27T12:00:00.000Z",
         },
@@ -385,8 +385,8 @@ describe("Entry Match Deriv purchases", () => {
       await proposalSent;
       const newerOrder = captureEntryMatchOrder(
         {
-          quote: 1234.284,
-          digit: lastDigit(1234.284, market.pipDecimals),
+          quote: 1234.5678,
+          digit: lastDigit(1234.5678, market.pipDecimals),
           tickId: `${market.id}-newer`,
           timestamp: "2026-10-27T12:00:01.000Z",
         },
