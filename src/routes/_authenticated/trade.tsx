@@ -4472,7 +4472,6 @@ function TradeTerminal() {
 
               {/* Net P/L Hero Card */}
               <div
-                data-notification-pnl
                 className={`rounded-xl border p-4 space-y-2 ${
                   isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
                 }`}

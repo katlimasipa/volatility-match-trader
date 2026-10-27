@@ -45,23 +45,9 @@ export function InAppNotificationHost() {
     if (!alert) return;
 
     const updatePosition = () => {
-      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const header = document.querySelector<HTMLElement>("[data-notification-header]");
-      const pnlCard = document.querySelector<HTMLElement>("[data-notification-pnl]");
       const headerBottom = header?.getBoundingClientRect().bottom ?? 0;
-      let nextTop = headerBottom + 10;
-
-      const pnlBounds = pnlCard?.getBoundingClientRect();
-      if (
-        pnlBounds &&
-        pnlBounds.bottom > headerBottom &&
-        pnlBounds.top < viewportHeight - 120
-      ) {
-        nextTop = Math.min(pnlBounds.bottom + 8, viewportHeight - 112);
-        nextTop = Math.max(headerBottom + 8, nextTop);
-      }
-
-      setTopOffset(Math.max(12, nextTop));
+      setTopOffset(Math.max(12, headerBottom + 10));
     };
 
     updatePosition();
@@ -71,9 +57,7 @@ export function InAppNotificationHost() {
     const observer =
       typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
     const header = document.querySelector<HTMLElement>("[data-notification-header]");
-    const pnlCard = document.querySelector<HTMLElement>("[data-notification-pnl]");
     if (header) observer?.observe(header);
-    if (pnlCard) observer?.observe(pnlCard);
 
     return () => {
       window.removeEventListener("resize", updatePosition);
