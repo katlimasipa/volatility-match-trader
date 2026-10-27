@@ -22,6 +22,7 @@ function readTheme(): Theme {
 export function InAppNotificationHost() {
   const [alert, setAlert] = useState<InAppAlert | null>(null);
   const [theme, setTheme] = useState<Theme>(readTheme);
+  const [topOffset, setTopOffset] = useState(16);
 
   useEffect(() => {
     const unsubscribe = onInAppAlert((nextAlert) => {
@@ -39,6 +40,47 @@ export function InAppNotificationHost() {
       window.removeEventListener("thdpst-theme-change", updateTheme);
     };
   }, []);
+
+  useEffect(() => {
+    if (!alert) return;
+
+    const updatePosition = () => {
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const header = document.querySelector<HTMLElement>("[data-notification-header]");
+      const pnlCard = document.querySelector<HTMLElement>("[data-notification-pnl]");
+      const headerBottom = header?.getBoundingClientRect().bottom ?? 0;
+      let nextTop = headerBottom + 10;
+
+      const pnlBounds = pnlCard?.getBoundingClientRect();
+      if (
+        pnlBounds &&
+        pnlBounds.bottom > headerBottom &&
+        pnlBounds.top < viewportHeight - 120
+      ) {
+        nextTop = Math.min(pnlBounds.bottom + 8, viewportHeight - 112);
+        nextTop = Math.max(headerBottom + 8, nextTop);
+      }
+
+      setTopOffset(Math.max(12, nextTop));
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, { passive: true });
+
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
+    const header = document.querySelector<HTMLElement>("[data-notification-header]");
+    const pnlCard = document.querySelector<HTMLElement>("[data-notification-pnl]");
+    if (header) observer?.observe(header);
+    if (pnlCard) observer?.observe(pnlCard);
+
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition);
+      observer?.disconnect();
+    };
+  }, [alert]);
 
   useEffect(() => {
     if (!alert) return;
@@ -75,12 +117,13 @@ export function InAppNotificationHost() {
   return (
     <section
       aria-label="Notifications"
-      className="w-full px-3 pt-3 sm:px-6"
+      className="desktop-in-app-notification pointer-events-none fixed right-3 z-[60] w-[calc(100%-1.5rem)] max-w-sm sm:right-6"
+      style={{ top: `${topOffset}px` }}
     >
       <aside
         role="status"
         aria-live="polite"
-        className={`mx-auto flex w-full max-w-[1560px] animate-in fade-in slide-in-from-top-2 items-center justify-between gap-3 rounded-xl border px-4 py-3 shadow-lg duration-200 ${colors}`}
+        className={`pointer-events-auto flex w-full animate-in fade-in slide-in-from-top-2 items-center justify-between gap-3 rounded-xl border px-4 py-3 shadow-xl backdrop-blur-md duration-200 ${colors}`}
       >
         <div className="min-w-0 flex-1 space-y-0.5">
           <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider">
@@ -88,7 +131,7 @@ export function InAppNotificationHost() {
             <span className="truncate">{alert.title}</span>
           </div>
           {alert.body && (
-            <div className="break-words text-[11px] leading-snug opacity-90">
+            <div className="line-clamp-2 break-words text-[11px] leading-snug opacity-90">
               {alert.body}
             </div>
           )}

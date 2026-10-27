@@ -2405,6 +2405,7 @@ function TradeTerminal() {
     >
       {/* 1. Header Bar: Responsive for Mobile, Tablet & Desktop */}
       <header
+        data-notification-header
         style={{ paddingTop: "max(env(safe-area-inset-top, 0px), 0.625rem)" }}
         className={`border-b px-3 sm:px-6 pb-2.5 sm:pb-3 transition-colors sticky top-0 z-30 ${
           isDark
@@ -4471,6 +4472,7 @@ function TradeTerminal() {
 
               {/* Net P/L Hero Card */}
               <div
+                data-notification-pnl
                 className={`rounded-xl border p-4 space-y-2 ${
                   isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
                 }`}
