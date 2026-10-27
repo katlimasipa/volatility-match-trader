@@ -15,6 +15,7 @@ import {
   type DerivAccount,
 } from './deriv-auth';
 import { getDerivClientId } from './deriv-config';
+import type { EntryMatchOrder } from './entry-match-strategy';
 import { getMarketConfig, marketTradeSymbols } from './matches';
 
 export interface ContractResult {
@@ -33,6 +34,8 @@ export interface BuyMatchParams {
   barrierDigit: number;
   currency: string;
   symbol?: string;
+  /** Optional invariant metadata for Entry Match trades. */
+  entryMatchOrder?: EntryMatchOrder;
 }
 
 type BalanceListener = (loginid: string, balance: number, currency: string) => void;
@@ -672,6 +675,18 @@ export class DerivTradingSession {
    * Place a 1-tick DIGITMATCH contract on the selected standard or 1-second market.
    */
   async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
+    const requestedMarket = getMarketConfig(params.symbol);
+    if (
+      params.entryMatchOrder &&
+      (params.entryMatchOrder.matchesPrediction !== params.entryMatchOrder.entryDigit ||
+        params.barrierDigit !== params.entryMatchOrder.entryDigit ||
+        requestedMarket.id !== params.entryMatchOrder.marketSymbol)
+    ) {
+      throw new Error(
+        'Entry Match purchase blocked: the market, captured entry digit, and Matches prediction must stay identical.',
+      );
+    }
+
     if (this.buyInFlight) {
       throw new Error('A trade is already in flight. Waiting for settlement.');
     }
@@ -690,7 +705,7 @@ export class DerivTradingSession {
     const barrier = String(Math.max(0, Math.min(9, Math.floor(params.barrierDigit))));
     const amount = Math.round(params.stake * 100) / 100;
     const currency = params.currency || this.currency || 'USD';
-    const market = getMarketConfig(params.symbol);
+    const market = requestedMarket;
     const { preferred, fallback } = marketTradeSymbols(market, this.mode);
     const symbols = preferred === fallback ? [preferred] : [preferred, fallback];
 

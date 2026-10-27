@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DerivTradingSession, isDerivLimitError } from "@/lib/deriv-trading";
+import { lastDigit, MARKET_LIST } from "@/lib/matches";
+import { captureEntryMatchOrder } from "@/lib/entry-match-strategy";
 import type { DerivWS } from "@/lib/deriv-ws";
 
 beforeEach(() => {
@@ -250,13 +252,166 @@ describe("DIGITMATCH proposal payload", () => {
   });
 });
 
+describe("Entry Match Deriv purchases", () => {
+  it.each(MARKET_LIST)(
+    "keeps each $id contract prediction tied to its captured tick",
+    async (market) => {
+      const sent: Record<string, unknown>[] = [];
+      const fakeWs = {
+        send: vi.fn(async (payload: Record<string, unknown>) => {
+          sent.push(payload);
+          if (payload["proposal"] === 1) {
+            return { proposal: { id: `proposal-${sent.length}`, ask_price: 1 } };
+          }
+          if (payload["buy"]) return { buy: {} };
+          return {};
+        }),
+        dispose: vi.fn(),
+      } as unknown as DerivWS;
+      const session = new DerivTradingSession();
+      Object.assign(session as unknown as Record<string, unknown>, {
+        ws: fakeWs,
+        ready: true,
+        mode: "otp",
+      });
+
+      const firstQuote = 1234.171;
+      const secondQuote = 1234.284;
+      const firstOrder = captureEntryMatchOrder(
+        {
+          quote: firstQuote,
+          digit: lastDigit(firstQuote, market.pipDecimals),
+          tickId: `${market.id}-entry-1`,
+          timestamp: "2026-10-27T12:00:00.000Z",
+        },
+        market.id,
+      );
+      const secondOrder = captureEntryMatchOrder(
+        {
+          quote: secondQuote,
+          digit: lastDigit(secondQuote, market.pipDecimals),
+          tickId: `${market.id}-entry-2`,
+          timestamp: "2026-10-27T12:00:01.000Z",
+        },
+        market.id,
+      );
+      const orders = [firstOrder, secondOrder];
+
+      await expect(
+        session.buyDigitMatch({
+          stake: 1,
+          barrierDigit: (firstOrder.matchesPrediction + 1) % 10,
+          currency: "USD",
+          symbol: market.id,
+          entryMatchOrder: firstOrder,
+        }),
+      ).rejects.toThrow("Entry Match purchase blocked");
+      expect(sent).toHaveLength(0);
+
+      for (const order of orders) {
+        await expect(
+          session.buyDigitMatch({
+            stake: 1,
+            barrierDigit: order.matchesPrediction,
+            currency: "USD",
+            symbol: order.marketSymbol,
+            entryMatchOrder: order,
+          }),
+        ).rejects.toThrow("Deriv buy failed");
+      }
+
+      const proposals = sent.filter((payload) => payload["proposal"] === 1);
+      expect(proposals).toHaveLength(2);
+      expect(proposals.map((proposal) => proposal["barrier"])).toEqual(
+        orders.map((order) => String(order.entryDigit)),
+      );
+      expect(proposals.map((proposal) => proposal["underlying_symbol"])).toEqual([
+        market.optionsSymbol,
+        market.optionsSymbol,
+      ]);
+      session.dispose();
+    },
+  );
+
+  it.each(MARKET_LIST)(
+    "does not swap the captured $id tick during an async proposal",
+    async (market) => {
+      const sent: Record<string, unknown>[] = [];
+      let releaseProposal!: () => void;
+      let proposalWasSent!: () => void;
+      const proposalGate = new Promise<void>((resolve) => {
+        releaseProposal = resolve;
+      });
+      const proposalSent = new Promise<void>((resolve) => {
+        proposalWasSent = resolve;
+      });
+      const fakeWs = {
+        send: vi.fn(async (payload: Record<string, unknown>) => {
+          sent.push(payload);
+          if (payload["proposal"] === 1) {
+            proposalWasSent();
+            await proposalGate;
+            return { proposal: { id: "delayed-proposal", ask_price: 1 } };
+          }
+          if (payload["buy"]) return { buy: {} };
+          return {};
+        }),
+        dispose: vi.fn(),
+      } as unknown as DerivWS;
+      const session = new DerivTradingSession();
+      Object.assign(session as unknown as Record<string, unknown>, {
+        ws: fakeWs,
+        ready: true,
+        mode: "otp",
+      });
+
+      const firstOrder = captureEntryMatchOrder(
+        {
+          quote: 1234.171,
+          digit: lastDigit(1234.171, market.pipDecimals),
+          tickId: `${market.id}-captured`,
+          timestamp: "2026-10-27T12:00:00.000Z",
+        },
+        market.id,
+      );
+      const purchase = session.buyDigitMatch({
+        stake: 1,
+        barrierDigit: firstOrder.matchesPrediction,
+        currency: "USD",
+        symbol: market.id,
+        entryMatchOrder: firstOrder,
+      });
+
+      await proposalSent;
+      const newerOrder = captureEntryMatchOrder(
+        {
+          quote: 1234.284,
+          digit: lastDigit(1234.284, market.pipDecimals),
+          tickId: `${market.id}-newer`,
+          timestamp: "2026-10-27T12:00:01.000Z",
+        },
+        market.id,
+      );
+      expect(newerOrder.matchesPrediction).not.toBe(firstOrder.matchesPrediction);
+      releaseProposal();
+
+      await expect(purchase).rejects.toThrow("Deriv buy failed");
+      expect(sent[0]?.["barrier"]).toBe(String(firstOrder.entryDigit));
+      expect(sent[0]?.["underlying_symbol"]).toBe(market.optionsSymbol);
+      session.dispose();
+    },
+  );
+});
+
 describe("Deriv limit errors", () => {
   it("detects Limit exceeded messages from Deriv", () => {
     expect(isDerivLimitError(new Error("Limit exceeded"))).toBe(true);
     expect(isDerivLimitError(new Error("Rate limit exceeded"))).toBe(true);
     expect(isDerivLimitError(new Error("Subscription limit exceeded"))).toBe(true);
     expect(isDerivLimitError(new Error("Subscription limit has been reached"))).toBe(true);
-    expect(isDerivLimitError(new Error("Maximum number of active subscriptions exceeded"))).toBe(true);
+    expect(isDerivLimitError(new Error("Maximum number of active subscriptions exceeded"))).toBe(
+      true,
+    );
     expect(isDerivLimitError(new Error("Invalid symbol"))).toBe(false);
   });
 

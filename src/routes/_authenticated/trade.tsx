@@ -43,6 +43,7 @@ import {
   type DigitPrediction,
   type MarketSymbol,
 } from "@/lib/matches";
+import { captureEntryMatchOrder, type EntryMatchOrder } from "@/lib/entry-match-strategy";
 import {
   advanceX2XScanner,
   cancelX2XScanner,
@@ -132,6 +133,9 @@ interface TradeRow {
   time: string;
   signalId?: string | undefined;
   contractId?: number | undefined;
+  entryQuote?: number | undefined;
+  entryTickId?: string | null | undefined;
+  entryTimestamp?: string | null | undefined;
 }
 
 type X2XSignalStatus =
@@ -197,12 +201,13 @@ const MAX_SAVED_SESSIONS = 50;
 const MAX_X2X_AUDIT_SIGNALS = 200;
 const MAX_X2X_SEEN_TICK_IDS = 256;
 
-type StrategyMode = "matches" | "x2x";
+type StrategyMode = "matches" | "x2x" | "entry_match";
 
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
   try {
-    return localStorage.getItem(STRATEGY_MODE_STORAGE_KEY) === "x2x" ? "x2x" : "matches";
+    const saved = localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
+    return saved === "x2x" || saved === "entry_match" ? saved : "matches";
   } catch {
     return "matches";
   }
@@ -254,7 +259,11 @@ function isTradeRow(value: unknown): value is TradeRow {
     typeof trade.time === "string" &&
     (trade.signalId === undefined || typeof trade.signalId === "string") &&
     (trade.contractId === undefined ||
-      (typeof trade.contractId === "number" && Number.isFinite(trade.contractId)))
+      (typeof trade.contractId === "number" && Number.isFinite(trade.contractId))) &&
+    (trade.entryQuote === undefined ||
+      (typeof trade.entryQuote === "number" && Number.isFinite(trade.entryQuote))) &&
+    (trade.entryTickId === undefined || trade.entryTickId === null || typeof trade.entryTickId === "string") &&
+    (trade.entryTimestamp === undefined || trade.entryTimestamp === null || typeof trade.entryTimestamp === "string")
   );
 }
 
@@ -284,7 +293,8 @@ function isSavedSession(value: unknown): value is SavedSession {
     typeof saved.martingaleEnabled === "boolean" &&
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
-      saved.strategyMode === "x2x") &&
+      saved.strategyMode === "x2x" ||
+      saved.strategyMode === "entry_match") &&
     (saved.spreadComparison === undefined ||
       saved.spreadComparison === "exact" ||
       saved.spreadComparison === "at_most") &&
@@ -445,6 +455,7 @@ interface PendingTrade {
   /** When true, settlement comes from Deriv contract result — not the next local tick. */
   live?: boolean;
   signalId?: string;
+  entryMatchOrder?: EntryMatchOrder;
 }
 
 interface TickItem {
@@ -542,7 +553,7 @@ function TradeTerminal() {
     return "R_100";
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
-  const startTickRequirement = strategyMode === "x2x" ? 3 : WINDOW;
+  const startTickRequirement = strategyMode === "matches" ? WINDOW : strategyMode === "x2x" ? 3 : 1;
   const [x2xScannerState, setX2xScannerState] = useState<X2XScannerState>(loadX2XScannerState);
   const x2xScannerRef = useRef<X2XScannerState>(x2xScannerState);
   const currentMarket = getMarketConfig(marketSymbol);
@@ -664,7 +675,9 @@ function TradeTerminal() {
     setNote(
       nextStrategy === "x2x"
         ? `X2X Sniper selected on ${currentMarket.displayName}. Live pattern scanning starts when the bot starts.`
-        : "Matches strategy selected.",
+        : nextStrategy === "entry_match"
+          ? `Entry Match selected on ${currentMarket.displayName}. Each trade will use a fresh live tick digit as its Matches prediction.`
+          : "Matches strategy selected.",
     );
   }
 
@@ -1495,6 +1508,13 @@ function TradeTerminal() {
       time: new Date().toLocaleTimeString(),
       signalId: p.signalId,
       contractId,
+      ...(p.entryMatchOrder
+        ? {
+            entryQuote: p.entryMatchOrder.entryQuote,
+            entryTickId: p.entryMatchOrder.entryTickId,
+            entryTimestamp: p.entryMatchOrder.entryTimestamp,
+          }
+        : {}),
     };
 
     const updatedTrades = [newRow, ...s.trades];
@@ -1600,7 +1620,8 @@ function TradeTerminal() {
         stake: p.stake,
         barrierDigit: p.target,
         currency,
-        symbol: stateRef.current.marketSymbol || currentMarket.id,
+        symbol: p.entryMatchOrder?.marketSymbol || stateRef.current.marketSymbol || currentMarket.id,
+        ...(p.entryMatchOrder ? { entryMatchOrder: p.entryMatchOrder } : {}),
       })
       .then((result: ContractResult) => {
         if (pending.current?.live && pending.current.runIndex === p.runIndex) {
@@ -1800,6 +1821,53 @@ function TradeTerminal() {
       return;
     }
 
+    if (s.strategyMode === "entry_match") {
+      if (lossCooldownTicks.current > 0) {
+        lossCooldownTicks.current -= 1;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(`Entry Match loss protection: ${lossCooldownTicks.current} live ticks remaining before another trade.`);
+        return;
+      }
+
+      const session = tradingRef.current;
+      if (!session?.isReady()) {
+        setBotState("WAITING ENTRY");
+        setNote("Entry Match is waiting for the authorized Deriv trading connection.");
+        return;
+      }
+      if (session.isBuyInFlight()) {
+        setBotState("IN TRADE");
+        setNote("Waiting for the current Deriv contract to settle before capturing a new entry tick.");
+        return;
+      }
+
+      const order = captureEntryMatchOrder(tickInfo, s.marketSymbol);
+      const targetRun = s.runCount + 1;
+      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      if (nextStake > availableBalance) {
+        stopBot(
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+        );
+        return;
+      }
+
+      const trade: PendingTrade = {
+        runIndex: targetRun,
+        entry: order.entryDigit,
+        target: order.matchesPrediction,
+        stake: nextStake,
+        live: true,
+        entryMatchOrder: order,
+      };
+      pending.current = trade;
+      pendingSetAt.current = Date.now();
+      setBotState("IN TRADE");
+      setNote(`Entry Match trade #${targetRun}: captured ${order.entryQuote} (tick ${order.entryTickId ?? "live"}); ENTRY_DIGIT and Matches Prediction are both ${order.entryDigit}.`);
+      placeLiveMatch(trade);
+      return;
+    }
+
     if (lossCooldownTicks.current > 0) {
       lossCooldownTicks.current -= 1;
       setBotState("LOSS RE-ANALYSIS");
@@ -1903,7 +1971,9 @@ function TradeTerminal() {
       setNote(
         strategyMode === "x2x"
           ? `Cannot start X2X Sniper: waiting for at least ${startTickRequirement} live market ticks.`
-          : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
+          : strategyMode === "entry_match"
+            ? "Cannot start Entry Match until the market feed has delivered its first tick."
+            : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
     }
@@ -1940,7 +2010,9 @@ function TradeTerminal() {
       tradingConnectionReady
         ? strategyMode === "x2x"
           ? `X2X Sniper active on ${activeAccount.account_id}. Scanning ${currentMarket.displayName} tick digits for X2X signals...`
-          : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
+          : strategyMode === "entry_match"
+            ? `Entry Match active on ${activeAccount.account_id}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
+            : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount.account_id}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
     notifyBotStarted(activeAccount.account_id, getDeviceLabel());
@@ -2139,7 +2211,9 @@ function TradeTerminal() {
       setNote(
         strategyMode === "x2x"
           ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning ${currentMarket.displayName} tick digits...`
-          : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
+          : strategyMode === "entry_match"
+            ? `Entry Match resumed on ${activeAccount?.account_id || "Deriv"}. Waiting for a fresh ${currentMarket.displayName} tick for each trade...`
+            : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
       );
     }
   }, [
@@ -2177,6 +2251,10 @@ function TradeTerminal() {
         x2x: replay,
       });
       setShowBacktestModal(true);
+      return;
+    }
+    if (strategyMode !== "matches") {
+      setNote("The 1,000-tick replay is available for Matches and X2X Sniper strategies.");
       return;
     }
     if (digits.length < WINDOW) {
@@ -2245,9 +2323,11 @@ function TradeTerminal() {
 
   function triggerManualTestTrade() {
     initAudioContext();
-    if (strategyMode === "x2x") {
+    if (strategyMode !== "matches") {
       setNote(
-        "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal.",
+        strategyMode === "x2x"
+          ? "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal."
+          : "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick.",
       );
       return;
     }
@@ -2301,6 +2381,7 @@ function TradeTerminal() {
 
   const analysis = analyze(digits, maxDiff, spreadComparison);
   const currentDigit = digits[digits.length - 1];
+  const entryMatchDisplayedDigit = pending.current?.entryMatchOrder?.entryDigit ?? currentDigit;
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0).length;
   const losses = trades.filter((t) => t.pnl < 0).length;
@@ -2773,7 +2854,9 @@ function TradeTerminal() {
           </div>
 
           <div className="flex items-center gap-1 text-[10px]">
-            <span className="opacity-75">{strategyMode === "x2x" ? "OP:" : "SPREAD:"}</span>
+            <span className="opacity-75">
+              {strategyMode === "x2x" ? "OP:" : strategyMode === "entry_match" ? "ENTRY:" : "SPREAD:"}
+            </span>
             <span
               className={`font-semibold num ${
                 strategyMode === "x2x"
@@ -2784,7 +2867,11 @@ function TradeTerminal() {
                     : isDark
                       ? "text-zinc-400"
                       : "text-slate-600"
-                  : analysis.ok
+                  : strategyMode === "entry_match"
+                    ? isDark
+                      ? "text-emerald-400 font-bold"
+                      : "text-emerald-600 font-bold"
+                    : analysis.ok
                     ? isDark
                       ? "text-emerald-400 font-bold"
                       : "text-emerald-600 font-bold"
@@ -2795,7 +2882,9 @@ function TradeTerminal() {
             >
               {strategyMode === "x2x"
                 ? (x2xScannerState.signal?.opTrigger ?? "--")
-                : `${analysis.diff.toFixed(2)}%`}
+                : strategyMode === "entry_match"
+                  ? (entryMatchDisplayedDigit ?? "--")
+                  : `${analysis.diff.toFixed(2)}%`}
             </span>
           </div>
         </div>
@@ -2960,11 +3049,11 @@ function TradeTerminal() {
               <div className="space-y-1.5">
                 <label className="text-xs text-zinc-500">Trading Strategy</label>
                 <div
-                  className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                  className={`grid grid-cols-3 gap-1 rounded border p-0.5 ${
                     isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                   }`}
                 >
-                  {(["matches", "x2x"] as const).map((mode) => {
+                  {(["matches", "x2x", "entry_match"] as const).map((mode) => {
                     const selected = strategyMode === mode;
                     return (
                       <button
@@ -2980,7 +3069,7 @@ function TradeTerminal() {
                             : "text-zinc-500 hover:text-zinc-900"
                         }`}
                       >
-                        {mode === "matches" ? "Matches" : "X2X Sniper"}
+                        {mode === "matches" ? "Matches" : mode === "x2x" ? "X2X Sniper" : "Entry Match"}
                       </button>
                     );
                   })}
@@ -2993,7 +3082,9 @@ function TradeTerminal() {
                   <span className="text-[10px] text-zinc-500">
                     {strategyMode === "x2x"
                       ? "X2X · DIGITMATCH · 1 TICK"
-                      : "Matches · DIGITMATCH"}
+                      : strategyMode === "entry_match"
+                        ? "ENTRY MATCH · DIGITMATCH · 1 TICK"
+                        : "Matches · DIGITMATCH"}
                   </span>
                 </div>
                 <div
@@ -3030,7 +3121,9 @@ function TradeTerminal() {
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {strategyMode === "x2x"
                     ? `On ${currentMarket.displayName}: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's last two displayed digits minus 20.`
-                    : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
+                    : strategyMode === "entry_match"
+                      ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction.`
+                      : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
@@ -3647,20 +3740,33 @@ function TradeTerminal() {
                       : "—"}
                   </span>
                   <div className="space-y-0.5 text-xs">
-                    <div className="text-zinc-500">
-                      ENTRY DIGIT:{" "}
-                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                        {analysis.most}
-                      </span>{" "}
-                      ({analysis.mostPct.toFixed(1)}%)
-                    </div>
-                    <div className="text-zinc-500">
-                      MATCH TARGET:{" "}
-                      <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
-                        {analysis.second}
-                      </span>{" "}
-                      ({analysis.secondPct.toFixed(1)}%)
-                    </div>
+                    {strategyMode === "entry_match" ? (
+                      <>
+                        <div className="text-zinc-500">
+                          ENTRY DIGIT: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{entryMatchDisplayedDigit ?? "—"}</span>
+                        </div>
+                        <div className="text-zinc-500">
+                          MATCHES PREDICTION: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{entryMatchDisplayedDigit ?? "—"}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-zinc-500">
+                          ENTRY DIGIT:{" "}
+                          <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                            {analysis.most}
+                          </span>{" "}
+                          ({analysis.mostPct.toFixed(1)}%)
+                        </div>
+                        <div className="text-zinc-500">
+                          MATCH TARGET:{" "}
+                          <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                            {analysis.second}
+                          </span>{" "}
+                          ({analysis.secondPct.toFixed(1)}%)
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -4105,7 +4211,9 @@ function TradeTerminal() {
                                   #{t.runIndex}
                                 </td>
                                 <td className="text-zinc-500">{t.time}</td>
-                                <td>{t.entry}</td>
+                                <td title={t.entryQuote === undefined ? undefined : `Captured quote ${t.entryQuote}; tick ${t.entryTickId ?? "ID unavailable"}`}>
+                                  {t.entry}
+                                </td>
                                 <td
                                   className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}
                                 >
@@ -4172,7 +4280,11 @@ function TradeTerminal() {
                                 (isDark ? "text-white" : "text-slate-900")
                               }
                             >
-                              {saved.strategyMode === "x2x" ? "X2X Sniper / " : ""}
+                              {saved.strategyMode === "x2x"
+                                ? "X2X Sniper / "
+                                : saved.strategyMode === "entry_match"
+                                  ? "Entry Match / "
+                                  : ""}
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
                             <div className="mt-1 text-[11px] text-zinc-500">
@@ -4270,7 +4382,9 @@ function TradeTerminal() {
                         <div className="mt-3 text-[11px] text-zinc-500">
                           {saved.strategyMode === "x2x"
                             ? `X2X OP wait ${saved.x2xOpWaitTicks === null ? "No expiry" : `${saved.x2xOpWaitTicks ?? X2X_OP_WINDOW_TICKS} ticks`}`
-                            : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
+                            : saved.strategyMode === "entry_match"
+                              ? "Fresh tick digit used as the Matches prediction"
+                              : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
@@ -4509,16 +4623,18 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Pattern Ticks" : "1,000 Ticks"}
+                    {strategyMode === "x2x" ? "Pattern Ticks" : strategyMode === "entry_match" ? "Entry Ticks" : "1,000 Ticks"}
                   </div>
                   <div
-                    className={`font-semibold ${strategyMode === "x2x" || digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}
+                    className={`font-semibold ${strategyMode !== "matches" || digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}
                   >
                     {strategyMode === "x2x"
                       ? `${x2xScannerState.recentDigits.length}/3 live`
-                      : digits.length >= WINDOW
-                        ? "VERIFIED"
-                        : `${digits.length}/${WINDOW}`}
+                      : strategyMode === "entry_match"
+                        ? (currentDigit === undefined ? "WAITING FOR TICK" : "LIVE")
+                        : digits.length >= WINDOW
+                          ? "VERIFIED"
+                          : `${digits.length}/${WINDOW}`}
                   </div>
                 </div>
                 <div>
@@ -4530,7 +4646,7 @@ function TradeTerminal() {
                 <div>
                   <div className="text-[10px] text-zinc-500">Mode</div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
-                    {strategyMode === "x2x" ? "X2X Sniper" : "Matches"}
+                    {strategyMode === "x2x" ? "X2X Sniper" : strategyMode === "entry_match" ? "Entry Match" : "Matches"}
                   </div>
                 </div>
                 <div>
@@ -4541,34 +4657,40 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Live Digits" : "Entry Digit"}
+                    {strategyMode === "x2x" ? "Live Digits" : strategyMode === "entry_match" ? "ENTRY_DIGIT" : "Entry Digit"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? x2xScannerState.recentDigits.join(" / ") || "--"
-                      : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
+                      : strategyMode === "entry_match"
+                        ? (entryMatchDisplayedDigit ?? "--")
+                        : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Stored LDP" : "Match Target"}
+                    {strategyMode === "x2x" ? "Stored LDP" : strategyMode === "entry_match" ? "Matches Prediction" : "Match Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? ((x2xScannerState.signal?.phase === "awaiting-op"
                           ? x2xScannerState.signal.ldp
                           : pending.current?.target) ?? "--")
-                      : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
+                      : strategyMode === "entry_match"
+                        ? (entryMatchDisplayedDigit ?? "--")
+                        : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "OP Trigger" : "Spread Target"}
+                    {strategyMode === "x2x" ? "OP Trigger" : strategyMode === "entry_match" ? "Prediction Rule" : "Spread Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
-                      : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
+                      : strategyMode === "entry_match"
+                        ? "Current tick digit"
+                        : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -4677,7 +4799,7 @@ function TradeTerminal() {
           <button
             type="button"
             onClick={triggerManualTestTrade}
-            disabled={strategyMode === "x2x" || digits.length < WINDOW || pending.current !== null}
+            disabled={strategyMode !== "matches" || digits.length < WINDOW || pending.current !== null}
             title="Run 1 test trade"
             className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-40 ${
               isDark

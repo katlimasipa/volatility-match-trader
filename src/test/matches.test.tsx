@@ -13,6 +13,7 @@ import {
   marketTradeSymbols,
   calculateMartingaleStake,
 } from "@/lib/matches";
+import { captureEntryMatchOrder } from "@/lib/entry-match-strategy";
 import {
   advanceX2XScanner,
   cancelX2XScanner,
@@ -31,6 +32,56 @@ const x2xTick = (quote: number, tickId?: string): X2XQuoteDigit => ({
   quote,
   tickId,
   timestamp: "2026-10-23T12:00:00.000Z",
+});
+
+describe("Entry Match strategy", () => {
+  it.each(MARKET_LIST)("captures a new prediction from each $id tick", (market) => {
+    const firstQuote = 1234.171;
+    const secondQuote = 1234.284;
+    const firstDigit = lastDigit(firstQuote, market.pipDecimals);
+    const secondDigit = lastDigit(secondQuote, market.pipDecimals);
+    const firstOrder = captureEntryMatchOrder(
+      {
+        quote: firstQuote,
+        digit: firstDigit,
+        tickId: `${market.id}-tick-1`,
+        timestamp: "2026-10-27T12:00:00.000Z",
+      },
+      market.id,
+    );
+    const secondOrder = captureEntryMatchOrder(
+      {
+        quote: secondQuote,
+        digit: secondDigit,
+        tickId: `${market.id}-tick-2`,
+        timestamp: "2026-10-27T12:00:01.000Z",
+      },
+      market.id,
+    );
+
+    expect(firstOrder).toMatchObject({
+      marketSymbol: market.id,
+      entryDigit: firstDigit,
+      matchesPrediction: firstDigit,
+      entryQuote: firstQuote,
+      entryTickId: `${market.id}-tick-1`,
+    });
+    expect(secondOrder).toMatchObject({
+      marketSymbol: market.id,
+      entryDigit: secondDigit,
+      matchesPrediction: secondDigit,
+      entryQuote: secondQuote,
+      entryTickId: `${market.id}-tick-2`,
+    });
+    expect(secondOrder.matchesPrediction).not.toBe(firstOrder.matchesPrediction);
+    expect(Object.isFrozen(firstOrder)).toBe(true);
+  });
+
+  it("rejects a tick without a valid captured last digit", () => {
+    expect(() => captureEntryMatchOrder({ quote: 1234.57, digit: 10 }, "R_100")).toThrow(
+      "valid last digit",
+    );
+  });
 });
 
 describe("Volatility 100 Matches strategy", () => {
