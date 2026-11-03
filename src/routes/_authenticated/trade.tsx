@@ -2530,7 +2530,7 @@ function TradeTerminal() {
 
   return (
     <div
-      className={`min-h-screen font-sans antialiased transition-colors overflow-x-hidden ${
+      className={`min-h-[100dvh] font-sans antialiased transition-colors overflow-x-clip ${
         isDark ? "bg-black text-white" : "bg-[#f4f6f8] text-slate-800"
       }`}
     >
@@ -3431,16 +3431,15 @@ function TradeTerminal() {
                             <span className="text-right uppercase text-zinc-500">
                               {signal.status.replaceAll("_", " ")}
                             </span>
-                            <span className="text-zinc-500">
+                            <span className="min-w-0 break-words text-zinc-500">
                               {new Date(signal.detectedAt).toLocaleTimeString()} ·{" "}
                               {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
                               {signal.status === "cancelled" && signal.cancelledAt
                                 ? ` | cancelled ${new Date(signal.cancelledAt).toLocaleString()}`
                                 : ""}
                               {` · ${signal.contractDuration} tick`}
-                              {signal.contractId ? ` · contract ${signal.contractId}` : ""}
                             </span>
-                            <span className="text-zinc-500">
+                            <span className="min-w-0 break-words text-zinc-500">
                               Source:{" "}
                               {signal.patternTickTimestamps
                                 .map(
@@ -4258,14 +4257,14 @@ function TradeTerminal() {
               }`}
             >
               <div
-                className={`flex items-center justify-between border-b px-4 sm:px-5 py-3 ${
+                className={`flex flex-col gap-2 border-b px-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 ${
                   isDark ? "border-zinc-900" : "border-slate-200"
                 }`}
               >
-                <div className="flex items-center gap-2">
+                <div className="grid w-full grid-cols-2 gap-1 sm:flex sm:w-auto sm:items-center sm:gap-2">
                   <button
                     onClick={() => setCenterTab("trade_log")}
-                    className={`rounded px-3 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
+                    className={`whitespace-nowrap rounded px-2.5 py-2 text-[10px] sm:px-3 sm:py-1 sm:text-xs font-bold uppercase tracking-wider transition-colors ${
                       centerTab === "trade_log"
                         ? isDark
                           ? "bg-zinc-800 text-white"
@@ -4277,7 +4276,7 @@ function TradeTerminal() {
                   </button>
                   <button
                     onClick={() => setCenterTab("session_history")}
-                    className={`rounded px-3 py-1 text-xs font-bold uppercase tracking-wider transition-colors ${
+                    className={`whitespace-nowrap rounded px-2.5 py-2 text-[10px] sm:px-3 sm:py-1 sm:text-xs font-bold uppercase tracking-wider transition-colors ${
                       centerTab === "session_history"
                         ? isDark
                           ? "bg-zinc-800 text-white"
@@ -4288,7 +4287,7 @@ function TradeTerminal() {
                     HISTORY
                   </button>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end">
                   <button
                     type="button"
                     onClick={saveCurrentSession}
@@ -4299,7 +4298,7 @@ function TradeTerminal() {
                         : "Save session and clear current trades"
                     }
                     className={
-                      "rounded border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
+                      "min-h-9 whitespace-nowrap rounded border px-3 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-0 sm:py-1 " +
                       (isDark
                         ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
                         : "border-slate-300 bg-white text-slate-700 hover:text-slate-900")
@@ -4307,7 +4306,7 @@ function TradeTerminal() {
                   >
                     SAVE SESSION
                   </button>
-                  <span className="text-xs text-zinc-500 num">
+                  <span className="whitespace-nowrap text-xs text-zinc-500 num">
                     {centerTab === "trade_log"
                       ? trades.length + " trades"
                       : savedSessions.length + " saved"}
@@ -4315,7 +4314,7 @@ function TradeTerminal() {
                 </div>
               </div>
 
-              <div className="p-4 sm:p-6">
+              <div className="p-3 sm:p-6">
                 {centerTab === "trade_log" ? (
                   <>
                     {trades.length === 0 ? (
@@ -4325,8 +4324,64 @@ function TradeTerminal() {
                         </p>
                       </div>
                     ) : (
-                      <div className="overflow-x-auto text-xs num">
-                        <table className="w-full text-left">
+                      <>
+                        <div className="space-y-2 xl:hidden">
+                          {trades.map((t) => (
+                            <article
+                              key={t.id}
+                              className={`rounded-lg border p-2.5 ${
+                                isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-50"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
+                                  <span className={`font-bold ${isDark ? "text-white" : "text-slate-900"}`}>
+                                    #{t.runIndex}
+                                  </span>
+                                  <span className="truncate text-zinc-500">{t.time}</span>
+                                </div>
+                                <span
+                                  className={`shrink-0 rounded border px-2 py-1 text-[9px] font-bold uppercase ${
+                                    t.pnl > 0
+                                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-500"
+                                      : "border-red-500/40 bg-red-500/15 text-red-500"
+                                  }`}
+                                >
+                                  {t.pnl > 0 ? "WON" : "LOST"}
+                                </span>
+                              </div>
+                              <div className="mt-2 grid grid-cols-4 gap-1.5 text-center num">
+                                {[
+                                  ["ENTRY", String(t.entry)],
+                                  ["TARGET", String(t.target)],
+                                  ["EXIT", String(t.result)],
+                                  ["STAKE", `$${t.stake.toFixed(2)}`],
+                                ].map(([label, value]) => (
+                                  <div
+                                    key={label}
+                                    className={`min-w-0 rounded px-1 py-1 ${
+                                      isDark ? "bg-zinc-900" : "bg-white"
+                                    }`}
+                                  >
+                                    <div className="text-[8px] font-semibold text-zinc-500">{label}</div>
+                                    <div className={`truncate text-xs font-semibold ${isDark ? "text-zinc-100" : "text-slate-900"}`}>
+                                      {value}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                                <div className={`mt-2 flex items-center justify-between border-t pt-2 text-[10px] ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+                                <span className="text-zinc-500">P/L</span>
+                                <span className={`font-bold num ${t.pnl > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                  {t.pnl > 0 ? "+" : ""}${t.pnl.toFixed(2)}
+                                </span>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+
+                        <div className="hidden overflow-x-auto text-xs num xl:block">
+                        <table className="w-full min-w-[560px] text-left">
                           <thead>
                             <tr
                               className={`border-b text-zinc-500 pb-2 uppercase text-[10px] ${
@@ -4340,7 +4395,6 @@ function TradeTerminal() {
                               <th>Exit</th>
                               <th>Stake</th>
                               <th>Status</th>
-                              <th>Contract</th>
                               <th className="text-right">P/L</th>
                             </tr>
                           </thead>
@@ -4383,9 +4437,6 @@ function TradeTerminal() {
                                     {t.pnl > 0 ? "WON" : "LOST"}
                                   </span>
                                 </td>
-                                <td className="text-zinc-500" title={t.signalId}>
-                                  {t.contractId ?? "--"}
-                                </td>
                                 <td
                                   className={`text-right font-bold ${
                                     t.pnl > 0 ? "text-emerald-500" : "text-red-500"
@@ -4398,6 +4449,7 @@ function TradeTerminal() {
                           </tbody>
                         </table>
                       </div>
+                      </>
                     )}
                   </>
                 ) : savedSessions.length === 0 ? (
@@ -4541,8 +4593,53 @@ function TradeTerminal() {
                         </div>
 
                         {expandedHistoryId === saved.id && (
-                          <div className="mt-4 overflow-x-auto text-xs num">
-                            <table className="w-full text-left">
+                          <>
+                          <div className="mt-4 space-y-2 text-xs num xl:hidden">
+                            {saved.trades.map((trade) => (
+                              <article
+                                key={trade.id}
+                                className={`rounded-lg border p-2.5 ${
+                                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-white"
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
+                                    <span className={`font-bold ${isDark ? "text-white" : "text-slate-900"}`}>
+                                      #{trade.runIndex}
+                                    </span>
+                                    <span className="truncate text-zinc-500">{trade.time}</span>
+                                  </div>
+                                  <span className={`shrink-0 text-[10px] font-bold ${trade.pnl > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                    {trade.pnl > 0 ? "WON" : "LOST"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 grid grid-cols-4 gap-1.5 text-center num">
+                                  {[
+                                    ["ENTRY", String(trade.entry)],
+                                    ["TARGET", String(trade.target)],
+                                    ["EXIT", String(trade.result)],
+                                    ["STAKE", `$${trade.stake.toFixed(2)}`],
+                                  ].map(([label, value]) => (
+                                    <div key={label} className={`min-w-0 rounded px-1 py-1 ${isDark ? "bg-zinc-900" : "bg-slate-50"}`}>
+                                      <div className="text-[8px] font-semibold text-zinc-500">{label}</div>
+                                      <div className={`truncate text-xs font-semibold ${isDark ? "text-zinc-100" : "text-slate-900"}`}>
+                                        {value}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 flex items-center justify-between border-t border-slate-200 pt-2 text-[10px] dark:border-zinc-800">
+                                  <span className="text-zinc-500">P/L</span>
+                                  <span className={`font-bold num ${trade.pnl > 0 ? "text-emerald-500" : "text-red-500"}`}>
+                                    {trade.pnl > 0 ? "+" : ""}{trade.pnl.toFixed(2)} USD
+                                  </span>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+
+                          <div className="mt-4 hidden overflow-x-auto text-xs num xl:block">
+                            <table className="w-full min-w-[560px] text-left">
                               <thead>
                                 <tr
                                   className={
@@ -4557,7 +4654,6 @@ function TradeTerminal() {
                                   <th>Exit</th>
                                   <th>Stake</th>
                                   <th>Status</th>
-                                  <th>Contract</th>
                                   <th className="text-right">P/L</th>
                                 </tr>
                               </thead>
@@ -4581,9 +4677,6 @@ function TradeTerminal() {
                                     >
                                       {trade.pnl > 0 ? "WON" : "LOST"}
                                     </td>
-                                    <td className="text-zinc-500" title={trade.signalId}>
-                                      {trade.contractId ?? "--"}
-                                    </td>
                                     <td
                                       className={
                                         "text-right font-bold " +
@@ -4598,6 +4691,7 @@ function TradeTerminal() {
                               </tbody>
                             </table>
                           </div>
+                          </>
                         )}
                         {expandedHistoryId === saved.id && Boolean(saved.x2xSignals?.length) && (
                           <div className="mt-4 space-y-2">
@@ -4611,30 +4705,27 @@ function TradeTerminal() {
                                   isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-white"
                                 }`}
                               >
-                                <span className="font-mono">
+                                <span className="min-w-0 break-words font-mono">
                                   {signal.pattern} · {signal.referencePair}{" "}
                                   →{" "}
                                   {signal.opTrigger ?? "invalid"} · LDP{" "}
                                   {signal.ldp ?? "--"}
                                 </span>
-                                <span className="text-right uppercase text-zinc-500">
+                                <span className="min-w-0 break-words text-right uppercase text-zinc-500">
                                   {signal.status.replaceAll("_", " ")}
                                 </span>
-                                <span className="text-zinc-500">
+                                <span className="min-w-0 break-words text-zinc-500">
                                   {new Date(signal.detectedAt).toLocaleString()}{" "}
                                   · {formatX2XWaitProgress(signal.eligibleTicksElapsed, signal.eligibleTicksLimit)}
                                   {signal.status === "cancelled" && signal.cancelledAt
-                                    ? " | cancelled ${new Date(signal.cancelledAt).toLocaleString()}"
+                                    ? ` | cancelled ${new Date(signal.cancelledAt).toLocaleString()}`
                                     : ""}
                                   {` · ${signal.contractDuration} tick`}
-                                  {signal.contractId
-                                    ? ` · contract ${signal.contractId}`
-                                    : ""}
                                   {signal.result
                                     ? ` · ${signal.result.toUpperCase()}`
                                     : ""}
                                 </span>
-                                <span className="text-zinc-500">
+                                <span className="min-w-0 break-words text-zinc-500">
                                   Source:{" "}
                                   {signal.patternTickTimestamps
                                     .map(
@@ -4644,7 +4735,7 @@ function TradeTerminal() {
                                     .join(" → ")}
                                 </span>
                                 {signal.reason && (
-                                  <span className="text-right text-zinc-500">{signal.reason}</span>
+                                  <span className="min-w-0 break-words text-right text-zinc-500">{signal.reason}</span>
                                 )}
                               </div>
                             ))}
