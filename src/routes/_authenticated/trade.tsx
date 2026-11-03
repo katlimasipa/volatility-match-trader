@@ -1822,7 +1822,15 @@ function TradeTerminal() {
         return;
       }
 
-      const order = captureEntryMatchOrder(tickInfo, s.marketSymbol);
+      const entryQuote = tickInfo.quote;
+      if (typeof entryQuote !== "number" || !Number.isFinite(entryQuote)) {
+        return;
+      }
+
+      const order = captureEntryMatchOrder(
+        { ...tickInfo, quote: entryQuote },
+        s.marketSymbol,
+      );
       const targetRun = s.runCount + 1;
       const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
       const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
