@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { CSSProperties, useEffect, useRef, useState, useCallback } from "react";
 import {
   session,
   getDerivClientId,
@@ -197,9 +197,35 @@ const X2X_SIGNAL_HISTORY_STORAGE_KEY = "thdpst_x2x_signal_history_v1";
 const X2X_SCANNER_STORAGE_KEY = "thdpst_x2x_scanner_state_v1";
 const X2X_OP_WAIT_TICKS_STORAGE_KEY = "thdpst_x2x_op_wait_ticks_v1";
 const X2X_SEEN_TICK_IDS_STORAGE_KEY = "thdpst_x2x_seen_tick_ids_v1";
+const ZERO_REPEAT_STORAGE_KEY = "thdpst_zero_repeat_v1";
+const MAX_ZERO_REPEAT_TICKS = 50;
+const MAX_LIVE_SEQUENCE_TICKS = 50;
 const MAX_SAVED_SESSIONS = 50;
 const MAX_X2X_AUDIT_SIGNALS = 200;
 const MAX_X2X_SEEN_TICK_IDS = 256;
+
+/** Distinct highlight colour per digit for repetition occurrences in the live sequence. */
+const DIGIT_REPEAT_COLORS: Record<number, string> = {
+  0: "#ef4444",
+  1: "#f97316",
+  2: "#eab308",
+  3: "#22c55e",
+  4: "#14b8a6",
+  5: "#06b6d4",
+  6: "#3b82f6",
+  7: "#a855f7",
+  8: "#ec4899",
+  9: "#94a3b8",
+};
+
+function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
+  const color = DIGIT_REPEAT_COLORS[digit] ?? "#a1a1aa";
+  return {
+    borderColor: color,
+    backgroundColor: `${color}${dark ? "3d" : "24"}`,
+    color,
+  };
+}
 
 type StrategyMode = "matches" | "x2x" | "entry_match";
 
@@ -221,6 +247,25 @@ function loadSpreadComparison(): SpreadComparison {
       : "exact";
   } catch {
     return "exact";
+  }
+}
+
+function loadZeroRepeatSetting(): { enabled: boolean; ticks: number } {
+  const fallback = { enabled: false, ticks: 5 };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const stored = localStorage.getItem(ZERO_REPEAT_STORAGE_KEY);
+    if (!stored) return fallback;
+    const parsed = JSON.parse(stored) as { enabled?: unknown; ticks?: unknown };
+    const ticks = Number(parsed.ticks);
+    return {
+      enabled: parsed.enabled === true,
+      ticks: Number.isFinite(ticks)
+        ? Math.min(MAX_ZERO_REPEAT_TICKS, Math.max(1, Math.floor(ticks)))
+        : fallback.ticks,
+    };
+  } catch {
+    return fallback;
   }
 }
 
@@ -579,6 +624,11 @@ function TradeTerminal() {
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
+  const [zeroRepeatEnabled, setZeroRepeatEnabled] = useState<boolean>(() => loadZeroRepeatSetting().enabled);
+  const [zeroRepeatTicks, setZeroRepeatTicks] = useState<number>(() => loadZeroRepeatSetting().ticks);
+  const [zeroRepeatTicksInput, setZeroRepeatTicksInput] = useState<string>(() =>
+    String(loadZeroRepeatSetting().ticks),
+  );
   const [stake, setStake] = useState<number>(1);
   const [stakeInput, setStakeInput] = useState<string>("1");
   const [tp, setTp] = useState<number>(50);
@@ -684,7 +734,7 @@ function TradeTerminal() {
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [botState, setBotState] = useState<
-    "IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS"
+    "IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "ZERO-REPEAT WAIT"
   >("BUFFERING");
   const [note, setNote] = useState("Buffering last 1,000 market ticks before analyzing market...");
 
