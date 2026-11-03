@@ -2502,7 +2502,7 @@ function TradeTerminal() {
   const scoredTicks = recentTicks.filter((tick) => tick.predictedDigit !== undefined).slice(0, 10);
 
   // Strictly chronological sequence of the latest 33 digits (incoming order from left to right)
-  const recentDigits33 = digits.slice(-33);
+  const recentDigits50 = digits.slice(-MAX_LIVE_SEQUENCE_TICKS);
 
   return (
     <div
@@ -3171,6 +3171,82 @@ function TradeTerminal() {
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
+
+              {strategyMode === "entry_match" && (
+                <div
+                  className={`rounded-lg border p-3 space-y-2 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                      Zero Repetition Filter
+                    </span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                        zeroRepeatEnabled
+                          ? isDark
+                            ? "bg-white text-black"
+                            : "bg-slate-900 text-white"
+                          : isDark
+                            ? "bg-zinc-800 text-zinc-400"
+                            : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {zeroRepeatEnabled ? "ACTIVE" : "OFF"}
+                    </span>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={zeroRepeatEnabled}
+                      onChange={(e) => updateZeroRepeatEnabled(e.target.checked)}
+                      className="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-white focus:ring-zinc-400"
+                    />
+                    <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                      Wait for zero repetitions before entry
+                    </span>
+                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="zero-repeat-ticks" className="text-[11px] text-zinc-500">
+                      Ticks without repetition (max {MAX_ZERO_REPEAT_TICKS})
+                    </label>
+                    <input
+                      id="zero-repeat-ticks"
+                      type="number"
+                      min={1}
+                      max={MAX_ZERO_REPEAT_TICKS}
+                      value={zeroRepeatTicksInput}
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/[^0-9]/g, "");
+                        setZeroRepeatTicksInput(raw);
+                        const num = Number(raw);
+                        if (raw !== "" && Number.isFinite(num)) updateZeroRepeatTicks(num);
+                      }}
+                      onBlur={() => {
+                        const num = Number(zeroRepeatTicksInput);
+                        updateZeroRepeatTicks(
+                          Number.isFinite(num) && num >= 1 ? num : zeroRepeatTicks,
+                        );
+                      }}
+                      className={`w-16 rounded border px-2 py-1 text-xs num text-right ${
+                        isDark
+                          ? "border-zinc-800 bg-black text-white"
+                          : "border-slate-200 bg-white text-slate-900"
+                      }`}
+                    />
+                  </div>
+                  <div className="text-[10px] text-zinc-500 leading-tight">
+                    A repetition is two consecutive ticks ending in the same digit. Counting starts
+                    only when the bot is started and resets after every trade.{" "}
+                    {zeroRepeatEnabled
+                      ? running
+                        ? `Progress: ${zeroRepeatCount}/${zeroRepeatTicks} clean ticks.`
+                        : `Will count from 0/${zeroRepeatTicks} when the bot starts.`
+                      : "The bot may trade on any fresh tick while this is off."}
+                  </div>
+                </div>
+              )}
 
               {strategyMode === "x2x" && (
                 <div
