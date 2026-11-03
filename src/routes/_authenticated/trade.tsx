@@ -666,6 +666,26 @@ function TradeTerminal() {
     }
   }
 
+  function persistZeroRepeat(enabled: boolean, ticks: number) {
+    try {
+      localStorage.setItem(ZERO_REPEAT_STORAGE_KEY, JSON.stringify({ enabled, ticks }));
+    } catch {
+      // In-memory setting still applies when storage is unavailable.
+    }
+  }
+
+  function updateZeroRepeatEnabled(value: boolean) {
+    setZeroRepeatEnabled(value);
+    persistZeroRepeat(value, zeroRepeatTicks);
+  }
+
+  function updateZeroRepeatTicks(value: number) {
+    const clamped = Math.min(MAX_ZERO_REPEAT_TICKS, Math.max(1, Math.floor(value)));
+    setZeroRepeatTicks(clamped);
+    setZeroRepeatTicksInput(String(clamped));
+    persistZeroRepeat(zeroRepeatEnabled, clamped);
+  }
+
   function updateX2XOpWaitTicks(value: number | null) {
     const normalized = normalizeX2XOpWaitTicks(value);
     setX2xOpWaitTicks(normalized);
@@ -727,6 +747,7 @@ function TradeTerminal() {
   // Execution state
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
+  const [zeroRepeatCount, setZeroRepeatCount] = useState(0);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [x2xSignals, setX2xSignals] = useState<X2XSignalRecord[]>(loadX2XSignalHistory);
   const x2xSignalsRef = useRef<X2XSignalRecord[]>(x2xSignals);
@@ -860,6 +881,8 @@ function TradeTerminal() {
   const seenX2XTickIdsRef = useRef<Set<string>>(loadX2XSeenTickIds());
   const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
+  const zeroRepeatCountRef = useRef(0);
+  const lastZeroRepeatDigitRef = useRef<number | null>(null);
   const lastTickAt = useRef<number>(Date.now());
   const staleTickAttemptsRef = useRef(0);
   const lastTradingReconnectAtRef = useRef(0);
@@ -887,6 +910,8 @@ function TradeTerminal() {
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
+    zeroRepeatEnabled,
+    zeroRepeatTicks,
     marketSymbol,
     strategyMode,
   });
@@ -906,6 +931,8 @@ function TradeTerminal() {
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
+    zeroRepeatEnabled,
+    zeroRepeatTicks,
     marketSymbol,
     strategyMode,
   };
