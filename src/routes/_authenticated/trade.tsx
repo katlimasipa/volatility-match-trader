@@ -3902,59 +3902,56 @@ function TradeTerminal() {
                 <div className="space-y-1.5 pt-2">
                   <div className="flex items-center justify-between text-[10px] uppercase text-zinc-500 pb-1">
                     <span>Live Sequence (Chronological)</span>
-                    <span className="text-zinc-400 font-semibold uppercase">LATEST</span>
+                    <span className="text-zinc-400 font-semibold uppercase">
+                      LATEST · {recentDigits50.length}/{MAX_LIVE_SEQUENCE_TICKS}
+                    </span>
                   </div>
 
-                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
-                    {recentDigits33.slice(0, 11).map((d, i) => (
-                      <span
-                        key={i}
-                        className={`rounded border py-1 font-semibold ${
-                          isDark
-                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                            : "border-zinc-200 bg-zinc-50 text-zinc-700"
-                        }`}
-                      >
-                        {d}
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
-                    {recentDigits33.slice(11, 22).map((d, i) => (
-                      <span
-                        key={i + 11}
-                        className={`rounded border py-1 font-semibold ${
-                          isDark
-                            ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                            : "border-zinc-200 bg-zinc-50 text-zinc-700"
-                        }`}
-                      >
-                        {d}
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-11 gap-1 text-center text-xs num">
-                    {recentDigits33.slice(22, 33).map((d, i) => {
-                      const isLatest = i + 22 === recentDigits33.length - 1;
+                  <div className="grid grid-cols-10 gap-1 text-center text-xs num">
+                    {recentDigits50.map((d, i) => {
+                      const isLatest = i === recentDigits50.length - 1;
+                      const isRepetition = i > 0 && recentDigits50[i - 1] === d;
+                      const plainClass = isDark
+                        ? "border-zinc-800 bg-zinc-900 text-zinc-300"
+                        : "border-zinc-200 bg-zinc-50 text-zinc-700";
                       return (
                         <span
-                          key={i + 22}
+                          key={i}
+                          title={isRepetition ? `${d} repeated from the previous tick` : undefined}
                           className={`rounded border py-1 font-semibold transition-all ${
                             isLatest
                               ? isDark
                                 ? "border-zinc-100 bg-zinc-100 text-zinc-950 font-bold ring-2 ring-zinc-700"
                                 : "border-zinc-900 bg-zinc-900 text-white font-bold ring-2 ring-zinc-400"
-                              : isDark
-                                ? "border-zinc-800 bg-zinc-900 text-zinc-300"
-                                : "border-zinc-200 bg-zinc-50 text-zinc-700"
+                              : isRepetition
+                                ? ""
+                                : plainClass
                           }`}
+                          style={
+                            isLatest
+                              ? undefined
+                              : isRepetition
+                                ? repeatHighlightStyle(d, isDark)
+                                : undefined
+                          }
                         >
                           {d}
                         </span>
                       );
                     })}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pt-1">
+                    <span className="text-[10px] uppercase text-zinc-500">Repetition colours:</span>
+                    {Object.entries(DIGIT_REPEAT_COLORS).map(([digit, color]) => (
+                      <span
+                        key={digit}
+                        className="flex items-center gap-0.5 text-[10px] num text-zinc-500"
+                      >
+                        <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                        {digit}
+                      </span>
+                    ))}
                   </div>
                 </div>
               </section>
@@ -4819,6 +4816,20 @@ function TradeTerminal() {
                       : strategyMode === "entry_match"
                         ? "Current tick digit"
                         : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-zinc-500">Zero-Repeat Gate</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode !== "entry_match"
+                      ? "n/a"
+                      : !zeroRepeatEnabled
+                        ? "OFF"
+                        : !running
+                          ? "0 (start bot)"
+                          : zeroRepeatCount >= zeroRepeatTicks
+                            ? "OPEN"
+                            : `${zeroRepeatCount}/${zeroRepeatTicks}`}
                   </div>
                 </div>
                 <div>
