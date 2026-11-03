@@ -3935,13 +3935,7 @@ function TradeTerminal() {
                                 ? ""
                                 : plainClass
                           }`}
-                          style={
-                            isLatest
-                              ? undefined
-                              : isRepetition
-                                ? repeatHighlightStyle(d, isDark)
-                                : undefined
-                          }
+                          style={isRepetition ? repeatHighlightStyle(d, isDark) : undefined}
                         >
                           {d}
                         </span>
