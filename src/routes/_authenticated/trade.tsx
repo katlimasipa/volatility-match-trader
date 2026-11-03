@@ -1776,6 +1776,19 @@ function TradeTerminal() {
 
     if (!s.running) return;
 
+    // Entry Match zero-repetition filter: count consecutive ticks without a repeated
+    // digit. Counting only advances while the bot is running (started via START BOT).
+    if (s.strategyMode === "entry_match") {
+      const previousDigit = lastZeroRepeatDigitRef.current;
+      if (previousDigit !== null && currentD === previousDigit) {
+        zeroRepeatCountRef.current = 0;
+      } else {
+        zeroRepeatCountRef.current += 1;
+      }
+      lastZeroRepeatDigitRef.current = currentD;
+      setZeroRepeatCount(zeroRepeatCountRef.current);
+    }
+
     if (s.strategyMode === "x2x") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
@@ -1887,6 +1900,17 @@ function TradeTerminal() {
         return;
       }
 
+      if (s.zeroRepeatEnabled) {
+        const required = Math.max(1, Math.min(MAX_ZERO_REPEAT_TICKS, Math.floor(s.zeroRepeatTicks)));
+        if (zeroRepeatCountRef.current < required) {
+          setBotState("ZERO-REPEAT WAIT");
+          setNote(
+            `Zero-repetition filter: ${zeroRepeatCountRef.current}/${required} consecutive ticks without a repeated digit. Counting started when the bot started; trading unlocks once the count is met.`,
+          );
+          return;
+        }
+      }
+
       const session = tradingRef.current;
       if (!session?.isReady()) {
         setBotState("WAITING ENTRY");
@@ -1920,6 +1944,9 @@ function TradeTerminal() {
       };
       pending.current = trade;
       pendingSetAt.current = Date.now();
+      zeroRepeatCountRef.current = 0;
+      lastZeroRepeatDigitRef.current = null;
+      setZeroRepeatCount(0);
       setBotState("IN TRADE");
       setNote(`Entry Match trade #${targetRun}: captured ${order.entryQuote} (tick ${order.entryTickId ?? "live"}); ENTRY_DIGIT and Matches Prediction are both ${order.entryDigit}.`);
       placeLiveMatch(trade);
@@ -2050,6 +2077,9 @@ function TradeTerminal() {
     saveX2XScannerState(createX2XScannerState());
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
+    zeroRepeatCountRef.current = 0;
+    lastZeroRepeatDigitRef.current = null;
+    setZeroRepeatCount(0);
     connectionLostAlertedRef.current = false;
     if (typeof window !== "undefined") {
       try {
