@@ -675,6 +675,7 @@ function TradeTerminal() {
   }
 
   function updateZeroRepeatEnabled(value: boolean) {
+    if (value && !zeroRepeatEnabled) resetZeroRepeatGate();
     setZeroRepeatEnabled(value);
     persistZeroRepeat(value, zeroRepeatTicks);
   }
@@ -748,6 +749,7 @@ function TradeTerminal() {
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const [zeroRepeatCount, setZeroRepeatCount] = useState(0);
+  const [zeroRepeatGateOpen, setZeroRepeatGateOpen] = useState(false);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [x2xSignals, setX2xSignals] = useState<X2XSignalRecord[]>(loadX2XSignalHistory);
   const x2xSignalsRef = useRef<X2XSignalRecord[]>(x2xSignals);
@@ -882,6 +884,7 @@ function TradeTerminal() {
   const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
   const zeroRepeatCountRef = useRef(0);
+  const zeroRepeatGateOpenRef = useRef(false);
   const lastZeroRepeatDigitRef = useRef<number | null>(null);
   const lastTickAt = useRef<number>(Date.now());
   const staleTickAttemptsRef = useRef(0);
@@ -893,6 +896,14 @@ function TradeTerminal() {
   handleTickEventRef.current = handleTickEvent;
   const [tradingReady, setTradingReady] = useState(false);
   const [tradingStatusNote, setTradingStatusNote] = useState<string | null>(null);
+
+  function resetZeroRepeatGate() {
+    zeroRepeatCountRef.current = 0;
+    zeroRepeatGateOpenRef.current = false;
+    lastZeroRepeatDigitRef.current = null;
+    setZeroRepeatCount(0);
+    setZeroRepeatGateOpen(false);
+  }
 
   const stateRef = useRef({
     running,
@@ -1776,17 +1787,26 @@ function TradeTerminal() {
 
     if (!s.running) return;
 
-    // Entry Match zero-repetition filter: count consecutive ticks without a repeated
-    // digit. Counting only advances while the bot is running (started via START BOT).
-    if (s.strategyMode === "entry_match") {
+    // The zero-repetition gate is evaluated once per bot run. Once enough clean
+    // consecutive ticks are seen, it stays open through trades until the bot stops.
+    if (
+      s.strategyMode === "entry_match" &&
+      s.zeroRepeatEnabled &&
+      !zeroRepeatGateOpenRef.current
+    ) {
+      const required = Math.max(1, Math.min(MAX_ZERO_REPEAT_TICKS, Math.floor(s.zeroRepeatTicks)));
       const previousDigit = lastZeroRepeatDigitRef.current;
       if (previousDigit !== null && currentD === previousDigit) {
         zeroRepeatCountRef.current = 0;
       } else {
-        zeroRepeatCountRef.current += 1;
+        zeroRepeatCountRef.current = Math.min(required, zeroRepeatCountRef.current + 1);
       }
       lastZeroRepeatDigitRef.current = currentD;
       setZeroRepeatCount(zeroRepeatCountRef.current);
+      if (zeroRepeatCountRef.current >= required) {
+        zeroRepeatGateOpenRef.current = true;
+        setZeroRepeatGateOpen(true);
+      }
     }
 
     if (s.strategyMode === "x2x") {
@@ -1900,12 +1920,12 @@ function TradeTerminal() {
         return;
       }
 
-      if (s.zeroRepeatEnabled) {
+      if (s.zeroRepeatEnabled && !zeroRepeatGateOpenRef.current) {
         const required = Math.max(1, Math.min(MAX_ZERO_REPEAT_TICKS, Math.floor(s.zeroRepeatTicks)));
         if (zeroRepeatCountRef.current < required) {
           setBotState("ZERO-REPEAT WAIT");
           setNote(
-            `Zero-repetition filter: ${zeroRepeatCountRef.current}/${required} consecutive ticks without a repeated digit. Counting started when the bot started; trading unlocks once the count is met.`,
+            `Zero-repetition startup check: ${zeroRepeatCountRef.current}/${required} consecutive ticks without a repeated digit. The gate opens for the rest of this run once met.`,
           );
           return;
         }
@@ -1952,9 +1972,6 @@ function TradeTerminal() {
       };
       pending.current = trade;
       pendingSetAt.current = Date.now();
-      zeroRepeatCountRef.current = 0;
-      lastZeroRepeatDigitRef.current = null;
-      setZeroRepeatCount(0);
       setBotState("IN TRADE");
       setNote(`Entry Match trade #${targetRun}: captured ${order.entryQuote} (tick ${order.entryTickId ?? "live"}); ENTRY_DIGIT and Matches Prediction are both ${order.entryDigit}.`);
       placeLiveMatch(trade);
@@ -2085,9 +2102,7 @@ function TradeTerminal() {
     saveX2XScannerState(createX2XScannerState());
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
-    zeroRepeatCountRef.current = 0;
-    lastZeroRepeatDigitRef.current = null;
-    setZeroRepeatCount(0);
+    resetZeroRepeatGate();
     connectionLostAlertedRef.current = false;
     if (typeof window !== "undefined") {
       try {
@@ -2126,6 +2141,7 @@ function TradeTerminal() {
     }
     setRunning(false);
     stateRef.current.running = false;
+    resetZeroRepeatGate();
     connectionLostAlertedRef.current = false;
     setBotState("IDLE");
     setNote(message);
@@ -3245,11 +3261,15 @@ function TradeTerminal() {
                     />
                   </div>
                   <div className="text-[10px] text-zinc-500 leading-tight">
-                    A repetition is two consecutive ticks ending in the same digit. Counting starts
-                    only when the bot is started and resets after every trade.{" "}
+                    A repetition is two consecutive ticks ending in the same digit. This startup
+                    check begins when the bot starts and runs once per bot run. After the selected
+                    clean-tick count, the gate stays open through later trades and repetitions
+                    until the bot stops.{" "}
                     {zeroRepeatEnabled
                       ? running
-                        ? `Progress: ${zeroRepeatCount}/${zeroRepeatTicks} clean ticks.`
+                        ? zeroRepeatGateOpen
+                          ? `Gate OPEN after ${zeroRepeatTicks} clean ticks.`
+                          : `Progress: ${zeroRepeatCount}/${zeroRepeatTicks} consecutive clean ticks.`
                         : `Will count from 0/${zeroRepeatTicks} when the bot starts.`
                       : "The bot may trade on any fresh tick while this is off."}
                   </div>
@@ -4829,8 +4849,8 @@ function TradeTerminal() {
                         ? "OFF"
                         : !running
                           ? "0 (start bot)"
-                          : zeroRepeatCount >= zeroRepeatTicks
-                            ? "OPEN"
+                          : zeroRepeatGateOpen
+                            ? "OPEN (latched)"
                             : `${zeroRepeatCount}/${zeroRepeatTicks}`}
                   </div>
                 </div>
