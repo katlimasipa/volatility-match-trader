@@ -186,6 +186,10 @@ interface SavedSession {
   martingaleEnabled: boolean;
   strategyMode?: StrategyMode;
   spreadComparison?: SpreadComparison;
+  entryMatchParity?: EntryMatchParity;
+  entryMatchSpreadEnabled?: boolean;
+  entryMatchSpreadComparison?: SpreadComparison;
+  entryMatchSpreadThreshold?: number;
   x2xSignals?: X2XSignalRecord[];
   x2xOpWaitTicks?: number | null;
 }
@@ -198,6 +202,10 @@ const X2X_SCANNER_STORAGE_KEY = "thdpst_x2x_scanner_state_v1";
 const X2X_OP_WAIT_TICKS_STORAGE_KEY = "thdpst_x2x_op_wait_ticks_v1";
 const X2X_SEEN_TICK_IDS_STORAGE_KEY = "thdpst_x2x_seen_tick_ids_v1";
 const ZERO_REPEAT_STORAGE_KEY = "thdpst_zero_repeat_v1";
+const ENTRY_MATCH_PARITY_STORAGE_KEY = "thdpst_entry_match_parity_v1";
+const ENTRY_MATCH_SPREAD_ENABLED_STORAGE_KEY = "thdpst_entry_match_spread_enabled_v1";
+const ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY = "thdpst_entry_match_spread_comparison_v1";
+const ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY = "thdpst_entry_match_spread_threshold_v1";
 const MAX_ZERO_REPEAT_TICKS = 50;
 const MAX_LIVE_SEQUENCE_TICKS = 50;
 const MAX_SAVED_SESSIONS = 50;
@@ -228,6 +236,7 @@ function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
 }
 
 type StrategyMode = "matches" | "x2x" | "entry_match";
+type EntryMatchParity = "any" | "odd" | "even";
 
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
@@ -247,6 +256,46 @@ function loadSpreadComparison(): SpreadComparison {
       : "exact";
   } catch {
     return "exact";
+  }
+}
+
+function loadEntryMatchParity(): EntryMatchParity {
+  if (typeof window === "undefined") return "any";
+  try {
+    const saved = localStorage.getItem(ENTRY_MATCH_PARITY_STORAGE_KEY);
+    return saved === "odd" || saved === "even" ? saved : "any";
+  } catch {
+    return "any";
+  }
+}
+
+function loadEntryMatchSpreadEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(ENTRY_MATCH_SPREAD_ENABLED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function loadEntryMatchSpreadComparison(): SpreadComparison {
+  if (typeof window === "undefined") return "exact";
+  try {
+    return localStorage.getItem(ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY) === "at_most"
+      ? "at_most"
+      : "exact";
+  } catch {
+    return "exact";
+  }
+}
+
+function loadEntryMatchSpreadThreshold(): number {
+  if (typeof window === "undefined") return MAX_DIFF;
+  try {
+    const saved = Number(localStorage.getItem(ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY));
+    return Number.isFinite(saved) && saved >= 0.1 ? saved : MAX_DIFF;
+  } catch {
+    return MAX_DIFF;
   }
 }
 
@@ -343,6 +392,19 @@ function isSavedSession(value: unknown): value is SavedSession {
     (saved.spreadComparison === undefined ||
       saved.spreadComparison === "exact" ||
       saved.spreadComparison === "at_most") &&
+    (saved.entryMatchParity === undefined ||
+      saved.entryMatchParity === "any" ||
+      saved.entryMatchParity === "odd" ||
+      saved.entryMatchParity === "even") &&
+    (saved.entryMatchSpreadEnabled === undefined ||
+      typeof saved.entryMatchSpreadEnabled === "boolean") &&
+    (saved.entryMatchSpreadComparison === undefined ||
+      saved.entryMatchSpreadComparison === "exact" ||
+      saved.entryMatchSpreadComparison === "at_most") &&
+    (saved.entryMatchSpreadThreshold === undefined ||
+      (typeof saved.entryMatchSpreadThreshold === "number" &&
+        Number.isFinite(saved.entryMatchSpreadThreshold) &&
+        saved.entryMatchSpreadThreshold >= 0.1)) &&
     (saved.x2xOpWaitTicks === undefined ||
       saved.x2xOpWaitTicks === null ||
       (Number.isInteger(saved.x2xOpWaitTicks) &&
@@ -615,6 +677,18 @@ function TradeTerminal() {
   const [maxDiff, setMaxDiff] = useState<number>(MAX_DIFF);
   const [maxDiffInput, setMaxDiffInput] = useState<string>(String(MAX_DIFF));
   const [spreadComparison, setSpreadComparison] = useState<SpreadComparison>(loadSpreadComparison);
+  const [entryMatchParity, setEntryMatchParity] = useState<EntryMatchParity>(loadEntryMatchParity);
+  const [entryMatchSpreadEnabled, setEntryMatchSpreadEnabled] = useState<boolean>(
+    loadEntryMatchSpreadEnabled,
+  );
+  const [entryMatchSpreadComparison, setEntryMatchSpreadComparison] =
+    useState<SpreadComparison>(loadEntryMatchSpreadComparison);
+  const [entryMatchSpreadThreshold, setEntryMatchSpreadThreshold] = useState<number>(
+    loadEntryMatchSpreadThreshold,
+  );
+  const [entryMatchSpreadThresholdInput, setEntryMatchSpreadThresholdInput] = useState<string>(
+    () => String(loadEntryMatchSpreadThreshold()),
+  );
   const [x2xOpWaitTicks, setX2xOpWaitTicks] = useState<number | null>(loadX2XOpWaitTicks);
   const [x2xOpWaitTicksInput, setX2xOpWaitTicksInput] = useState<string>(() => {
     const limit = loadX2XOpWaitTicks();
@@ -663,6 +737,43 @@ function TradeTerminal() {
       localStorage.setItem(SPREAD_COMPARISON_STORAGE_KEY, value);
     } catch {
       // Keep the selected comparison active for this page if storage is unavailable.
+    }
+  }
+
+  function updateEntryMatchParity(value: EntryMatchParity) {
+    setEntryMatchParity(value);
+    try {
+      localStorage.setItem(ENTRY_MATCH_PARITY_STORAGE_KEY, value);
+    } catch {
+      // Keep the selected filter active for this page if storage is unavailable.
+    }
+  }
+
+  function updateEntryMatchSpreadEnabled(value: boolean) {
+    setEntryMatchSpreadEnabled(value);
+    try {
+      localStorage.setItem(ENTRY_MATCH_SPREAD_ENABLED_STORAGE_KEY, String(value));
+    } catch {
+      // Keep the selected filter active for this page if storage is unavailable.
+    }
+  }
+
+  function updateEntryMatchSpreadComparison(value: SpreadComparison) {
+    setEntryMatchSpreadComparison(value);
+    try {
+      localStorage.setItem(ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY, value);
+    } catch {
+      // Keep the selected comparison active for this page if storage is unavailable.
+    }
+  }
+
+  function updateEntryMatchSpreadThreshold(value: number, strValue?: string) {
+    setEntryMatchSpreadThreshold(value);
+    setEntryMatchSpreadThresholdInput(strValue ?? String(value));
+    try {
+      localStorage.setItem(ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY, String(value));
+    } catch {
+      // Keep the selected threshold active for this page if storage is unavailable.
     }
   }
 
@@ -918,6 +1029,10 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     spreadComparison,
+    entryMatchParity,
+    entryMatchSpreadEnabled,
+    entryMatchSpreadComparison,
+    entryMatchSpreadThreshold,
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
@@ -939,6 +1054,10 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     spreadComparison,
+    entryMatchParity,
+    entryMatchSpreadEnabled,
+    entryMatchSpreadComparison,
+    entryMatchSpreadThreshold,
     x2xOpWaitTicks,
     configuredMarkup,
     stopOnWin,
@@ -1931,6 +2050,38 @@ function TradeTerminal() {
         }
       }
 
+      if (s.entryMatchSpreadEnabled) {
+        const spread = analyze(tickList, s.entryMatchSpreadThreshold, s.entryMatchSpreadComparison);
+        if (!spread.ready) {
+          setBotState("BUFFERING");
+          setNote(
+            `Entry Match spread filter is buffering live ticks (${spread.total}/${WINDOW}). No trade will enter until the rolling window is ready.`,
+          );
+          return;
+        }
+        if (!spread.ok) {
+          setBotState("WAITING ENTRY");
+          setNote(
+            s.entryMatchSpreadComparison === "exact"
+              ? `Entry Match is waiting for spread Δ to equal ${s.entryMatchSpreadThreshold}%. Current Δ is ${spread.diff.toFixed(2)}%.`
+              : `Entry Match is waiting for spread Δ at or below ${s.entryMatchSpreadThreshold}%. Current Δ is ${spread.diff.toFixed(2)}%.`,
+          );
+          return;
+        }
+      }
+
+      if (
+        (s.entryMatchParity === "odd" && currentD % 2 === 0) ||
+        (s.entryMatchParity === "even" && currentD % 2 !== 0)
+      ) {
+        const requiredParity = s.entryMatchParity === "odd" ? "odd" : "even";
+        setBotState("WAITING ENTRY");
+        setNote(
+          `Entry Match is set to ${requiredParity} entry digits. Current digit ${currentD} is not eligible; waiting for the next ${requiredParity} digit.`,
+        );
+        return;
+      }
+
       const session = tradingRef.current;
       if (!session?.isReady()) {
         setBotState("WAITING ENTRY");
@@ -2122,7 +2273,9 @@ function TradeTerminal() {
         ? strategyMode === "x2x"
           ? `X2X Sniper active on ${activeAccount.account_id}. Scanning ${currentMarket.displayName} tick digits for X2X signals...`
           : strategyMode === "entry_match"
-            ? `Entry Match active on ${activeAccount.account_id}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
+            ? entryMatchSpreadEnabled
+              ? `Entry Match active on ${activeAccount.account_id}. Building the 1,000-tick spread window before trade #${runCount + 1}.`
+              : `Entry Match active on ${activeAccount.account_id}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
             : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount.account_id}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
@@ -2173,11 +2326,19 @@ function TradeTerminal() {
       wins,
       losses,
       winRate: trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0,
-      spreadThreshold: maxDiff,
+      spreadThreshold: strategyMode === "entry_match" ? entryMatchSpreadThreshold : maxDiff,
       baseStake: stake,
       martingaleEnabled,
       strategyMode,
-      spreadComparison,
+      spreadComparison: strategyMode === "entry_match" ? entryMatchSpreadComparison : spreadComparison,
+      ...(strategyMode === "entry_match"
+        ? {
+            entryMatchParity,
+            entryMatchSpreadEnabled,
+            entryMatchSpreadComparison,
+            entryMatchSpreadThreshold,
+          }
+        : {}),
       x2xSignals: signalHistory.map((signal) => ({ ...signal })),
       ...(strategyMode === "x2x" ? { x2xOpWaitTicks } : {}),
     };
@@ -2492,6 +2653,11 @@ function TradeTerminal() {
   }
 
   const analysis = analyze(digits, maxDiff, spreadComparison);
+  const entryMatchSpreadAnalysis = analyze(
+    digits,
+    entryMatchSpreadThreshold,
+    entryMatchSpreadComparison,
+  );
   const currentDigit = digits[digits.length - 1];
   const entryMatchDisplayedDigit = pending.current?.entryMatchOrder?.entryDigit ?? currentDigit;
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
@@ -3191,17 +3357,181 @@ function TradeTerminal() {
                   {strategyMode === "x2x"
                     ? `On ${currentMarket.displayName}: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's last two displayed digits minus 20.`
                     : strategyMode === "entry_match"
-                      ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction.`
+                      ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction. Optional parity and spread filters can limit eligible entries.`
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
 
               {strategyMode === "entry_match" && (
-                <div
-                  className={`rounded-lg border p-3 space-y-2 ${
-                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
-                  }`}
-                >
+                <>
+                  <div
+                    className={`rounded-lg border p-3 space-y-2 ${
+                      isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                        Entry Match Filters
+                      </span>
+                      <span className="text-[10px] text-zinc-500">ENTRY DIGIT</span>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-zinc-500">Eligible entry digits</div>
+                      <div className={`grid grid-cols-3 gap-1 rounded border p-0.5 ${
+                        isDark ? "border-zinc-800 bg-zinc-950" : "border-slate-200 bg-white"
+                      }`}>
+                        {([
+                          ["any", "Any digit"],
+                          ["odd", "Odd only"],
+                          ["even", "Even only"],
+                        ] as const).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={entryMatchParity === value}
+                            onClick={() => updateEntryMatchParity(value)}
+                            className={`rounded px-1.5 py-1.5 text-[10px] font-semibold transition-colors ${
+                              entryMatchParity === value
+                                ? isDark
+                                  ? "bg-zinc-800 text-white shadow-sm"
+                                  : "bg-slate-100 text-slate-900 shadow-sm"
+                                : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] leading-tight text-zinc-500">
+                        The selected digit is still captured from the entry tick and used as that trade's exact Matches Prediction.
+                      </p>
+                    </div>
+
+                    <div className={`border-t pt-2 ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+                      <label className="flex cursor-pointer items-center justify-between gap-2">
+                        <span className={`text-xs font-medium ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                          Use spread threshold
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={entryMatchSpreadEnabled}
+                          onChange={(e) => updateEntryMatchSpreadEnabled(e.target.checked)}
+                          className={`h-4 w-4 rounded focus:ring-2 ${
+                            isDark
+                              ? "border-zinc-700 bg-zinc-900 text-white accent-white focus:ring-zinc-500"
+                              : "border-slate-300 bg-white text-slate-900 accent-slate-900 focus:ring-slate-400"
+                          }`}
+                        />
+                      </label>
+                      <p className="mt-1 text-[10px] leading-tight text-zinc-500">
+                        {entryMatchSpreadEnabled
+                          ? "Entry Match waits for the selected condition across the latest 1,000 live ticks before capturing an entry."
+                          : "Off: spread does not block Entry Match trades."}
+                      </p>
+                    </div>
+
+                    {entryMatchSpreadEnabled && (
+                      <div className="space-y-2 pt-1">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className="text-zinc-500">Spread comparison</span>
+                          <div className={`flex rounded border p-0.5 ${
+                            isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
+                          }`}>
+                            {([
+                              ["exact", "Exact"],
+                              ["at_most", "Equal / under"],
+                            ] as const).map(([value, label]) => (
+                              <button
+                                key={value}
+                                type="button"
+                                aria-pressed={entryMatchSpreadComparison === value}
+                                onClick={() => updateEntryMatchSpreadComparison(value)}
+                                className={`rounded px-2 py-1 text-[10px] font-semibold transition-colors ${
+                                  entryMatchSpreadComparison === value
+                                    ? isDark
+                                      ? "bg-zinc-800 text-white shadow-sm"
+                                      : "bg-white text-slate-900 shadow-sm"
+                                    : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <label htmlFor="entry-match-spread-threshold" className="text-zinc-500">
+                            Spread Δ target
+                          </label>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-zinc-500">
+                              {entryMatchSpreadComparison === "exact" ? "Δ =" : "Δ ≤"}
+                            </span>
+                            <input
+                              id="entry-match-spread-threshold"
+                              type="text"
+                              inputMode="decimal"
+                              value={entryMatchSpreadThresholdInput}
+                              onChange={(e) => {
+                                const value = normalizeDecimalInput(e.target.value);
+                                if (!isDecimalInput(value)) return;
+                                setEntryMatchSpreadThresholdInput(value);
+                                const number = parseDecimalInput(value);
+                                if (Number.isFinite(number) && number >= 0.1) {
+                                  updateEntryMatchSpreadThreshold(number, value);
+                                }
+                              }}
+                              onBlur={() => {
+                                const number = parseDecimalInput(entryMatchSpreadThresholdInput);
+                                updateEntryMatchSpreadThreshold(
+                                  Number.isFinite(number) && number >= 0.1
+                                    ? number
+                                    : entryMatchSpreadThreshold,
+                                );
+                              }}
+                              className={`w-16 rounded border px-1.5 py-1 text-right text-xs font-bold num outline-none ${
+                                isDark
+                                  ? "border-zinc-800 bg-black text-zinc-300 focus:border-zinc-600"
+                                  : "border-slate-300 bg-white text-zinc-700 focus:border-slate-500"
+                              }`}
+                            />
+                            <span className="text-[10px] text-zinc-500">%</span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {[0.3, 0.5, 1.0, 1.5].map((value) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => updateEntryMatchSpreadThreshold(value)}
+                              className={`rounded border py-1.5 text-[10px] font-semibold transition-colors ${
+                                entryMatchSpreadThreshold === value
+                                  ? isDark
+                                    ? "border-zinc-500 bg-zinc-800 text-zinc-200"
+                                    : "border-zinc-600 bg-zinc-100 text-zinc-800"
+                                  : isDark
+                                    ? "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white"
+                                    : "border-slate-200 bg-slate-100 text-slate-600 hover:text-slate-900"
+                              }`}
+                            >
+                              {value}%
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[10px] leading-tight text-zinc-500">
+                          {entryMatchSpreadComparison === "exact"
+                            ? `The spread must equal ${entryMatchSpreadThreshold}%.`
+                            : `The spread must be ${entryMatchSpreadThreshold}% or lower.`} The spread is calculated over 1,000 ticks.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div
+                    className={`rounded-lg border p-3 space-y-2 ${
+                      isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                    }`}
+                  >
                   <div className="flex items-center justify-between">
                     <span className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
                       Zero Repetition Filter
@@ -3273,7 +3603,8 @@ function TradeTerminal() {
                         : `Will count from 0/${zeroRepeatTicks} when the bot starts.`
                       : "The bot may trade on any fresh tick while this is off."}
                   </div>
-                </div>
+                  </div>
+                </>
               )}
 
               {strategyMode === "x2x" && (
@@ -4582,7 +4913,7 @@ function TradeTerminal() {
                           {saved.strategyMode === "x2x"
                             ? `X2X OP wait ${saved.x2xOpWaitTicks === null ? "No expiry" : `${saved.x2xOpWaitTicks ?? X2X_OP_WINDOW_TICKS} ticks`}`
                             : saved.strategyMode === "entry_match"
-                              ? "Fresh tick digit used as the Matches prediction"
+                              ? `Fresh tick digit prediction · ${saved.entryMatchParity === "odd" ? "Odd only" : saved.entryMatchParity === "even" ? "Even only" : "Any digit"} · Spread gate ${saved.entryMatchSpreadEnabled ? `${saved.entryMatchSpreadComparison === "at_most" ? "equal/under" : "exact"} ${saved.entryMatchSpreadThreshold ?? saved.spreadThreshold}%` : "OFF"}`
                               : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
@@ -4927,8 +5258,32 @@ function TradeTerminal() {
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
                       : strategyMode === "entry_match"
-                        ? "Current tick digit"
+                        ? "Captured tick digit"
                         : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-zinc-500">Entry Parity Filter</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode !== "entry_match"
+                      ? "n/a"
+                      : entryMatchParity === "any"
+                        ? "Any digit"
+                        : entryMatchParity === "odd"
+                          ? "Odd only"
+                          : "Even only"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-zinc-500">Entry Spread Gate</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {strategyMode !== "entry_match"
+                      ? "n/a"
+                      : !entryMatchSpreadEnabled
+                        ? "OFF"
+                        : !entryMatchSpreadAnalysis.ready
+                          ? `BUFFERING ${entryMatchSpreadAnalysis.total}/${WINDOW}`
+                          : `${entryMatchSpreadAnalysis.ok ? "OPEN" : "WAIT"} · Δ ${entryMatchSpreadAnalysis.diff.toFixed(2)}% ${entryMatchSpreadComparison === "exact" ? "=" : "≤"} ${entryMatchSpreadThreshold}%`}
                   </div>
                 </div>
                 <div>
