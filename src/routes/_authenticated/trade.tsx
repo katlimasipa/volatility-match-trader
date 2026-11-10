@@ -100,6 +100,15 @@ import {
 import { disableWebPush, enableWebPush } from "@/lib/push-client";
 import { isRunningStandalone, isIOS, onInstallableChange, triggerInstallPrompt } from "@/lib/pwa";
 import { calculateMatchesPayout, DERIV_MATCH_BASE_PAYOUT_RATIO } from "@/lib/payout";
+import {
+  analyzeDigitIntelligence,
+  backtestDigitIntelligence,
+  DIGIT_INTELLIGENCE_WINDOWS,
+  type DigitIntelligenceBacktest,
+  type DigitIntelligenceSettings,
+  type DigitIntelligenceWindow,
+  type DigitTargetSelection,
+} from "@/lib/digit-intelligence-strategy";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
@@ -136,6 +145,31 @@ interface TradeRow {
   entryQuote?: number | undefined;
   entryTickId?: string | null | undefined;
   entryTimestamp?: string | null | undefined;
+  digitSignalId?: string | undefined;
+}
+
+type DigitIntelligenceExecution = "signal_only" | "automated";
+type DigitIntelligenceSignalStatus = "pending" | "correct" | "incorrect" | "cancelled";
+
+interface DigitIntelligenceConfig extends DigitIntelligenceSettings {
+  execution: DigitIntelligenceExecution;
+}
+
+interface DigitIntelligenceSignalRecord {
+  id: string;
+  marketSymbol: MarketSymbol;
+  generatedAt: string;
+  targetDigit: number;
+  confidence: number;
+  historyWindow: number;
+  sequence: string;
+  sequenceSamples: number;
+  execution: DigitIntelligenceExecution;
+  status: DigitIntelligenceSignalStatus;
+  outcomeDigit?: number;
+  outcomeAt?: string;
+  tradeRunIndex?: number;
+  reason?: string;
 }
 
 type X2XSignalStatus =
@@ -190,6 +224,8 @@ interface SavedSession {
   entryMatchSpreadEnabled?: boolean;
   entryMatchSpreadComparison?: SpreadComparison;
   entryMatchSpreadThreshold?: number;
+  digitIntelligenceSignals?: DigitIntelligenceSignalRecord[];
+  digitIntelligenceConfig?: DigitIntelligenceConfig;
   x2xSignals?: X2XSignalRecord[];
   x2xOpWaitTicks?: number | null;
 }
@@ -206,6 +242,9 @@ const ENTRY_MATCH_PARITY_STORAGE_KEY = "thdpst_entry_match_parity_v1";
 const ENTRY_MATCH_SPREAD_ENABLED_STORAGE_KEY = "thdpst_entry_match_spread_enabled_v1";
 const ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY = "thdpst_entry_match_spread_comparison_v1";
 const ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY = "thdpst_entry_match_spread_threshold_v1";
+const DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY = "thdpst_digit_intelligence_config_v1";
+const DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX = "thdpst_digit_intelligence_signals_v1_";
+const MAX_DIGIT_INTELLIGENCE_SIGNALS = 200;
 const MAX_ZERO_REPEAT_TICKS = 50;
 const MAX_LIVE_SEQUENCE_TICKS = 50;
 const MAX_SAVED_SESSIONS = 50;
@@ -235,16 +274,135 @@ function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
   };
 }
 
-type StrategyMode = "matches" | "x2x" | "entry_match";
+type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence";
 type EntryMatchParity = "any" | "odd" | "even";
 
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
   try {
     const saved = localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
-    return saved === "x2x" || saved === "entry_match" ? saved : "matches";
+    return saved === "x2x" || saved === "entry_match" || saved === "digit_intelligence"
+      ? saved
+      : "matches";
   } catch {
     return "matches";
+  }
+}
+
+const DEFAULT_DIGIT_INTELLIGENCE_CONFIG: DigitIntelligenceConfig = {
+  window: 100,
+  minimumConfidence: 65,
+  minimumSequenceSamples: 3,
+  target: "auto",
+  execution: "signal_only",
+};
+
+function loadDigitIntelligenceConfig(): DigitIntelligenceConfig {
+  if (typeof window === "undefined") return DEFAULT_DIGIT_INTELLIGENCE_CONFIG;
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY) || "null",
+    );
+    if (typeof value !== "object" || value === null) return DEFAULT_DIGIT_INTELLIGENCE_CONFIG;
+    const saved = value as Partial<DigitIntelligenceConfig>;
+    const windowSize = DIGIT_INTELLIGENCE_WINDOWS.find((item) => item === saved.window);
+    const confidence = Number(saved.minimumConfidence);
+    const sequenceSamples = Number(saved.minimumSequenceSamples);
+    const target = saved.target === "auto" || (Number.isInteger(saved.target) && Number(saved.target) >= 0 && Number(saved.target) <= 9)
+      ? saved.target
+      : DEFAULT_DIGIT_INTELLIGENCE_CONFIG.target;
+    return {
+      window: windowSize ?? DEFAULT_DIGIT_INTELLIGENCE_CONFIG.window,
+      minimumConfidence: Number.isFinite(confidence)
+        ? Math.max(0, Math.min(100, Math.round(confidence)))
+        : DEFAULT_DIGIT_INTELLIGENCE_CONFIG.minimumConfidence,
+      minimumSequenceSamples: Number.isFinite(sequenceSamples)
+        ? Math.max(2, Math.min(100, Math.floor(sequenceSamples)))
+        : DEFAULT_DIGIT_INTELLIGENCE_CONFIG.minimumSequenceSamples,
+      target: target as DigitTargetSelection,
+      execution: saved.execution === "automated" ? "automated" : "signal_only",
+    };
+  } catch {
+    return DEFAULT_DIGIT_INTELLIGENCE_CONFIG;
+  }
+}
+
+function isDigitIntelligenceConfig(value: unknown): value is DigitIntelligenceConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const config = value as Partial<DigitIntelligenceConfig>;
+  return (
+    DIGIT_INTELLIGENCE_WINDOWS.some((windowSize) => windowSize === config.window) &&
+    typeof config.minimumConfidence === "number" &&
+    Number.isFinite(config.minimumConfidence) &&
+    config.minimumConfidence >= 0 &&
+    config.minimumConfidence <= 100 &&
+    typeof config.minimumSequenceSamples === "number" &&
+    Number.isInteger(config.minimumSequenceSamples) &&
+    config.minimumSequenceSamples >= 2 &&
+    config.minimumSequenceSamples <= 100 &&
+    (config.target === "auto" || (Number.isInteger(config.target) && Number(config.target) >= 0 && Number(config.target) <= 9)) &&
+    (config.execution === "signal_only" || config.execution === "automated")
+  );
+}
+
+function isDigitIntelligenceSignalRecord(value: unknown): value is DigitIntelligenceSignalRecord {
+  if (typeof value !== "object" || value === null) return false;
+  const signal = value as Partial<DigitIntelligenceSignalRecord>;
+  return (
+    typeof signal.id === "string" &&
+    typeof signal.marketSymbol === "string" &&
+    MARKET_LIST.some((market) => market.id === signal.marketSymbol) &&
+    typeof signal.generatedAt === "string" &&
+    Number.isFinite(Date.parse(signal.generatedAt)) &&
+    Number.isInteger(signal.targetDigit) &&
+    Number(signal.targetDigit) >= 0 &&
+    Number(signal.targetDigit) <= 9 &&
+    typeof signal.confidence === "number" &&
+    Number.isFinite(signal.confidence) &&
+    typeof signal.historyWindow === "number" &&
+    Number.isFinite(signal.historyWindow) &&
+    typeof signal.sequence === "string" &&
+    typeof signal.sequenceSamples === "number" &&
+    Number.isFinite(signal.sequenceSamples) &&
+    (signal.execution === "signal_only" || signal.execution === "automated") &&
+    (signal.status === "pending" || signal.status === "correct" || signal.status === "incorrect" || signal.status === "cancelled") &&
+    (signal.outcomeDigit === undefined || (Number.isInteger(signal.outcomeDigit) && signal.outcomeDigit >= 0 && signal.outcomeDigit <= 9)) &&
+    (signal.outcomeAt === undefined || typeof signal.outcomeAt === "string") &&
+    (signal.tradeRunIndex === undefined || (typeof signal.tradeRunIndex === "number" && Number.isFinite(signal.tradeRunIndex))) &&
+    (signal.reason === undefined || typeof signal.reason === "string")
+  );
+}
+
+function loadDigitIntelligenceSignals(market: MarketSymbol): DigitIntelligenceSignalRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(`${DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX}${market}`) || "[]",
+    );
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter(isDigitIntelligenceSignalRecord)
+      .map((signal) => signal.status === "pending"
+        ? { ...signal, status: "cancelled" as const, reason: "The tick stream restarted before the outcome tick arrived." }
+        : signal)
+      .slice(0, MAX_DIGIT_INTELLIGENCE_SIGNALS);
+  } catch {
+    return [];
+  }
+}
+
+function persistDigitIntelligenceSignals(
+  market: MarketSymbol,
+  signals: DigitIntelligenceSignalRecord[],
+): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      `${DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX}${market}`,
+      JSON.stringify(signals.slice(0, MAX_DIGIT_INTELLIGENCE_SIGNALS)),
+    );
+  } catch {
+    // Signal tracking remains available in memory if browser storage is unavailable.
   }
 }
 
@@ -352,6 +510,7 @@ function isTradeRow(value: unknown): value is TradeRow {
     Number.isFinite(trade.pnl) &&
     typeof trade.time === "string" &&
     (trade.signalId === undefined || typeof trade.signalId === "string") &&
+    (trade.digitSignalId === undefined || typeof trade.digitSignalId === "string") &&
     (trade.contractId === undefined ||
       (typeof trade.contractId === "number" && Number.isFinite(trade.contractId))) &&
     (trade.entryQuote === undefined ||
@@ -388,7 +547,8 @@ function isSavedSession(value: unknown): value is SavedSession {
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x" ||
-      saved.strategyMode === "entry_match") &&
+      saved.strategyMode === "entry_match" ||
+      saved.strategyMode === "digit_intelligence") &&
     (saved.spreadComparison === undefined ||
       saved.spreadComparison === "exact" ||
       saved.spreadComparison === "at_most") &&
@@ -405,6 +565,11 @@ function isSavedSession(value: unknown): value is SavedSession {
       (typeof saved.entryMatchSpreadThreshold === "number" &&
         Number.isFinite(saved.entryMatchSpreadThreshold) &&
         saved.entryMatchSpreadThreshold >= 0.1)) &&
+    (saved.digitIntelligenceSignals === undefined ||
+      (Array.isArray(saved.digitIntelligenceSignals) &&
+        saved.digitIntelligenceSignals.every(isDigitIntelligenceSignalRecord))) &&
+    (saved.digitIntelligenceConfig === undefined ||
+      isDigitIntelligenceConfig(saved.digitIntelligenceConfig)) &&
     (saved.x2xOpWaitTicks === undefined ||
       saved.x2xOpWaitTicks === null ||
       (Number.isInteger(saved.x2xOpWaitTicks) &&
@@ -562,6 +727,7 @@ interface PendingTrade {
   /** When true, settlement comes from Deriv contract result — not the next local tick. */
   live?: boolean;
   signalId?: string;
+  digitSignalId?: string;
   entryMatchOrder?: EntryMatchOrder;
 }
 
@@ -600,6 +766,7 @@ interface BacktestSummary {
   winRate: number;
   netPnl: number | null;
   x2x?: X2XBacktestResult;
+  digitIntelligence?: DigitIntelligenceBacktest;
 }
 
 function TradeTerminal() {
@@ -653,7 +820,16 @@ function TradeTerminal() {
     return "R_100";
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
-  const startTickRequirement = strategyMode === "matches" ? WINDOW : strategyMode === "x2x" ? 3 : 1;
+  const [digitIntelligenceConfig, setDigitIntelligenceConfig] = useState<DigitIntelligenceConfig>(
+    loadDigitIntelligenceConfig,
+  );
+  const startTickRequirement = strategyMode === "matches"
+    ? WINDOW
+    : strategyMode === "x2x"
+      ? 3
+      : strategyMode === "digit_intelligence"
+        ? digitIntelligenceConfig.window
+        : 1;
   const [x2xScannerState, setX2xScannerState] = useState<X2XScannerState>(loadX2XScannerState);
   const x2xScannerRef = useRef<X2XScannerState>(x2xScannerState);
   const currentMarket = getMarketConfig(marketSymbol);
@@ -729,6 +905,59 @@ function TradeTerminal() {
   function updateMaxDiff(val: number, strVal?: string) {
     setMaxDiff(val);
     setMaxDiffInput(strVal !== undefined ? strVal : String(val));
+  }
+
+  function updateDigitIntelligenceConfig(patch: Partial<DigitIntelligenceConfig>) {
+    const next = { ...digitIntelligenceConfig, ...patch };
+    setDigitIntelligenceConfig(next);
+    try {
+      localStorage.setItem(DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // The selected options remain active in this page if storage is unavailable.
+    }
+  }
+
+  function replaceDigitIntelligenceSignals(next: DigitIntelligenceSignalRecord[]) {
+    const bounded = next.slice(0, MAX_DIGIT_INTELLIGENCE_SIGNALS);
+    digitIntelligenceSignalsRef.current = bounded;
+    setDigitIntelligenceSignals(bounded);
+    persistDigitIntelligenceSignals(marketSymbol, bounded);
+  }
+
+  function addDigitIntelligenceSignal(signal: DigitIntelligenceSignalRecord) {
+    activeDigitIntelligenceSignalIdRef.current = signal.id;
+    replaceDigitIntelligenceSignals([signal, ...digitIntelligenceSignalsRef.current]);
+  }
+
+  function updateDigitIntelligenceSignal(
+    signalId: string,
+    patch: Partial<DigitIntelligenceSignalRecord>,
+  ) {
+    replaceDigitIntelligenceSignals(
+      digitIntelligenceSignalsRef.current.map((signal) =>
+        signal.id === signalId ? { ...signal, ...patch } : signal,
+      ),
+    );
+  }
+
+  function scorePendingDigitIntelligenceSignal(outcomeDigit: number, outcomeAt: string) {
+    const signalId = activeDigitIntelligenceSignalIdRef.current;
+    if (!signalId) return;
+    const signal = digitIntelligenceSignalsRef.current.find((item) => item.id === signalId);
+    activeDigitIntelligenceSignalIdRef.current = null;
+    if (!signal || signal.status !== "pending") return;
+    updateDigitIntelligenceSignal(signalId, {
+      status: signal.targetDigit === outcomeDigit ? "correct" : "incorrect",
+      outcomeDigit,
+      outcomeAt,
+    });
+  }
+
+  function cancelPendingDigitIntelligenceSignal(reason: string) {
+    const signalId = activeDigitIntelligenceSignalIdRef.current;
+    if (!signalId) return;
+    activeDigitIntelligenceSignalIdRef.current = null;
+    updateDigitIntelligenceSignal(signalId, { status: "cancelled", reason });
   }
 
   function updateSpreadComparison(value: SpreadComparison) {
@@ -815,6 +1044,11 @@ function TradeTerminal() {
       alert("Please stop the bot before switching markets.");
       return;
     }
+    cancelPendingDigitIntelligenceSignal("Market changed before the next outcome tick arrived.");
+    const marketSignals = loadDigitIntelligenceSignals(m);
+    digitIntelligenceSignalsRef.current = marketSignals;
+    setDigitIntelligenceSignals(marketSignals);
+    activeDigitIntelligenceSignalIdRef.current = null;
     setMarketSymbol(m);
     setMarketPipDecimals(MARKETS[m].pipDecimals);
     if (typeof window !== "undefined") {
@@ -838,6 +1072,9 @@ function TradeTerminal() {
     if (strategyMode === "x2x" && nextStrategy !== "x2x") {
       cancelPendingX2XSignal("X2X strategy disabled by user.");
     }
+    if (strategyMode === "digit_intelligence" && nextStrategy !== "digit_intelligence") {
+      cancelPendingDigitIntelligenceSignal("Digit Intelligence strategy disabled by user.");
+    }
     setStrategyMode(nextStrategy);
     saveX2XScannerState(createX2XScannerState());
     if (typeof window !== "undefined") {
@@ -852,6 +1089,8 @@ function TradeTerminal() {
         ? `X2X Sniper selected on ${currentMarket.displayName}. Live pattern scanning starts when the bot starts.`
         : nextStrategy === "entry_match"
           ? `Entry Match selected on ${currentMarket.displayName}. Each trade will use a fresh live tick digit as its Matches prediction.`
+          : nextStrategy === "digit_intelligence"
+            ? `Digit Intelligence selected on ${currentMarket.displayName}. The frequency, streak, and sequence analysis will use only this market's ticks.`
           : "Matches strategy selected.",
     );
   }
@@ -866,6 +1105,12 @@ function TradeTerminal() {
   const x2xSignalsRef = useRef<X2XSignalRecord[]>(x2xSignals);
   x2xSignalsRef.current = x2xSignals;
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(loadSavedSessions);
+  const [digitIntelligenceSignals, setDigitIntelligenceSignals] = useState<DigitIntelligenceSignalRecord[]>(
+    () => loadDigitIntelligenceSignals(marketSymbol),
+  );
+  const digitIntelligenceSignalsRef = useRef<DigitIntelligenceSignalRecord[]>(digitIntelligenceSignals);
+  digitIntelligenceSignalsRef.current = digitIntelligenceSignals;
+  const activeDigitIntelligenceSignalIdRef = useRef<string | null>(null);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [botState, setBotState] = useState<
     "IDLE" | "BUFFERING" | "ANALYZING" | "WAITING ENTRY" | "IN TRADE" | "LOSS RE-ANALYSIS" | "ZERO-REPEAT WAIT"
@@ -1029,6 +1274,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     spreadComparison,
+    digitIntelligenceConfig,
     entryMatchParity,
     entryMatchSpreadEnabled,
     entryMatchSpreadComparison,
@@ -1054,6 +1300,7 @@ function TradeTerminal() {
     activeId,
     maxDiff,
     spreadComparison,
+    digitIntelligenceConfig,
     entryMatchParity,
     entryMatchSpreadEnabled,
     entryMatchSpreadComparison,
@@ -1456,6 +1703,12 @@ function TradeTerminal() {
           setNote(
             `1,000 ticks loaded on ${marketInfo.displayName}. X2X scans the live chronological tick stream; the Matches spread target does not apply.`,
           );
+        } else if (stateRef.current.strategyMode === "digit_intelligence") {
+          const windowSize = stateRef.current.digitIntelligenceConfig.window;
+          const model = analyzeDigitIntelligence(dList.slice(-windowSize), stateRef.current.digitIntelligenceConfig);
+          setNote(
+            `${Math.min(dList.length, windowSize)} ${marketInfo.displayName} ticks loaded for Digit Intelligence (${windowSize}-tick window). ${model.reason}`,
+          );
         } else {
           const a = analyze(
             dList,
@@ -1695,6 +1948,7 @@ function TradeTerminal() {
       pnl,
       time: new Date().toLocaleTimeString(),
       signalId: p.signalId,
+      digitSignalId: p.digitSignalId,
       contractId,
       ...(p.entryMatchOrder
         ? {
@@ -1878,6 +2132,9 @@ function TradeTerminal() {
       x2xEvent = step.event;
       recordX2XScannerEvent(step.event, step.state);
     }
+
+    // A forecast is scored on the next quote, including while its live contract settles.
+    scorePendingDigitIntelligenceSignal(currentD, tickInfo.timestamp ?? new Date().toISOString());
 
     // Live contracts settle via Deriv proposal_open_contract — ignore local tick settlement
     if (pending.current?.live || tradingRef.current?.isBuyInFlight()) {
@@ -2129,6 +2386,93 @@ function TradeTerminal() {
       return;
     }
 
+    if (s.strategyMode === "digit_intelligence") {
+      if (lossCooldownTicks.current > 0) {
+        lossCooldownTicks.current -= 1;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(`Digit Intelligence loss protection: ${lossCooldownTicks.current} live ticks remaining.`);
+        return;
+      }
+
+      const config = s.digitIntelligenceConfig;
+      if (config.execution === "automated" && !tradingRef.current?.isReady()) {
+        setBotState("WAITING ENTRY");
+        setNote("Digit Intelligence found no trade yet; automated execution is waiting for the authorized Deriv connection.");
+        return;
+      }
+
+      // Include the current entry tick in the history; the target forecasts the
+      // next tick, which is also the one-tick Digit Match contract outcome.
+      const forecastHistory = tickList.slice(-config.window);
+      const forecast = analyzeDigitIntelligence(forecastHistory, config);
+      if (!forecast.signalReady || forecast.targetDigit === null || forecast.confidence === null || !forecast.activeSequence) {
+        setBotState(forecast.ready ? "ANALYZING" : "BUFFERING");
+        setNote(`Digit Intelligence on ${currentMarket.displayName}: ${forecast.reason}`);
+        return;
+      }
+
+      const signalId = `${s.marketSymbol}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const generatedAt = tickInfo.timestamp ?? new Date().toISOString();
+      const record: DigitIntelligenceSignalRecord = {
+        id: signalId,
+        marketSymbol: s.marketSymbol,
+        generatedAt,
+        targetDigit: forecast.targetDigit,
+        confidence: forecast.confidence,
+        historyWindow: config.window,
+        sequence: forecast.activeSequence.pattern,
+        sequenceSamples: forecast.activeSequence.samples,
+        execution: config.execution,
+        status: "pending",
+      };
+      addDigitIntelligenceSignal(record);
+      const signalDescription = `Target ${forecast.targetDigit} · evidence ${forecast.confidence}/100 · sequence ${forecast.activeSequence.pattern} (${forecast.activeSequence.samples} samples)`;
+
+      if (config.execution === "signal_only") {
+        setBotState("WAITING ENTRY");
+        setNote(`Digit Intelligence signal recorded on ${currentMarket.displayName}: ${signalDescription}. This evidence score is not a win probability; no contract was purchased.`);
+        return;
+      }
+
+      const session = tradingRef.current;
+      if (!session?.isReady()) {
+        setBotState("WAITING ENTRY");
+        setNote("Digit Intelligence signal recorded; waiting for the Deriv trading connection before placing the contract.");
+        return;
+      }
+      if (session.isBuyInFlight()) {
+        setBotState("IN TRADE");
+        setNote("A Digit Intelligence signal was recorded. Waiting for the current contract to settle before another trade.");
+        return;
+      }
+
+      const targetRun = s.runCount + 1;
+      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      if (nextStake > availableBalance) {
+        stopBot(
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+        );
+        return;
+      }
+
+      updateDigitIntelligenceSignal(signalId, { tradeRunIndex: targetRun });
+      const trade: PendingTrade = {
+        runIndex: targetRun,
+        entry: currentD,
+        target: forecast.targetDigit,
+        stake: nextStake,
+        live: true,
+        digitSignalId: signalId,
+      };
+      pending.current = trade;
+      pendingSetAt.current = Date.now();
+      setBotState("IN TRADE");
+      setNote(`Digit Intelligence trade #${targetRun} on ${currentMarket.displayName}: buying Matches ${forecast.targetDigit}. ${signalDescription}.`);
+      placeLiveMatch(trade);
+      return;
+    }
+
     if (lossCooldownTicks.current > 0) {
       lossCooldownTicks.current -= 1;
       setBotState("LOSS RE-ANALYSIS");
@@ -2234,22 +2578,27 @@ function TradeTerminal() {
           ? `Cannot start X2X Sniper: waiting for at least ${startTickRequirement} live market ticks.`
           : strategyMode === "entry_match"
             ? "Cannot start Entry Match until the market feed has delivered its first tick."
+            : strategyMode === "digit_intelligence"
+              ? `Cannot start Digit Intelligence until ${startTickRequirement} ticks are buffered for its selected analysis window.`
             : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
     }
-    if (!isConnectedToDeriv) {
+    const signalOnlyMode =
+      strategyMode === "digit_intelligence" && digitIntelligenceConfig.execution === "signal_only";
+    if (!isConnectedToDeriv && !signalOnlyMode) {
       setShowConnectModal(true);
       setNote("Connect Deriv Auth 2.0 so trades hit your account and the balance updates.");
       return;
     }
-    if (!activeAccount) {
+    if (!activeAccount && !signalOnlyMode) {
       setShowConnectModal(true);
       setNote("No Deriv account selected. Connect Deriv first.");
       return;
     }
     pending.current = null;
     cancelPendingX2XSignal("Bot restarted; the previous X2X signal was cancelled.");
+    cancelPendingDigitIntelligenceSignal("Bot restarted; the previous forecast was cancelled.");
     saveX2XScannerState(createX2XScannerState());
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
@@ -2264,27 +2613,33 @@ function TradeTerminal() {
         );
       }
     }
-    const tradingConnectionReady = tradingReady && Boolean(tradingRef.current?.isReady());
+    const tradingConnectionReady =
+      signalOnlyMode || (tradingReady && Boolean(tradingRef.current?.isReady()));
     setRunning(true);
     stateRef.current.running = true;
     setBotState("ANALYZING");
     setNote(
       tradingConnectionReady
         ? strategyMode === "x2x"
-          ? `X2X Sniper active on ${activeAccount.account_id}. Scanning ${currentMarket.displayName} tick digits for X2X signals...`
+          ? `X2X Sniper active on ${activeAccount?.account_id ?? "Deriv"}. Scanning ${currentMarket.displayName} tick digits for X2X signals...`
           : strategyMode === "entry_match"
             ? entryMatchSpreadEnabled
-              ? `Entry Match active on ${activeAccount.account_id}. Building the 1,000-tick spread window before trade #${runCount + 1}.`
-              : `Entry Match active on ${activeAccount.account_id}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
-            : `Bot active on ${activeAccount.account_id}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
-        : `Bot started on ${activeAccount.account_id}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
+              ? `Entry Match active on ${activeAccount?.account_id ?? "Deriv"}. Building the 1,000-tick spread window before trade #${runCount + 1}.`
+              : `Entry Match active on ${activeAccount?.account_id ?? "Deriv"}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
+            : strategyMode === "digit_intelligence"
+              ? signalOnlyMode
+                ? `Digit Intelligence signal-only scan active on ${currentMarket.displayName}; no Deriv orders will be placed.`
+                : `Digit Intelligence automated trading active on ${activeAccount?.account_id}. Scanning ${currentMarket.displayName} for qualified signals.`
+            : `Bot active on ${activeAccount?.account_id ?? "Deriv"}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
+        : `Bot started on ${activeAccount?.account_id ?? "Deriv"}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
-    notifyBotStarted(activeAccount.account_id, getDeviceLabel());
+    notifyBotStarted(activeAccount?.account_id ?? "Signal-only", getDeviceLabel());
   }
 
   function stopBot(message: string) {
     const wasRunning = running || stateRef.current.running;
     cancelPendingX2XSignal("Bot stopped by user; the pending X2X signal was cancelled.");
+    cancelPendingDigitIntelligenceSignal("Bot stopped by user before the forecast outcome tick arrived.");
     if (typeof window !== "undefined") {
       try {
         localStorage.removeItem("deriv_bot_is_running");
@@ -2312,8 +2667,13 @@ function TradeTerminal() {
     }
 
     cancelPendingX2XSignal("Session saved; the pending X2X signal was cancelled.");
+    cancelPendingDigitIntelligenceSignal("Session saved before the outcome tick arrived.");
     const signalHistory = x2xSignalsRef.current;
-    if (trades.length === 0 && signalHistory.length === 0) return;
+    if (
+      trades.length === 0 &&
+      signalHistory.length === 0 &&
+      (strategyMode !== "digit_intelligence" || digitIntelligenceSignalsRef.current.length === 0)
+    ) return;
 
     const wins = trades.filter((trade) => trade.pnl > 0).length;
     const losses = trades.filter((trade) => trade.pnl < 0).length;
@@ -2340,6 +2700,12 @@ function TradeTerminal() {
           }
         : {}),
       x2xSignals: signalHistory.map((signal) => ({ ...signal })),
+      ...(strategyMode === "digit_intelligence"
+        ? {
+            digitIntelligenceSignals: digitIntelligenceSignalsRef.current.map((signal) => ({ ...signal })),
+            digitIntelligenceConfig: { ...digitIntelligenceConfig },
+          }
+        : {}),
       ...(strategyMode === "x2x" ? { x2xOpWaitTicks } : {}),
     };
     const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
@@ -2351,6 +2717,8 @@ function TradeTerminal() {
     setSavedSessions(nextHistory);
     setTrades([]);
     replaceX2XSignalHistory([]);
+    activeDigitIntelligenceSignalIdRef.current = null;
+    replaceDigitIntelligenceSignals([]);
     saveX2XScannerState(createX2XScannerState());
     setRunCount(0);
     lossStreakRef.current = 0;
@@ -2361,6 +2729,9 @@ function TradeTerminal() {
 
   function resetSession() {
     stopBot("Session reset.");
+    cancelPendingDigitIntelligenceSignal("Session reset before the outcome tick arrived.");
+    activeDigitIntelligenceSignalIdRef.current = null;
+    replaceDigitIntelligenceSignals([]);
     setTrades([]);
     setRunCount(0);
     lossStreakRef.current = 0;
@@ -2526,8 +2897,27 @@ function TradeTerminal() {
       setShowBacktestModal(true);
       return;
     }
+    if (strategyMode === "digit_intelligence") {
+      if (digits.length < WINDOW) {
+        setNote(`Digit Intelligence walk-forward check needs ${WINDOW} ${currentMarket.displayName} ticks (${digits.length}/${WINDOW} loaded).`);
+        return;
+      }
+      const replay = backtestDigitIntelligence(digits.slice(-WINDOW), digitIntelligenceConfig);
+      setBacktest({
+        strategyMode: "digit_intelligence",
+        totalTicks: replay.totalTicks,
+        signals: replay.signals,
+        wins: replay.correct,
+        losses: replay.incorrect,
+        winRate: replay.accuracy,
+        netPnl: null,
+        digitIntelligence: replay,
+      });
+      setShowBacktestModal(true);
+      return;
+    }
     if (strategyMode !== "matches") {
-      setNote("The 1,000-tick replay is available for Matches and X2X Sniper strategies.");
+      setNote("The walk-forward replay is available for Matches, X2X Sniper, and Digit Intelligence.");
       return;
     }
     if (digits.length < WINDOW) {
@@ -2600,7 +2990,9 @@ function TradeTerminal() {
       setNote(
         strategyMode === "x2x"
           ? "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal."
-          : "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick.",
+          : strategyMode === "entry_match"
+            ? "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick."
+            : "TEST 1 is only available for Matches. Digit Intelligence trades only after a qualified live signal.",
       );
       return;
     }
@@ -2653,6 +3045,7 @@ function TradeTerminal() {
   }
 
   const analysis = analyze(digits, maxDiff, spreadComparison);
+  const digitIntelligenceAnalysis = analyzeDigitIntelligence(digits, digitIntelligenceConfig);
   const entryMatchSpreadAnalysis = analyze(
     digits,
     entryMatchSpreadThreshold,
@@ -2674,6 +3067,18 @@ function TradeTerminal() {
   const x2xSettledCount = x2xWins + x2xLosses;
   const x2xWinRate = x2xSettledCount ? Math.round((x2xWins / x2xSettledCount) * 100) : 0;
   const x2xExpiredCount = x2xSignals.filter((signal) => signal.status === "expired").length;
+  const settledDigitIntelligenceSignals = digitIntelligenceSignals.filter(
+    (signal) => signal.status === "correct" || signal.status === "incorrect",
+  );
+  const correctDigitIntelligenceSignals = settledDigitIntelligenceSignals.filter(
+    (signal) => signal.status === "correct",
+  ).length;
+  const digitIntelligenceAccuracy = settledDigitIntelligenceSignals.length > 0
+    ? Math.round((correctDigitIntelligenceSignals / settledDigitIntelligenceSignals.length) * 100)
+    : 0;
+  const latestPendingDigitIntelligenceSignal = digitIntelligenceSignals.find(
+    (signal) => signal.status === "pending",
+  );
   const x2xRejectedCount = x2xSignals.filter((signal) =>
     ["rejected", "cancelled", "failed"].includes(signal.status),
   ).length;
@@ -2964,7 +3369,7 @@ function TradeTerminal() {
               <button
                 onClick={triggerManualTestTrade}
                 disabled={
-                  strategyMode === "x2x" || digits.length < WINDOW || pending.current !== null
+                  strategyMode !== "matches" || digits.length < WINDOW || pending.current !== null
                 }
                 className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:opacity-40 ${
                   isDark
@@ -3083,7 +3488,13 @@ function TradeTerminal() {
 
           <div className="flex items-center gap-1 text-[10px]">
             <span className="opacity-75">
-              {strategyMode === "x2x" ? "OP:" : strategyMode === "entry_match" ? "ENTRY:" : "SPREAD:"}
+              {strategyMode === "x2x"
+                ? "OP:"
+                : strategyMode === "entry_match"
+                  ? "ENTRY:"
+                  : strategyMode === "digit_intelligence"
+                    ? "PREDICT:"
+                    : "SPREAD:"}
             </span>
             <span
               className={`font-semibold num ${
@@ -3099,6 +3510,10 @@ function TradeTerminal() {
                     ? isDark
                       ? "text-emerald-400 font-bold"
                       : "text-emerald-600 font-bold"
+                    : strategyMode === "digit_intelligence"
+                      ? digitIntelligenceAnalysis.signalReady
+                        ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
+                        : isDark ? "text-zinc-400" : "text-slate-600"
                     : analysis.ok
                     ? isDark
                       ? "text-emerald-400 font-bold"
@@ -3112,6 +3527,10 @@ function TradeTerminal() {
                 ? (x2xScannerState.signal?.opTrigger ?? "--")
                 : strategyMode === "entry_match"
                   ? (entryMatchDisplayedDigit ?? "--")
+                  : strategyMode === "digit_intelligence"
+                    ? digitIntelligenceAnalysis.targetDigit === null
+                      ? "--"
+                      : `${digitIntelligenceAnalysis.targetDigit} · ${digitIntelligenceAnalysis.confidence ?? 0}/100`
                   : `${analysis.diff.toFixed(2)}%`}
             </span>
           </div>
@@ -3277,11 +3696,11 @@ function TradeTerminal() {
               <div className="space-y-1.5">
                 <label className="text-xs text-zinc-500">Trading Strategy</label>
                 <div
-                  className={`grid grid-cols-3 gap-1 rounded border p-0.5 ${
+                  className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
                     isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                   }`}
                 >
-                  {(["matches", "x2x", "entry_match"] as const).map((mode) => {
+                  {(["matches", "x2x", "entry_match", "digit_intelligence"] as const).map((mode) => {
                     const selected = strategyMode === mode;
                     return (
                       <button
@@ -3297,7 +3716,13 @@ function TradeTerminal() {
                             : "text-zinc-500 hover:text-zinc-900"
                         }`}
                       >
-                        {mode === "matches" ? "Matches" : mode === "x2x" ? "X2X Sniper" : "Entry Match"}
+                        {mode === "matches"
+                          ? "Matches"
+                          : mode === "x2x"
+                            ? "X2X Sniper"
+                            : mode === "entry_match"
+                              ? "Entry Match"
+                              : "Digit Intelligence"}
                       </button>
                     );
                   })}
@@ -3312,7 +3737,9 @@ function TradeTerminal() {
                       ? "X2X · DIGITMATCH · 1 TICK"
                       : strategyMode === "entry_match"
                         ? "ENTRY MATCH · DIGITMATCH · 1 TICK"
-                        : "Matches · DIGITMATCH"}
+                        : strategyMode === "digit_intelligence"
+                          ? "DIGIT INTELLIGENCE · DIGITMATCH · 1 TICK"
+                          : "Matches · DIGITMATCH"}
                   </span>
                 </div>
                 <div
@@ -3358,6 +3785,8 @@ function TradeTerminal() {
                     ? `On ${currentMarket.displayName}: detect three consecutive last digits X-2-X, store the following tick digit as LDP, then wait for the pattern quote's last two displayed digits minus 20.`
                     : strategyMode === "entry_match"
                       ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction. Optional parity and spread filters can limit eligible entries.`
+                      : strategyMode === "digit_intelligence"
+                        ? `On ${currentMarket.displayName}: combine digit frequency, observed absence streaks, and sufficiently sampled sequence followers. Signals target the next digit and are scored against the next unseen tick.`
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
@@ -3605,6 +4034,121 @@ function TradeTerminal() {
                   </div>
                   </div>
                 </>
+              )}
+
+              {strategyMode === "digit_intelligence" && (
+                <div
+                  className={`rounded-lg border p-3 space-y-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-zinc-500">DIGIT INTELLIGENCE SETTINGS</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1 text-[10px] text-zinc-500">
+                      History window
+                      <select
+                        disabled={running}
+                        value={digitIntelligenceConfig.window}
+                        onChange={(e) => updateDigitIntelligenceConfig({ window: Number(e.target.value) as DigitIntelligenceWindow })}
+                        className={`w-full rounded border px-2 py-1.5 text-xs font-semibold ${
+                          isDark ? "border-zinc-800 bg-zinc-950 text-zinc-200" : "border-slate-300 bg-white text-slate-800"
+                        }`}
+                      >
+                        {DIGIT_INTELLIGENCE_WINDOWS.map((windowSize) => (
+                          <option key={windowSize} value={windowSize}>{windowSize} ticks</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-[10px] text-zinc-500">
+                      Target digit
+                      <select
+                        disabled={running}
+                        value={digitIntelligenceConfig.target}
+                        onChange={(e) => updateDigitIntelligenceConfig({ target: e.target.value === "auto" ? "auto" : Number(e.target.value) })}
+                        className={`w-full rounded border px-2 py-1.5 text-xs font-semibold ${
+                          isDark ? "border-zinc-800 bg-zinc-950 text-zinc-200" : "border-slate-300 bg-white text-slate-800"
+                        }`}
+                      >
+                        <option value="auto">Automatic</option>
+                        {Array.from({ length: 10 }, (_, digit) => (
+                          <option key={digit} value={digit}>Digit {digit}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                      <label htmlFor="digit-intelligence-confidence">Minimum evidence confidence</label>
+                      <span className="font-semibold num text-zinc-400">{digitIntelligenceConfig.minimumConfidence}/100</span>
+                    </div>
+                    <input
+                      id="digit-intelligence-confidence"
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      disabled={running}
+                      value={digitIntelligenceConfig.minimumConfidence}
+                      onChange={(e) => updateDigitIntelligenceConfig({ minimumConfidence: Number(e.target.value) })}
+                      className={`w-full h-2 rounded-lg cursor-pointer ${isDark ? "accent-white" : "accent-slate-900"}`}
+                    />
+                    <p className="text-[10px] leading-tight text-zinc-600">Evidence confidence measures model agreement and sample support. It is not the chance of winning.</p>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                    <label htmlFor="digit-intelligence-sequence-samples">Minimum sequence samples</label>
+                    <input
+                      id="digit-intelligence-sequence-samples"
+                      type="number"
+                      min={2}
+                      max={100}
+                      disabled={running}
+                      value={digitIntelligenceConfig.minimumSequenceSamples}
+                      onChange={(e) => {
+                        const value = Number(e.target.value);
+                        if (Number.isInteger(value) && value >= 2 && value <= 100) {
+                          updateDigitIntelligenceConfig({ minimumSequenceSamples: value });
+                        }
+                      }}
+                      className={`w-16 rounded border px-2 py-1 text-right text-xs num ${
+                        isDark ? "border-zinc-800 bg-zinc-950 text-zinc-200" : "border-slate-300 bg-white text-slate-800"
+                      }`}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="text-[10px] text-zinc-500">Trade execution</div>
+                    <div className={`grid grid-cols-2 gap-1 rounded border p-0.5 ${
+                      isDark ? "border-zinc-800 bg-zinc-950" : "border-slate-200 bg-white"
+                    }`}>
+                      {([
+                        ["signal_only", "Signal only"],
+                        ["automated", "Automated"],
+                      ] as const).map(([execution, label]) => (
+                        <button
+                          key={execution}
+                          type="button"
+                          disabled={running}
+                          aria-pressed={digitIntelligenceConfig.execution === execution}
+                          onClick={() => updateDigitIntelligenceConfig({ execution })}
+                          className={`rounded px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40 ${
+                            digitIntelligenceConfig.execution === execution
+                              ? isDark ? "bg-zinc-800 text-white" : "bg-slate-100 text-slate-900"
+                              : "text-zinc-500"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] leading-tight text-zinc-600">
+                      {digitIntelligenceConfig.execution === "signal_only"
+                        ? "Signal only records each forecast and scores it on the next unseen tick. It never places an order."
+                        : "Automated mode buys a one-tick Digit Match for qualified signals and uses the bot's stake, martingale, stop-loss, and take-profit settings."}
+                    </p>
+                  </div>
+                </div>
               )}
 
               {strategyMode === "x2x" && (
@@ -4581,6 +5125,178 @@ function TradeTerminal() {
               </div>
             </section>
 
+            {strategyMode === "digit_intelligence" && (
+              <section
+                className={`rounded-xl border p-4 sm:p-5 shadow-sm space-y-4 ${
+                  isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
+                }`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
+                      DIGIT INTELLIGENCE
+                    </div>
+                    <div className={`mt-1 text-xs font-semibold ${isDark ? "text-zinc-200" : "text-slate-800"}`}>
+                      {currentMarket.displayName} · {marketSymbol} · {digitIntelligenceConfig.window}-tick window
+                    </div>
+                    <p className="mt-1 text-[10px] text-zinc-500">
+                      Each signal is made from earlier ticks and checked against the next live tick. Confidence is an evidence score, not win probability.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={runBacktest1000Ticks}
+                    disabled={digits.length < WINDOW}
+                    className={`rounded border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider disabled:opacity-40 ${
+                      isDark ? "border-zinc-800 bg-black text-zinc-300" : "border-slate-300 bg-white text-slate-700"
+                    }`}
+                  >
+                    WALK-FORWARD CHECK
+                  </button>
+                </div>
+
+                <div className={`grid grid-cols-2 sm:grid-cols-4 gap-2 rounded-lg border p-3 ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}>
+                  <div>
+                    <div className="text-[9px] uppercase text-zinc-500">Selected target</div>
+                    <div className={`mt-1 text-xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {digitIntelligenceAnalysis.targetDigit ?? "--"}
+                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
+                        {digitIntelligenceConfig.target === "auto" ? "AUTO" : "MANUAL"}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase text-zinc-500">Evidence confidence</div>
+                    <div className={`mt-1 text-xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {digitIntelligenceAnalysis.confidence === null ? "--" : `${digitIntelligenceAnalysis.confidence}/100`}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase text-zinc-500">Current sequence</div>
+                    <div className={`mt-1 text-xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {digitIntelligenceAnalysis.activeSequence?.pattern ?? "--"}
+                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
+                        {digitIntelligenceAnalysis.activeSequence
+                          ? `${digitIntelligenceAnalysis.activeSequence.samples} samples`
+                          : `need ${digitIntelligenceConfig.minimumSequenceSamples}`}
+                      </span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] uppercase text-zinc-500">Signals scored</div>
+                    <div className={`mt-1 text-xl font-semibold num ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {settledDigitIntelligenceSignals.length > 0
+                        ? `${digitIntelligenceAccuracy}%`
+                        : "--"}
+                      <span className="ml-1 text-[10px] font-normal text-zinc-500">
+                        {correctDigitIntelligenceSignals}/{settledDigitIntelligenceSignals.length} · 10% baseline
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Digit frequencies & absence streaks</span>
+                    <span className="text-[10px] text-zinc-500">{digitIntelligenceAnalysis.sampleSize}/{digitIntelligenceConfig.window} ticks</span>
+                  </div>
+                  <div className="grid grid-cols-5 sm:grid-cols-10 gap-1.5">
+                    {digitIntelligenceAnalysis.frequencies.map((row) => (
+                      <div
+                        key={row.digit}
+                        className={`rounded border px-1.5 py-2 text-center num ${
+                          row.representation === "over"
+                            ? isDark ? "border-zinc-700 bg-zinc-900" : "border-slate-300 bg-slate-100"
+                            : row.representation === "under"
+                              ? isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-white"
+                              : isDark ? "border-zinc-800 bg-zinc-950" : "border-slate-200 bg-slate-50"
+                        }`}
+                        title={`${row.count} of ${digitIntelligenceAnalysis.sampleSize} ticks; ${row.representation} sample frequency; absent for ${digitIntelligenceAnalysis.absenceStreaks[row.digit]} ticks`}
+                      >
+                        <div className={`text-sm font-bold ${isDark ? "text-white" : "text-slate-900"}`}>{row.digit}</div>
+                        <div className="mt-0.5 text-[10px] text-zinc-500">{row.percentage.toFixed(1)}%</div>
+                        <div className="mt-1 text-[9px] text-zinc-600">gap {digitIntelligenceAnalysis.absenceStreaks[row.digit]}</div>
+                        <div className={`text-[8px] uppercase ${row.representation === "over" ? "text-emerald-500" : row.representation === "under" ? "text-zinc-500" : "text-zinc-600"}`}>
+                          {row.representation}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-1.5 text-[9px] leading-tight text-zinc-600">
+                    Over/under compares this window with an even 10% distribution; a long gap alone never creates a signal. Current ending run: {digitIntelligenceAnalysis.currentRunDigit === null ? "--" : `${digitIntelligenceAnalysis.currentRunDigit} × ${digitIntelligenceAnalysis.currentRunLength}`}.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-zinc-500">Recurring two-digit sequences</div>
+                    {digitIntelligenceAnalysis.recurringSequences.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {digitIntelligenceAnalysis.recurringSequences.slice(0, 6).map((sequence) => (
+                          <div key={sequence.pattern} className={`flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 text-[10px] num ${
+                            isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                          }`}>
+                            <span className={`font-bold ${isDark ? "text-zinc-200" : "text-slate-800"}`}>
+                              {sequence.pattern} → {sequence.nextDigit}
+                            </span>
+                            <span className="text-zinc-500">{sequence.nextCount}/{sequence.samples} · {sequence.nextPercentage.toFixed(0)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-zinc-500">No sequence has reached the {digitIntelligenceConfig.minimumSequenceSamples}-sample minimum yet.</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Recent signals</span>
+                      <span className="text-[9px] text-zinc-500">{digitIntelligenceConfig.execution === "signal_only" ? "SIGNAL ONLY" : "AUTOMATED"}</span>
+                    </div>
+                    {digitIntelligenceSignals.length > 0 ? (
+                      <div className="max-h-44 space-y-1 overflow-y-auto pr-1">
+                        {digitIntelligenceSignals.slice(0, 8).map((signal) => (
+                          <div key={signal.id} className={`flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 text-[10px] ${
+                            isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                          }`}>
+                            <span className="min-w-0 truncate text-zinc-500">
+                              {new Date(signal.generatedAt).toLocaleTimeString()} · target {signal.targetDigit} · {signal.confidence}/100 · {signal.sequence}
+                            </span>
+                            <span className={`shrink-0 font-bold uppercase ${
+                              signal.status === "correct" ? "text-emerald-500" : signal.status === "incorrect" ? "text-rose-500" : "text-zinc-500"
+                            }`}>
+                              {signal.status === "correct"
+                                ? `HIT ${signal.outcomeDigit}`
+                                : signal.status === "incorrect"
+                                  ? `MISS ${signal.outcomeDigit}`
+                                  : signal.status === "pending"
+                                    ? "WAIT"
+                                    : "CANCELLED"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-zinc-500">Qualified forecasts and their next-tick outcomes will appear here.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className={`rounded border px-3 py-2 text-[10px] ${
+                  isDark ? "border-zinc-900 bg-black text-zinc-400" : "border-slate-200 bg-slate-50 text-slate-600"
+                }`}>
+                  {digitIntelligenceAnalysis.signalReady
+                    ? `Current model candidate: digit ${digitIntelligenceAnalysis.targetDigit}, evidence ${digitIntelligenceAnalysis.confidence}/100. ${digitIntelligenceAnalysis.reason}`
+                    : digitIntelligenceAnalysis.reason}
+                  {latestPendingDigitIntelligenceSignal
+                    ? ` Latest signal ${latestPendingDigitIntelligenceSignal.targetDigit} is waiting for its outcome tick.`
+                    : ""}
+                </div>
+              </section>
+            )}
+
             {/* Bottom Row: TRADE LOG / SESSION HISTORY */}
             <section
               className={`rounded-xl border shadow-sm ${
@@ -4622,7 +5338,7 @@ function TradeTerminal() {
                   <button
                     type="button"
                     onClick={saveCurrentSession}
-                    disabled={running || (trades.length === 0 && x2xSignals.length === 0)}
+                    disabled={running || (trades.length === 0 && x2xSignals.length === 0 && (strategyMode !== "digit_intelligence" || digitIntelligenceSignals.length === 0))}
                     title={
                       running
                         ? "Stop the bot before saving and clearing this session"
@@ -4814,6 +5530,8 @@ function TradeTerminal() {
                                 ? "X2X Sniper / "
                                 : saved.strategyMode === "entry_match"
                                   ? "Entry Match / "
+                                  : saved.strategyMode === "digit_intelligence"
+                                    ? "Digit Intelligence / "
                                   : ""}
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
@@ -4837,7 +5555,7 @@ function TradeTerminal() {
                                 : "border-slate-300 bg-white text-slate-700 hover:bg-slate-100")
                             }
                           >
-                            {expandedHistoryId === saved.id ? "HIDE TRADES" : "VIEW TRADES"}
+                            {expandedHistoryId === saved.id ? "HIDE DETAILS" : "VIEW DETAILS"}
                           </button>
                         </div>
 
@@ -4914,12 +5632,17 @@ function TradeTerminal() {
                             ? `X2X OP wait ${saved.x2xOpWaitTicks === null ? "No expiry" : `${saved.x2xOpWaitTicks ?? X2X_OP_WINDOW_TICKS} ticks`}`
                             : saved.strategyMode === "entry_match"
                               ? `Fresh tick digit prediction · ${saved.entryMatchParity === "odd" ? "Odd only" : saved.entryMatchParity === "even" ? "Even only" : "Any digit"} · Spread gate ${saved.entryMatchSpreadEnabled ? `${saved.entryMatchSpreadComparison === "at_most" ? "equal/under" : "exact"} ${saved.entryMatchSpreadThreshold ?? saved.spreadThreshold}%` : "OFF"}`
+                              : saved.strategyMode === "digit_intelligence"
+                                ? `${saved.digitIntelligenceConfig?.window ?? 100}-tick window · ${saved.digitIntelligenceConfig?.target === "auto" || saved.digitIntelligenceConfig?.target === undefined ? "automatic target" : `target digit ${saved.digitIntelligenceConfig.target}`} · confidence ≥ ${saved.digitIntelligenceConfig?.minimumConfidence ?? 65}/100 · sequence samples ≥ ${saved.digitIntelligenceConfig?.minimumSequenceSamples ?? 3} · ${saved.digitIntelligenceConfig?.execution === "automated" ? "automated" : "signal only"}`
                               : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled ? "ON" : "OFF"}
                           {saved.x2xSignals?.length
                             ? ` · X2X signals ${saved.x2xSignals.length}`
+                            : ""}
+                          {saved.digitIntelligenceSignals?.length
+                            ? ` · forecasts ${saved.digitIntelligenceSignals.length}`
                             : ""}
                         </div>
 
@@ -5072,6 +5795,35 @@ function TradeTerminal() {
                             ))}
                           </div>
                         )}
+                        {expandedHistoryId === saved.id && Boolean(saved.digitIntelligenceSignals?.length) && (
+                          <div className="mt-4 space-y-2">
+                            <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                              Digit Intelligence Forecasts
+                            </h4>
+                            {saved.digitIntelligenceSignals?.map((signal) => (
+                              <div
+                                key={signal.id}
+                                className={`grid grid-cols-[1fr_auto] gap-x-2 rounded border p-2 text-[10px] ${
+                                  isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-white"
+                                }`}
+                              >
+                                <span className="min-w-0 break-words font-mono">
+                                  {new Date(signal.generatedAt).toLocaleString()} · target {signal.targetDigit} · evidence {signal.confidence}/100 · sequence {signal.sequence} ({signal.sequenceSamples})
+                                </span>
+                                <span className={`min-w-0 break-words text-right font-bold uppercase ${
+                                  signal.status === "correct" ? "text-emerald-500" : signal.status === "incorrect" ? "text-rose-500" : "text-zinc-500"
+                                }`}>
+                                  {signal.status === "correct"
+                                    ? `HIT ${signal.outcomeDigit}`
+                                    : signal.status === "incorrect"
+                                      ? `MISS ${signal.outcomeDigit}`
+                                      : signal.status}
+                                </span>
+                                {signal.reason && <span className="col-span-2 text-zinc-500">{signal.reason}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </article>
                     ))}
                   </div>
@@ -5192,7 +5944,13 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Pattern Ticks" : strategyMode === "entry_match" ? "Entry Ticks" : "1,000 Ticks"}
+                    {strategyMode === "x2x"
+                      ? "Pattern Ticks"
+                      : strategyMode === "entry_match"
+                        ? "Entry Ticks"
+                        : strategyMode === "digit_intelligence"
+                          ? `${digitIntelligenceConfig.window} Ticks`
+                          : "1,000 Ticks"}
                   </div>
                   <div
                     className={`font-semibold ${strategyMode !== "matches" || digits.length >= WINDOW ? "text-zinc-400" : "text-amber-500"}`}
@@ -5201,9 +5959,13 @@ function TradeTerminal() {
                       ? `${x2xScannerState.recentDigits.length}/3 live`
                       : strategyMode === "entry_match"
                         ? (currentDigit === undefined ? "WAITING FOR TICK" : "LIVE")
-                        : digits.length >= WINDOW
-                          ? "VERIFIED"
-                          : `${digits.length}/${WINDOW}`}
+                        : strategyMode === "digit_intelligence"
+                          ? digits.length >= digitIntelligenceConfig.window
+                            ? "READY"
+                            : `${digits.length}/${digitIntelligenceConfig.window}`
+                          : digits.length >= WINDOW
+                            ? "VERIFIED"
+                            : `${digits.length}/${WINDOW}`}
                   </div>
                 </div>
                 <div>
@@ -5215,7 +5977,13 @@ function TradeTerminal() {
                 <div>
                   <div className="text-[10px] text-zinc-500">Mode</div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
-                    {strategyMode === "x2x" ? "X2X Sniper" : strategyMode === "entry_match" ? "Entry Match" : "Matches"}
+                    {strategyMode === "x2x"
+                      ? "X2X Sniper"
+                      : strategyMode === "entry_match"
+                        ? "Entry Match"
+                        : strategyMode === "digit_intelligence"
+                          ? "Digit Intelligence"
+                          : "Matches"}
                   </div>
                 </div>
                 <div>
@@ -5226,19 +5994,33 @@ function TradeTerminal() {
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Live Digits" : strategyMode === "entry_match" ? "ENTRY_DIGIT" : "Entry Digit"}
+                    {strategyMode === "x2x"
+                      ? "Live Digits"
+                      : strategyMode === "entry_match"
+                        ? "ENTRY_DIGIT"
+                        : strategyMode === "digit_intelligence"
+                          ? "Selected Market"
+                          : "Entry Digit"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? x2xScannerState.recentDigits.join(" / ") || "--"
                       : strategyMode === "entry_match"
                         ? (entryMatchDisplayedDigit ?? "--")
-                        : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
+                        : strategyMode === "digit_intelligence"
+                          ? currentMarket.shortName
+                          : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "Stored LDP" : strategyMode === "entry_match" ? "Matches Prediction" : "Match Target"}
+                    {strategyMode === "x2x"
+                      ? "Stored LDP"
+                      : strategyMode === "entry_match"
+                        ? "Matches Prediction"
+                        : strategyMode === "digit_intelligence"
+                          ? "Target · Evidence"
+                          : "Match Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
@@ -5247,19 +6029,31 @@ function TradeTerminal() {
                           : pending.current?.target) ?? "--")
                       : strategyMode === "entry_match"
                         ? (entryMatchDisplayedDigit ?? "--")
-                        : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
+                        : strategyMode === "digit_intelligence"
+                          ? `${digitIntelligenceAnalysis.targetDigit ?? "--"} · ${digitIntelligenceAnalysis.confidence ?? "--"}/100`
+                          : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
                   </div>
                 </div>
                 <div>
                   <div className="text-[10px] text-zinc-500">
-                    {strategyMode === "x2x" ? "OP Trigger" : strategyMode === "entry_match" ? "Prediction Rule" : "Spread Target"}
+                    {strategyMode === "x2x"
+                      ? "OP Trigger"
+                      : strategyMode === "entry_match"
+                        ? "Prediction Rule"
+                        : strategyMode === "digit_intelligence"
+                          ? "Active Sequence"
+                          : "Spread Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
                     {strategyMode === "x2x"
                       ? (x2xScannerState.signal?.opTrigger ?? "--")
                       : strategyMode === "entry_match"
                         ? "Captured tick digit"
-                        : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
+                        : strategyMode === "digit_intelligence"
+                          ? digitIntelligenceAnalysis.activeSequence
+                            ? `${digitIntelligenceAnalysis.activeSequence.pattern} · ${digitIntelligenceAnalysis.activeSequence.samples} samples`
+                            : `Need ${digitIntelligenceConfig.minimumSequenceSamples} samples`
+                          : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
                   </div>
                 </div>
                 <div>
@@ -5728,7 +6522,9 @@ function TradeTerminal() {
               >
                 {backtest.strategyMode === "x2x"
                   ? "X2X SNIPER / 1,000 TICK REPLAY"
-                  : "MATCHES / 1,000 TICK BACKTEST"}
+                  : backtest.strategyMode === "digit_intelligence"
+                    ? "DIGIT INTELLIGENCE / WALK-FORWARD CHECK"
+                    : "MATCHES / 1,000 TICK BACKTEST"}
               </span>
               <button
                 onClick={() => setShowBacktestModal(false)}
@@ -5741,7 +6537,9 @@ function TradeTerminal() {
             <p className="text-xs text-zinc-400 leading-relaxed">
               {backtest.strategyMode === "x2x"
                 ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent ${currentMarket.displayName} quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
-                : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ${spreadComparison === "exact" ? "must equal" : "must be equal to or below"} ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the spread condition is not met, no entries are counted.`}
+                : backtest.strategyMode === "digit_intelligence"
+                  ? `Walk-forward check on ${backtest.totalTicks} recent ${currentMarket.displayName} digits. Each signal uses only earlier ticks and is scored on the next unseen tick. Results are compared with both a uniform 10% guess and the most-frequent historical digit on the same signal ticks. This small sample is not a profit estimate or a guarantee of future accuracy.`
+                  : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ${spreadComparison === "exact" ? "must equal" : "must be equal to or below"} ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the spread condition is not met, no entries are counted.`}
             </p>
 
             {backtest.x2x ? (
@@ -5767,6 +6565,29 @@ function TradeTerminal() {
                     <div
                       className={`text-2xl font-light ${isDark ? "text-white" : "text-slate-900"}`}
                     >
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : backtest.digitIntelligence ? (
+              <div
+                className={`grid grid-cols-2 sm:grid-cols-3 gap-4 rounded border p-4 num ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                {[
+                  ["Signals", backtest.digitIntelligence.signals],
+                  ["Correct / missed", `${backtest.digitIntelligence.correct} / ${backtest.digitIntelligence.incorrect}`],
+                  ["Signal accuracy", `${backtest.digitIntelligence.accuracy.toFixed(1)}%`],
+                  ["Uniform baseline", `${backtest.digitIntelligence.baselineAccuracy.toFixed(1)}%`],
+                  ["Frequency-only baseline", `${backtest.digitIntelligence.frequencyBaselineAccuracy.toFixed(1)}%`],
+                  ["Signal coverage", `${backtest.digitIntelligence.coverage.toFixed(1)}%`],
+                  ["Avg evidence score", `${backtest.digitIntelligence.averageConfidence.toFixed(1)}/100`],
+                ].map(([label, value]) => (
+                  <div key={String(label)}>
+                    <span className="text-[10px] uppercase text-zinc-500">{label}</span>
+                    <div className={`text-xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
                       {value}
                     </div>
                   </div>
