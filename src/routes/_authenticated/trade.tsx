@@ -1,6 +1,13 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { CSSProperties, useEffect, useRef, useState, useCallback } from "react";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   session,
   getDerivClientId,
   derivRedirectUri,
@@ -816,6 +823,21 @@ function TradeTerminal() {
   };
 
   const isDark = theme === "dark";
+  const dropdownTriggerClass = `h-8 rounded border px-2 py-1.5 text-xs font-semibold outline-none shadow-none transition-colors focus:ring-1 ${
+    isDark
+      ? "border-zinc-800 bg-black text-zinc-200 focus:ring-zinc-500"
+      : "border-slate-300 bg-white text-slate-900 focus:ring-slate-400"
+  }`;
+  const dropdownContentClass = `z-[60] rounded-md border p-1 shadow-xl ${
+    isDark
+      ? "border-zinc-800 bg-zinc-950 text-zinc-200"
+      : "border-slate-200 bg-white text-slate-800"
+  }`;
+  const dropdownItemClass = `cursor-pointer rounded px-2 py-1.5 text-xs outline-none ${
+    isDark
+      ? "text-zinc-300 focus:bg-zinc-800 focus:text-white data-[highlighted]:bg-zinc-800 data-[highlighted]:text-white"
+      : "text-slate-700 focus:bg-slate-100 focus:text-slate-900 data-[highlighted]:bg-slate-100 data-[highlighted]:text-slate-900"
+  }`;
 
   // Accounts state
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
@@ -3290,27 +3312,27 @@ function TradeTerminal() {
             </div>
 
             {/* Account Switcher Dropdown */}
-            <select
+            <Select
               value={activeId || ""}
-              onChange={(e) => switchAccount(e.target.value)}
-              className={`max-w-[220px] truncate rounded border px-2 py-1.5 text-xs font-medium outline-none transition-colors ${
-                isDark
-                  ? "border-zinc-800 bg-zinc-900 text-zinc-200 hover:border-zinc-700"
-                  : "border-slate-300 bg-white text-slate-800 hover:border-slate-400"
-              }`}
+              onValueChange={switchAccount}
             >
+              <SelectTrigger aria-label="Switch account" className={`${dropdownTriggerClass} w-[220px] max-w-[220px]`}>
+                <SelectValue placeholder="Select account" />
+              </SelectTrigger>
+              <SelectContent position="popper" className={`${dropdownContentClass} min-w-[220px]`}>
               {accounts.map((acc) => (
-                <option
+                <SelectItem
                   key={acc.account_id}
                   value={acc.account_id}
-                  className={isDark ? "bg-zinc-900 text-white" : "bg-white text-slate-900"}
+                  className={dropdownItemClass}
                 >
                   {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"})
                   — $
                   {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
-                </option>
+                </SelectItem>
               ))}
-            </select>
+              </SelectContent>
+            </Select>
 
             {/* Notification Toggle */}
             <button
@@ -3877,22 +3899,24 @@ function TradeTerminal() {
                       <label htmlFor="entry-match-wait-ticks" className="text-xs text-zinc-500">
                         Wait between entries
                       </label>
-                      <select
-                        id="entry-match-wait-ticks"
-                        value={entryMatchWaitTicks}
-                        onChange={(event) => updateEntryMatchWaitTicks(Number(event.target.value))}
-                        className={`rounded border px-2 py-1 text-xs font-semibold outline-none focus:ring-2 ${
-                          isDark
-                            ? "border-zinc-700 bg-zinc-950 text-white focus:ring-zinc-500"
-                            : "border-slate-300 bg-white text-slate-900 focus:ring-slate-400"
-                        }`}
+                      <Select
+                        value={String(entryMatchWaitTicks)}
+                        onValueChange={(value) => updateEntryMatchWaitTicks(Number(value))}
                       >
-                        {Array.from({ length: 10 }, (_, index) => index + 1).map((ticks) => (
-                          <option key={ticks} value={ticks}>
-                            {ticks} {ticks === 1 ? "tick" : "ticks"}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger
+                          id="entry-match-wait-ticks"
+                          className={`${dropdownTriggerClass} w-[110px]`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper" className={`${dropdownContentClass} min-w-[110px]`}>
+                          {Array.from({ length: 10 }, (_, index) => index + 1).map((ticks) => (
+                            <SelectItem key={ticks} value={String(ticks)} className={dropdownItemClass}>
+                              {ticks} {ticks === 1 ? "tick" : "ticks"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                     <p className="text-[10px] leading-tight text-zinc-500">
                       Wait {entryMatchWaitTicks} {entryMatchWaitTicks === 1 ? "live tick" : "live ticks"} from start and after each settled trade. The tick that completes the wait supplies ENTRY_DIGIT and that trade’s Matches prediction; other enabled Entry Match filters still apply.
@@ -4139,34 +4163,42 @@ function TradeTerminal() {
                   <div className="grid grid-cols-2 gap-2">
                     <label className="space-y-1 text-[10px] text-zinc-500">
                       History window
-                      <select
+                      <Select
                         disabled={running}
-                        value={digitIntelligenceConfig.window}
-                        onChange={(e) => updateDigitIntelligenceConfig({ window: Number(e.target.value) as DigitIntelligenceWindow })}
-                        className={`w-full rounded border px-2 py-1.5 text-xs font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-950 text-zinc-200" : "border-slate-300 bg-white text-slate-800"
-                        }`}
+                        value={String(digitIntelligenceConfig.window)}
+                        onValueChange={(value) => updateDigitIntelligenceConfig({ window: Number(value) as DigitIntelligenceWindow })}
                       >
+                        <SelectTrigger className={`${dropdownTriggerClass} w-full`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper" className={`${dropdownContentClass} min-w-[var(--radix-select-trigger-width)]`}>
                         {DIGIT_INTELLIGENCE_WINDOWS.map((windowSize) => (
-                          <option key={windowSize} value={windowSize}>{windowSize} ticks</option>
+                          <SelectItem key={windowSize} value={String(windowSize)} className={dropdownItemClass}>
+                            {windowSize} ticks
+                          </SelectItem>
                         ))}
-                      </select>
+                        </SelectContent>
+                      </Select>
                     </label>
                     <label className="space-y-1 text-[10px] text-zinc-500">
                       Target digit
-                      <select
+                      <Select
                         disabled={running}
-                        value={digitIntelligenceConfig.target}
-                        onChange={(e) => updateDigitIntelligenceConfig({ target: e.target.value === "auto" ? "auto" : Number(e.target.value) })}
-                        className={`w-full rounded border px-2 py-1.5 text-xs font-semibold ${
-                          isDark ? "border-zinc-800 bg-zinc-950 text-zinc-200" : "border-slate-300 bg-white text-slate-800"
-                        }`}
+                        value={String(digitIntelligenceConfig.target)}
+                        onValueChange={(value) => updateDigitIntelligenceConfig({ target: value === "auto" ? "auto" : Number(value) })}
                       >
-                        <option value="auto">Automatic</option>
+                        <SelectTrigger className={`${dropdownTriggerClass} w-full`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper" className={`${dropdownContentClass} min-w-[var(--radix-select-trigger-width)]`}>
+                        <SelectItem value="auto" className={dropdownItemClass}>Automatic</SelectItem>
                         {Array.from({ length: 10 }, (_, digit) => (
-                          <option key={digit} value={digit}>Digit {digit}</option>
+                          <SelectItem key={digit} value={String(digit)} className={dropdownItemClass}>
+                            Digit {digit}
+                          </SelectItem>
                         ))}
-                      </select>
+                        </SelectContent>
+                      </Select>
                     </label>
                   </div>
 
@@ -6460,23 +6492,23 @@ function TradeTerminal() {
             {/* Switch Account */}
             <div className="space-y-1.5">
               <label className="text-xs text-zinc-500">Switch Account</label>
-              <select
+              <Select
                 value={activeId || ""}
-                onChange={(e) => switchAccount(e.target.value)}
-                className={`w-full rounded border p-2.5 text-xs font-semibold outline-none ${
-                  isDark
-                    ? "border-zinc-800 bg-zinc-900 text-white"
-                    : "border-slate-300 bg-white text-slate-900"
-                }`}
+                onValueChange={switchAccount}
               >
+                <SelectTrigger aria-label="Switch account" className={`${dropdownTriggerClass} w-full`}>
+                  <SelectValue placeholder="Select account" />
+                </SelectTrigger>
+                <SelectContent position="popper" className={`${dropdownContentClass} min-w-[var(--radix-select-trigger-width)]`}>
                 {accounts.map((acc) => (
-                  <option key={acc.account_id} value={acc.account_id}>
+                  <SelectItem key={acc.account_id} value={acc.account_id} className={dropdownItemClass}>
                     {acc.account_id} ({acc.account_type === "real" ? "Real" : "Demo"})
                     — $
                     {Number(acc.balance).toLocaleString("en-US", { minimumFractionDigits: 2 })}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Quick Actions Grid */}
