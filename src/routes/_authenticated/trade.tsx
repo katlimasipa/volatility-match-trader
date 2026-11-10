@@ -109,6 +109,13 @@ import {
   type DigitIntelligenceWindow,
   type DigitTargetSelection,
 } from "@/lib/digit-intelligence-strategy";
+import {
+  backtestStepMatch,
+  getStepMatchTarget,
+  type StepMatchBacktestResult,
+  type StepMatchConfig,
+  type StepMatchDirection,
+} from "@/lib/step-match-strategy";
 
 export const Route = createFileRoute("/_authenticated/trade")({
   head: () => ({
@@ -226,6 +233,7 @@ interface SavedSession {
   entryMatchSpreadThreshold?: number;
   digitIntelligenceSignals?: DigitIntelligenceSignalRecord[];
   digitIntelligenceConfig?: DigitIntelligenceConfig;
+  stepMatchConfig?: StepMatchConfig;
   x2xSignals?: X2XSignalRecord[];
   x2xOpWaitTicks?: number | null;
 }
@@ -244,6 +252,7 @@ const ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY = "thdpst_entry_match_spread_com
 const ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY = "thdpst_entry_match_spread_threshold_v1";
 const DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY = "thdpst_digit_intelligence_config_v1";
 const DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX = "thdpst_digit_intelligence_signals_v1_";
+const STEP_MATCH_CONFIG_STORAGE_KEY = "thdpst_step_match_config_v1";
 const MAX_DIGIT_INTELLIGENCE_SIGNALS = 200;
 const MAX_ZERO_REPEAT_TICKS = 50;
 const MAX_LIVE_SEQUENCE_TICKS = 50;
@@ -274,14 +283,14 @@ function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
   };
 }
 
-type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence";
+type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence" | "step_match";
 type EntryMatchParity = "any" | "odd" | "even";
 
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
   try {
     const saved = localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
-    return saved === "x2x" || saved === "entry_match" || saved === "digit_intelligence"
+    return saved === "x2x" || saved === "entry_match" || saved === "digit_intelligence" || saved === "step_match"
       ? saved
       : "matches";
   } catch {
@@ -296,6 +305,30 @@ const DEFAULT_DIGIT_INTELLIGENCE_CONFIG: DigitIntelligenceConfig = {
   target: "auto",
   execution: "signal_only",
 };
+
+const DEFAULT_STEP_MATCH_CONFIG: StepMatchConfig = {
+  zeroToFour: "above",
+  fiveToNine: "below",
+};
+
+function isStepMatchConfig(value: unknown): value is StepMatchConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const config = value as Partial<StepMatchConfig>;
+  return (
+    (config.zeroToFour === "above" || config.zeroToFour === "below") &&
+    (config.fiveToNine === "above" || config.fiveToNine === "below")
+  );
+}
+
+function loadStepMatchConfig(): StepMatchConfig {
+  if (typeof window === "undefined") return DEFAULT_STEP_MATCH_CONFIG;
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(STEP_MATCH_CONFIG_STORAGE_KEY) || "null");
+    return isStepMatchConfig(value) ? value : DEFAULT_STEP_MATCH_CONFIG;
+  } catch {
+    return DEFAULT_STEP_MATCH_CONFIG;
+  }
+}
 
 function loadDigitIntelligenceConfig(): DigitIntelligenceConfig {
   if (typeof window === "undefined") return DEFAULT_DIGIT_INTELLIGENCE_CONFIG;
@@ -548,7 +581,8 @@ function isSavedSession(value: unknown): value is SavedSession {
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x" ||
       saved.strategyMode === "entry_match" ||
-      saved.strategyMode === "digit_intelligence") &&
+      saved.strategyMode === "digit_intelligence" ||
+      saved.strategyMode === "step_match") &&
     (saved.spreadComparison === undefined ||
       saved.spreadComparison === "exact" ||
       saved.spreadComparison === "at_most") &&
@@ -570,6 +604,7 @@ function isSavedSession(value: unknown): value is SavedSession {
         saved.digitIntelligenceSignals.every(isDigitIntelligenceSignalRecord))) &&
     (saved.digitIntelligenceConfig === undefined ||
       isDigitIntelligenceConfig(saved.digitIntelligenceConfig)) &&
+    (saved.stepMatchConfig === undefined || isStepMatchConfig(saved.stepMatchConfig)) &&
     (saved.x2xOpWaitTicks === undefined ||
       saved.x2xOpWaitTicks === null ||
       (Number.isInteger(saved.x2xOpWaitTicks) &&
@@ -767,6 +802,7 @@ interface BacktestSummary {
   netPnl: number | null;
   x2x?: X2XBacktestResult;
   digitIntelligence?: DigitIntelligenceBacktest;
+  stepMatch?: StepMatchBacktestResult;
 }
 
 function TradeTerminal() {
@@ -823,6 +859,7 @@ function TradeTerminal() {
   const [digitIntelligenceConfig, setDigitIntelligenceConfig] = useState<DigitIntelligenceConfig>(
     loadDigitIntelligenceConfig,
   );
+  const [stepMatchConfig, setStepMatchConfig] = useState<StepMatchConfig>(loadStepMatchConfig);
   const startTickRequirement = strategyMode === "matches"
     ? WINDOW
     : strategyMode === "x2x"
@@ -914,6 +951,16 @@ function TradeTerminal() {
       localStorage.setItem(DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY, JSON.stringify(next));
     } catch {
       // The selected options remain active in this page if storage is unavailable.
+    }
+  }
+
+  function updateStepMatchDirection(range: "zeroToFour" | "fiveToNine", direction: StepMatchDirection) {
+    const next = { ...stepMatchConfig, [range]: direction };
+    setStepMatchConfig(next);
+    try {
+      localStorage.setItem(STEP_MATCH_CONFIG_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // The selected directions remain active in this page if storage is unavailable.
     }
   }
 
@@ -1091,6 +1138,8 @@ function TradeTerminal() {
           ? `Entry Match selected on ${currentMarket.displayName}. Each trade will use a fresh live tick digit as its Matches prediction.`
           : nextStrategy === "digit_intelligence"
             ? `Digit Intelligence selected on ${currentMarket.displayName}. The frequency, streak, and sequence analysis will use only this market's ticks.`
+            : nextStrategy === "step_match"
+              ? `StepMatch selected on ${currentMarket.displayName}. Each live tick digit maps to the configured adjacent target.`
           : "Matches strategy selected.",
     );
   }
@@ -1275,6 +1324,7 @@ function TradeTerminal() {
     maxDiff,
     spreadComparison,
     digitIntelligenceConfig,
+    stepMatchConfig,
     entryMatchParity,
     entryMatchSpreadEnabled,
     entryMatchSpreadComparison,
@@ -1301,6 +1351,7 @@ function TradeTerminal() {
     maxDiff,
     spreadComparison,
     digitIntelligenceConfig,
+    stepMatchConfig,
     entryMatchParity,
     entryMatchSpreadEnabled,
     entryMatchSpreadComparison,
@@ -1708,6 +1759,10 @@ function TradeTerminal() {
           const model = analyzeDigitIntelligence(dList.slice(-windowSize), stateRef.current.digitIntelligenceConfig);
           setNote(
             `${Math.min(dList.length, windowSize)} ${marketInfo.displayName} ticks loaded for Digit Intelligence (${windowSize}-tick window). ${model.reason}`,
+          );
+        } else if (stateRef.current.strategyMode === "step_match") {
+          setNote(
+            `Live ticks loaded for StepMatch on ${marketInfo.displayName}. It needs only the next incoming tick and uses your saved 0–4 / 5–9 direction rules.`,
           );
         } else {
           const a = analyze(
@@ -2386,6 +2441,58 @@ function TradeTerminal() {
       return;
     }
 
+    if (s.strategyMode === "step_match") {
+      if (lossCooldownTicks.current > 0) {
+        lossCooldownTicks.current -= 1;
+        setBotState("LOSS RE-ANALYSIS");
+        setNote(`StepMatch loss protection: ${lossCooldownTicks.current} live ticks remaining before another entry.`);
+        return;
+      }
+
+      const targetDigit = getStepMatchTarget(currentD, s.stepMatchConfig);
+      if (targetDigit === null) return;
+
+      const session = tradingRef.current;
+      if (!session?.isReady()) {
+        setBotState("WAITING ENTRY");
+        setNote("StepMatch is waiting for the authorized Deriv trading connection.");
+        return;
+      }
+      if (session.isBuyInFlight()) {
+        setBotState("IN TRADE");
+        setNote("Waiting for the current contract to settle before StepMatch uses another tick.");
+        return;
+      }
+
+      const targetRun = s.runCount + 1;
+      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      if (nextStake > availableBalance) {
+        stopBot(
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+        );
+        return;
+      }
+
+      const direction = currentD <= 4 ? s.stepMatchConfig.zeroToFour : s.stepMatchConfig.fiveToNine;
+      const rangeLabel = currentD <= 4 ? "0–4" : "5–9";
+      const trade: PendingTrade = {
+        runIndex: targetRun,
+        entry: currentD,
+        target: targetDigit,
+        stake: nextStake,
+        live: true,
+      };
+      pending.current = trade;
+      pendingSetAt.current = Date.now();
+      setBotState("IN TRADE");
+      setNote(
+        `StepMatch trade #${targetRun}: source digit ${currentD} appeared in ${rangeLabel}; ${direction} target is ${targetDigit}. Buying one-tick DIGITMATCH.`,
+      );
+      placeLiveMatch(trade);
+      return;
+    }
+
     if (s.strategyMode === "digit_intelligence") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
@@ -2580,6 +2687,8 @@ function TradeTerminal() {
             ? "Cannot start Entry Match until the market feed has delivered its first tick."
             : strategyMode === "digit_intelligence"
               ? `Cannot start Digit Intelligence until ${startTickRequirement} ticks are buffered for its selected analysis window.`
+              : strategyMode === "step_match"
+                ? "Cannot start StepMatch until the first live market tick has arrived."
             : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
@@ -2630,6 +2739,8 @@ function TradeTerminal() {
               ? signalOnlyMode
                 ? `Digit Intelligence signal-only scan active on ${currentMarket.displayName}; no Deriv orders will be placed.`
                 : `Digit Intelligence automated trading active on ${activeAccount?.account_id}. Scanning ${currentMarket.displayName} for qualified signals.`
+              : strategyMode === "step_match"
+                ? `StepMatch active on ${activeAccount?.account_id}. Every eligible live tick digit maps to its configured adjacent Matches target on ${currentMarket.displayName}.`
             : `Bot active on ${activeAccount?.account_id ?? "Deriv"}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount?.account_id ?? "Deriv"}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
@@ -2706,6 +2817,7 @@ function TradeTerminal() {
             digitIntelligenceConfig: { ...digitIntelligenceConfig },
           }
         : {}),
+      ...(strategyMode === "step_match" ? { stepMatchConfig: { ...stepMatchConfig } } : {}),
       ...(strategyMode === "x2x" ? { x2xOpWaitTicks } : {}),
     };
     const nextHistory = [snapshot, ...savedSessions].slice(0, MAX_SAVED_SESSIONS);
@@ -2857,6 +2969,8 @@ function TradeTerminal() {
           ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning ${currentMarket.displayName} tick digits...`
           : strategyMode === "entry_match"
             ? `Entry Match resumed on ${activeAccount?.account_id || "Deriv"}. Waiting for a fresh ${currentMarket.displayName} tick for each trade...`
+            : strategyMode === "step_match"
+              ? `StepMatch resumed on ${activeAccount?.account_id || "Deriv"}. Waiting for source digits on ${currentMarket.displayName}...`
             : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
       );
     }
@@ -2897,6 +3011,25 @@ function TradeTerminal() {
       setShowBacktestModal(true);
       return;
     }
+    if (strategyMode === "step_match") {
+      if (digits.length < WINDOW) {
+        setNote(`StepMatch replay needs ${WINDOW} ${currentMarket.displayName} ticks (${digits.length}/${WINDOW} loaded).`);
+        return;
+      }
+      const replay = backtestStepMatch(digits.slice(-WINDOW), stepMatchConfig);
+      setBacktest({
+        strategyMode: "step_match",
+        totalTicks: replay.totalTicks,
+        signals: replay.signals,
+        wins: replay.correct,
+        losses: replay.incorrect,
+        winRate: replay.accuracy,
+        netPnl: null,
+        stepMatch: replay,
+      });
+      setShowBacktestModal(true);
+      return;
+    }
     if (strategyMode === "digit_intelligence") {
       if (digits.length < WINDOW) {
         setNote(`Digit Intelligence walk-forward check needs ${WINDOW} ${currentMarket.displayName} ticks (${digits.length}/${WINDOW} loaded).`);
@@ -2917,7 +3050,7 @@ function TradeTerminal() {
       return;
     }
     if (strategyMode !== "matches") {
-      setNote("The walk-forward replay is available for Matches, X2X Sniper, and Digit Intelligence.");
+      setNote("The replay is available for Matches, X2X Sniper, Digit Intelligence, and StepMatch.");
       return;
     }
     if (digits.length < WINDOW) {
@@ -2992,7 +3125,9 @@ function TradeTerminal() {
           ? "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal."
           : strategyMode === "entry_match"
             ? "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick."
-            : "TEST 1 is only available for Matches. Digit Intelligence trades only after a qualified live signal.",
+            : strategyMode === "digit_intelligence"
+              ? "TEST 1 is only available for Matches. Digit Intelligence trades only after a qualified live signal."
+              : "TEST 1 is only available for Matches. StepMatch waits for a live source digit and its configured adjacent target.",
       );
       return;
     }
@@ -3052,6 +3187,9 @@ function TradeTerminal() {
     entryMatchSpreadComparison,
   );
   const currentDigit = digits[digits.length - 1];
+  const stepMatchTarget = currentDigit === undefined
+    ? null
+    : getStepMatchTarget(currentDigit, stepMatchConfig);
   const entryMatchDisplayedDigit = pending.current?.entryMatchOrder?.entryDigit ?? currentDigit;
   const totalPnl = trades.reduce((acc, t) => acc + t.pnl, 0);
   const wins = trades.filter((t) => t.pnl > 0).length;
@@ -3494,6 +3632,8 @@ function TradeTerminal() {
                   ? "ENTRY:"
                   : strategyMode === "digit_intelligence"
                     ? "PREDICT:"
+                  : strategyMode === "step_match"
+                    ? "STEP:"
                     : "SPREAD:"}
             </span>
             <span
@@ -3514,6 +3654,10 @@ function TradeTerminal() {
                       ? digitIntelligenceAnalysis.signalReady
                         ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
                         : isDark ? "text-zinc-400" : "text-slate-600"
+                      : strategyMode === "step_match"
+                        ? currentDigit === undefined
+                          ? isDark ? "text-zinc-400" : "text-slate-600"
+                          : isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
                     : analysis.ok
                     ? isDark
                       ? "text-emerald-400 font-bold"
@@ -3531,6 +3675,10 @@ function TradeTerminal() {
                     ? digitIntelligenceAnalysis.targetDigit === null
                       ? "--"
                       : `${digitIntelligenceAnalysis.targetDigit} · ${digitIntelligenceAnalysis.confidence ?? 0}/100`
+                  : strategyMode === "step_match"
+                    ? currentDigit === undefined || stepMatchTarget === null
+                      ? "--"
+                      : `${currentDigit} → ${stepMatchTarget}`
                   : `${analysis.diff.toFixed(2)}%`}
             </span>
           </div>
@@ -3700,7 +3848,7 @@ function TradeTerminal() {
                     isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                   }`}
                 >
-                  {(["matches", "x2x", "entry_match", "digit_intelligence"] as const).map((mode) => {
+                  {(["matches", "x2x", "entry_match", "digit_intelligence", "step_match"] as const).map((mode) => {
                     const selected = strategyMode === mode;
                     return (
                       <button
@@ -3722,7 +3870,9 @@ function TradeTerminal() {
                             ? "X2X Sniper"
                             : mode === "entry_match"
                               ? "Entry Match"
-                              : "Digit Intelligence"}
+                              : mode === "digit_intelligence"
+                                ? "Digit Intelligence"
+                                : "StepMatch"}
                       </button>
                     );
                   })}
@@ -3739,6 +3889,8 @@ function TradeTerminal() {
                         ? "ENTRY MATCH · DIGITMATCH · 1 TICK"
                         : strategyMode === "digit_intelligence"
                           ? "DIGIT INTELLIGENCE · DIGITMATCH · 1 TICK"
+                          : strategyMode === "step_match"
+                            ? "STEPMATCH · DIGITMATCH · 1 TICK"
                           : "Matches · DIGITMATCH"}
                   </span>
                 </div>
@@ -3787,9 +3939,59 @@ function TradeTerminal() {
                       ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction. Optional parity and spread filters can limit eligible entries.`
                       : strategyMode === "digit_intelligence"
                         ? `On ${currentMarket.displayName}: combine digit frequency, observed absence streaks, and sufficiently sampled sequence followers. Signals target the next digit and are scored against the next unseen tick.`
+                        : strategyMode === "step_match"
+                          ? `On ${currentMarket.displayName}: use the live tick digit as the source, then target the adjacent digit selected for its 0–4 or 5–9 range. The target is checked on the next tick; 0 and 9 wrap around.`
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
+
+              {strategyMode === "step_match" && (
+                <div
+                  className={`rounded-lg border p-3 space-y-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="text-xs font-semibold text-zinc-500">STEPMATCH TARGET RULES</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {([
+                      ["zeroToFour", "Digits 0–4"],
+                      ["fiveToNine", "Digits 5–9"],
+                    ] as const).map(([range, label]) => (
+                      <div
+                        key={range}
+                        className={`rounded border p-2 ${
+                          isDark ? "border-zinc-800 bg-zinc-950" : "border-slate-200 bg-white"
+                        }`}
+                      >
+                        <div className="mb-1.5 text-[10px] font-semibold text-zinc-500">{label}</div>
+                        <div className="grid grid-cols-2 gap-1">
+                          {(["above", "below"] as const).map((direction) => (
+                            <button
+                              key={direction}
+                              type="button"
+                              disabled={running}
+                              aria-pressed={stepMatchConfig[range] === direction}
+                              onClick={() => updateStepMatchDirection(range, direction)}
+                              className={`rounded px-2 py-1.5 text-[10px] font-semibold capitalize transition-colors disabled:opacity-40 ${
+                                stepMatchConfig[range] === direction
+                                  ? isDark
+                                    ? "bg-zinc-800 text-white"
+                                    : "bg-slate-100 text-slate-900"
+                                  : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200"
+                              }`}
+                            >
+                              {direction}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] leading-relaxed text-zinc-500">
+                    A source digit triggers a one-tick DIGITMATCH for its adjacent target. With these settings: 1 → {getStepMatchTarget(1, stepMatchConfig)}, 6 → {getStepMatchTarget(6, stepMatchConfig)}, 9 → {getStepMatchTarget(9, stepMatchConfig)}, 0 → {getStepMatchTarget(0, stepMatchConfig)}. Above 9 wraps to 0; below 0 wraps to 9.
+                  </p>
+                </div>
+              )}
 
               {strategyMode === "entry_match" && (
                 <>
@@ -5532,6 +5734,8 @@ function TradeTerminal() {
                                   ? "Entry Match / "
                                   : saved.strategyMode === "digit_intelligence"
                                     ? "Digit Intelligence / "
+                                    : saved.strategyMode === "step_match"
+                                      ? "StepMatch / "
                                   : ""}
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
@@ -5634,6 +5838,8 @@ function TradeTerminal() {
                               ? `Fresh tick digit prediction · ${saved.entryMatchParity === "odd" ? "Odd only" : saved.entryMatchParity === "even" ? "Even only" : "Any digit"} · Spread gate ${saved.entryMatchSpreadEnabled ? `${saved.entryMatchSpreadComparison === "at_most" ? "equal/under" : "exact"} ${saved.entryMatchSpreadThreshold ?? saved.spreadThreshold}%` : "OFF"}`
                               : saved.strategyMode === "digit_intelligence"
                                 ? `${saved.digitIntelligenceConfig?.window ?? 100}-tick window · ${saved.digitIntelligenceConfig?.target === "auto" || saved.digitIntelligenceConfig?.target === undefined ? "automatic target" : `target digit ${saved.digitIntelligenceConfig.target}`} · confidence ≥ ${saved.digitIntelligenceConfig?.minimumConfidence ?? 65}/100 · sequence samples ≥ ${saved.digitIntelligenceConfig?.minimumSequenceSamples ?? 3} · ${saved.digitIntelligenceConfig?.execution === "automated" ? "automated" : "signal only"}`
+                                : saved.strategyMode === "step_match"
+                                  ? `Digits 0–4 ${saved.stepMatchConfig?.zeroToFour ?? "above"} · digits 5–9 ${saved.stepMatchConfig?.fiveToNine ?? "below"}`
                               : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
@@ -5950,6 +6156,8 @@ function TradeTerminal() {
                         ? "Entry Ticks"
                         : strategyMode === "digit_intelligence"
                           ? `${digitIntelligenceConfig.window} Ticks`
+                          : strategyMode === "step_match"
+                            ? "Live Tick"
                           : "1,000 Ticks"}
                   </div>
                   <div
@@ -5963,9 +6171,11 @@ function TradeTerminal() {
                           ? digits.length >= digitIntelligenceConfig.window
                             ? "READY"
                             : `${digits.length}/${digitIntelligenceConfig.window}`
-                          : digits.length >= WINDOW
-                            ? "VERIFIED"
-                            : `${digits.length}/${WINDOW}`}
+                          : strategyMode === "step_match"
+                            ? currentDigit === undefined ? "WAITING FOR TICK" : "LIVE"
+                            : digits.length >= WINDOW
+                              ? "VERIFIED"
+                              : `${digits.length}/${WINDOW}`}
                   </div>
                 </div>
                 <div>
@@ -5983,6 +6193,8 @@ function TradeTerminal() {
                         ? "Entry Match"
                         : strategyMode === "digit_intelligence"
                           ? "Digit Intelligence"
+                          : strategyMode === "step_match"
+                            ? "StepMatch"
                           : "Matches"}
                   </div>
                 </div>
@@ -6000,6 +6212,8 @@ function TradeTerminal() {
                         ? "ENTRY_DIGIT"
                         : strategyMode === "digit_intelligence"
                           ? "Selected Market"
+                          : strategyMode === "step_match"
+                            ? "Source Digit"
                           : "Entry Digit"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6009,6 +6223,8 @@ function TradeTerminal() {
                         ? (entryMatchDisplayedDigit ?? "--")
                         : strategyMode === "digit_intelligence"
                           ? currentMarket.shortName
+                          : strategyMode === "step_match"
+                            ? currentDigit ?? "--"
                           : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
                   </div>
                 </div>
@@ -6020,6 +6236,8 @@ function TradeTerminal() {
                         ? "Matches Prediction"
                         : strategyMode === "digit_intelligence"
                           ? "Target · Evidence"
+                          : strategyMode === "step_match"
+                            ? "Matches Target"
                           : "Match Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6031,6 +6249,8 @@ function TradeTerminal() {
                         ? (entryMatchDisplayedDigit ?? "--")
                         : strategyMode === "digit_intelligence"
                           ? `${digitIntelligenceAnalysis.targetDigit ?? "--"} · ${digitIntelligenceAnalysis.confidence ?? "--"}/100`
+                          : strategyMode === "step_match"
+                            ? stepMatchTarget ?? "--"
                           : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
                   </div>
                 </div>
@@ -6042,6 +6262,8 @@ function TradeTerminal() {
                         ? "Prediction Rule"
                         : strategyMode === "digit_intelligence"
                           ? "Active Sequence"
+                          : strategyMode === "step_match"
+                            ? "Step Rule"
                           : "Spread Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6053,6 +6275,10 @@ function TradeTerminal() {
                           ? digitIntelligenceAnalysis.activeSequence
                             ? `${digitIntelligenceAnalysis.activeSequence.pattern} · ${digitIntelligenceAnalysis.activeSequence.samples} samples`
                             : `Need ${digitIntelligenceConfig.minimumSequenceSamples} samples`
+                          : strategyMode === "step_match"
+                            ? currentDigit === undefined
+                              ? "Waiting for tick"
+                              : `${currentDigit <= 4 ? "0–4" : "5–9"} ${currentDigit <= 4 ? stepMatchConfig.zeroToFour : stepMatchConfig.fiveToNine}`
                           : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
                   </div>
                 </div>
@@ -6524,6 +6750,8 @@ function TradeTerminal() {
                   ? "X2X SNIPER / 1,000 TICK REPLAY"
                   : backtest.strategyMode === "digit_intelligence"
                     ? "DIGIT INTELLIGENCE / WALK-FORWARD CHECK"
+                    : backtest.strategyMode === "step_match"
+                      ? "STEPMATCH / NEXT-TICK REPLAY"
                     : "MATCHES / 1,000 TICK BACKTEST"}
               </span>
               <button
@@ -6539,6 +6767,8 @@ function TradeTerminal() {
                 ? `Replayed the same X2X scanner over ${backtest.totalTicks} recent ${currentMarket.displayName} quotes. Each trigger simulates a one-tick Digit Match using its stored LDP. This tick-only replay has no historical payout quotes, so it does not estimate profitability.`
                 : backtest.strategyMode === "digit_intelligence"
                   ? `Walk-forward check on ${backtest.totalTicks} recent ${currentMarket.displayName} digits. Each signal uses only earlier ticks and is scored on the next unseen tick. Results are compared with both a uniform 10% guess and the most-frequent historical digit on the same signal ticks. This small sample is not a profit estimate or a guarantee of future accuracy.`
+                  : backtest.strategyMode === "step_match"
+                    ? `Walk-forward replay on ${backtest.totalTicks} recent ${currentMarket.displayName} ticks. Each source digit uses its selected 0–4 or 5–9 rule, and the immediately following digit is checked as the outcome. This reports historical matches against a 10% random baseline, not a profit estimate or a guarantee.`
                   : `Calculated across the latest ${backtest.totalTicks} real market ticks of ${currentMarket.displayName} using the Deriv Matches strategy (spread ${spreadComparison === "exact" ? "must equal" : "must be equal to or below"} ${maxDiff}%, enter on most appearing digit, target second most appearing digit). If the spread condition is not met, no entries are counted.`}
             </p>
 
@@ -6584,6 +6814,28 @@ function TradeTerminal() {
                   ["Frequency-only baseline", `${backtest.digitIntelligence.frequencyBaselineAccuracy.toFixed(1)}%`],
                   ["Signal coverage", `${backtest.digitIntelligence.coverage.toFixed(1)}%`],
                   ["Avg evidence score", `${backtest.digitIntelligence.averageConfidence.toFixed(1)}/100`],
+                ].map(([label, value]) => (
+                  <div key={String(label)}>
+                    <span className="text-[10px] uppercase text-zinc-500">{label}</span>
+                    <div className={`text-xl font-light ${isDark ? "text-white" : "text-slate-900"}`}>
+                      {value}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : backtest.stepMatch ? (
+              <div
+                className={`grid grid-cols-2 sm:grid-cols-3 gap-4 rounded border p-4 num ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                {[
+                  ["Tick transitions", backtest.stepMatch.signals],
+                  ["Correct / missed", `${backtest.stepMatch.correct} / ${backtest.stepMatch.incorrect}`],
+                  ["Target accuracy", `${backtest.stepMatch.accuracy.toFixed(1)}%`],
+                  ["Uniform baseline", `${backtest.stepMatch.baselineAccuracy.toFixed(1)}%`],
+                  ["Digits 0–4", stepMatchConfig.zeroToFour === "above" ? "Above" : "Below"],
+                  ["Digits 5–9", stepMatchConfig.fiveToNine === "above" ? "Above" : "Below"],
                 ].map(([label, value]) => (
                   <div key={String(label)}>
                     <span className="text-[10px] uppercase text-zinc-500">{label}</span>
