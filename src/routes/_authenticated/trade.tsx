@@ -233,6 +233,7 @@ interface SavedSession {
   martingaleEnabled: boolean;
   strategyMode?: StrategyMode | "step_match";
   spreadComparison?: SpreadComparison;
+  martingaleStartAfterLosses?: number;
   entryMatchParity?: EntryMatchParity;
   entryMatchSpreadEnabled?: boolean;
   entryMatchSpreadComparison?: SpreadComparison;
@@ -257,6 +258,7 @@ const ENTRY_MATCH_SPREAD_ENABLED_STORAGE_KEY = "thdpst_entry_match_spread_enable
 const ENTRY_MATCH_SPREAD_COMPARISON_STORAGE_KEY = "thdpst_entry_match_spread_comparison_v1";
 const ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY = "thdpst_entry_match_spread_threshold_v1";
 const ENTRY_MATCH_WAIT_TICKS_STORAGE_KEY = "thdpst_entry_match_wait_ticks_v1";
+const MARTINGALE_START_AFTER_STORAGE_KEY = "thdpst_martingale_start_after_losses_v1";
 const DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY = "thdpst_digit_intelligence_config_v1";
 const DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX = "thdpst_digit_intelligence_signals_v1_";
 const MAX_DIGIT_INTELLIGENCE_SIGNALS = 200;
@@ -483,6 +485,16 @@ function loadEntryMatchWaitTicks(): number {
   }
 }
 
+function loadMartingaleStartAfterLosses(): number {
+  if (typeof window === "undefined") return 1;
+  try {
+    const saved = Number(localStorage.getItem(MARTINGALE_START_AFTER_STORAGE_KEY));
+    return Number.isInteger(saved) && saved >= 1 && saved <= 10 ? saved : 1;
+  } catch {
+    return 1;
+  }
+}
+
 function loadZeroRepeatSetting(): { enabled: boolean; ticks: number } {
   const fallback = { enabled: false, ticks: 5 };
   if (typeof window === "undefined") return fallback;
@@ -570,6 +582,10 @@ function isSavedSession(value: unknown): value is SavedSession {
     typeof saved.baseStake === "number" &&
     Number.isFinite(saved.baseStake) &&
     typeof saved.martingaleEnabled === "boolean" &&
+    (saved.martingaleStartAfterLosses === undefined ||
+      (Number.isInteger(saved.martingaleStartAfterLosses) &&
+        saved.martingaleStartAfterLosses >= 1 &&
+        saved.martingaleStartAfterLosses <= 10)) &&
     (saved.strategyMode === undefined ||
       saved.strategyMode === "matches" ||
       saved.strategyMode === "x2x" ||
@@ -921,6 +937,9 @@ function TradeTerminal() {
   const [x2xScanExpanded, setX2xScanExpanded] = useState(false);
   const [reAnalyzeOnLoss, setReAnalyzeOnLoss] = useState(true);
   const [martingaleEnabled, setMartingaleEnabled] = useState(false);
+  const [martingaleStartAfterLosses, setMartingaleStartAfterLosses] = useState<number>(
+    loadMartingaleStartAfterLosses,
+  );
   const [stopOnWin, setStopOnWin] = useState(false); // stop the bot after its first win
   const [zeroRepeatEnabled, setZeroRepeatEnabled] = useState<boolean>(() => loadZeroRepeatSetting().enabled);
   const [zeroRepeatTicks, setZeroRepeatTicks] = useState<number>(() => loadZeroRepeatSetting().ticks);
@@ -1063,6 +1082,16 @@ function TradeTerminal() {
       localStorage.setItem(ENTRY_MATCH_WAIT_TICKS_STORAGE_KEY, String(normalized));
     } catch {
       // Keep the selected interval active for this page if storage is unavailable.
+    }
+  }
+
+  function updateMartingaleStartAfterLosses(value: number) {
+    const normalized = Number.isInteger(value) ? Math.max(1, Math.min(10, value)) : 1;
+    setMartingaleStartAfterLosses(normalized);
+    try {
+      localStorage.setItem(MARTINGALE_START_AFTER_STORAGE_KEY, String(normalized));
+    } catch {
+      // Keep the selected threshold active for this page if storage is unavailable.
     }
   }
 
@@ -1337,6 +1366,7 @@ function TradeTerminal() {
     botState,
     reAnalyzeOnLoss,
     martingaleEnabled,
+    martingaleStartAfterLosses,
     activeId,
     maxDiff,
     spreadComparison,
@@ -1364,6 +1394,7 @@ function TradeTerminal() {
     botState,
     reAnalyzeOnLoss,
     martingaleEnabled,
+    martingaleStartAfterLosses,
     activeId,
     maxDiff,
     spreadComparison,
@@ -2301,6 +2332,7 @@ function TradeTerminal() {
           s.stake,
           lossStreakRef.current,
           s.martingaleEnabled,
+          s.martingaleStartAfterLosses,
         );
         const availableBalance = activeAccount
           ? Number(activeAccount.balance)
@@ -2449,7 +2481,12 @@ function TradeTerminal() {
         s.marketSymbol,
       );
       const targetRun = s.runCount + 1;
-      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const nextStake = calculateMartingaleStake(
+        s.stake,
+        lossStreakRef.current,
+        s.martingaleEnabled,
+        s.martingaleStartAfterLosses,
+      );
       const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
       if (nextStake > availableBalance) {
         stopBot(
@@ -2535,7 +2572,12 @@ function TradeTerminal() {
       }
 
       const targetRun = s.runCount + 1;
-      const nextStake = calculateMartingaleStake(s.stake, lossStreakRef.current, s.martingaleEnabled);
+      const nextStake = calculateMartingaleStake(
+        s.stake,
+        lossStreakRef.current,
+        s.martingaleEnabled,
+        s.martingaleStartAfterLosses,
+      );
       const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
       if (nextStake > availableBalance) {
         stopBot(
@@ -2607,6 +2649,7 @@ function TradeTerminal() {
         s.stake,
         lossStreakRef.current,
         s.martingaleEnabled,
+        s.martingaleStartAfterLosses,
       );
       const availableBalance = activeAccount
         ? Number(activeAccount.balance)
@@ -2779,6 +2822,7 @@ function TradeTerminal() {
       spreadThreshold: strategyMode === "entry_match" ? entryMatchSpreadThreshold : maxDiff,
       baseStake: stake,
       martingaleEnabled,
+      martingaleStartAfterLosses,
       strategyMode,
       spreadComparison: strategyMode === "entry_match" ? entryMatchSpreadComparison : spreadComparison,
       ...(strategyMode === "entry_match"
@@ -3098,7 +3142,12 @@ function TradeTerminal() {
     }
     const a = analyze(digits, maxDiff, spreadComparison);
     const targetRun = runCount + 1;
-    const testStake = calculateMartingaleStake(stake, lossStreakRef.current, martingaleEnabled);
+    const testStake = calculateMartingaleStake(
+      stake,
+      lossStreakRef.current,
+      martingaleEnabled,
+      martingaleStartAfterLosses,
+    );
     const availableBalance = activeAccount
       ? Number(activeAccount.balance)
       : Number.POSITIVE_INFINITY;
@@ -4624,10 +4673,34 @@ function TradeTerminal() {
                 </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {martingaleEnabled
-                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true).toFixed(2)}. It grows by ${MARTINGALE_MULTIPLIER}× after each loss and resets to the base stake after a win; this raises risk and cannot guarantee recovery.`
-                    : "Re-analyzes after a loss. Turn on 1.5× martingale to increase the next stake after each loss; a win resets it to your base stake."}
+                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true, martingaleStartAfterLosses).toFixed(2)}. After ${martingaleStartAfterLosses} consecutive ${martingaleStartAfterLosses === 1 ? "loss" : "losses"}, the next stake increases by ${MARTINGALE_MULTIPLIER}×, then grows per additional loss and resets after a win. This raises risk and cannot guarantee recovery.`
+                    : "Re-analyzes after a loss. Turn on 1.5× martingale to raise the stake after your chosen consecutive-loss threshold; a win resets it to the base stake."}
                   {stopOnWin ? ' "Stop after first win" stops the bot after a win.' : ""}
                 </p>
+                <div className={`flex items-center justify-between gap-3 border-t pt-2 ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+                  <label htmlFor="martingale-start-after" className="text-xs text-zinc-500">
+                    Start after consecutive losses
+                  </label>
+                  <Select
+                    value={String(martingaleStartAfterLosses)}
+                    onValueChange={(value) => updateMartingaleStartAfterLosses(Number(value))}
+                  >
+                    <SelectTrigger
+                      id="martingale-start-after"
+                      disabled={running}
+                      className={`${dropdownTriggerClass} w-[110px]`}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper" className={`${dropdownContentClass} min-w-[110px]`}>
+                      {Array.from({ length: 10 }, (_, index) => index + 1).map((losses) => (
+                        <SelectItem key={losses} value={String(losses)} className={dropdownItemClass}>
+                          {losses} {losses === 1 ? "loss" : "losses"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               {/* Stake */}
@@ -5766,7 +5839,9 @@ function TradeTerminal() {
                               : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
-                          {saved.martingaleEnabled ? "ON" : "OFF"}
+                          {saved.martingaleEnabled
+                            ? `ON · starts after ${saved.martingaleStartAfterLosses ?? 1} ${saved.martingaleStartAfterLosses === 1 || saved.martingaleStartAfterLosses === undefined ? "loss" : "losses"}`
+                            : "OFF"}
                           {saved.x2xSignals?.length
                             ? ` · X2X signals ${saved.x2xSignals.length}`
                             : ""}
