@@ -4673,13 +4673,13 @@ function TradeTerminal() {
                 </label>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {martingaleEnabled
-                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true, martingaleStartAfterLosses).toFixed(2)}. After ${martingaleStartAfterLosses} consecutive ${martingaleStartAfterLosses === 1 ? "loss" : "losses"}, the next stake increases by ${MARTINGALE_MULTIPLIER}×, then grows per additional loss and resets after a win. This raises risk and cannot guarantee recovery.`
-                    : "Re-analyzes after a loss. Turn on 1.5× martingale to raise the stake after your chosen consecutive-loss threshold; a win resets it to the base stake."}
+                    ? `Next stake: $${calculateMartingaleStake(stake, lossStreakRef.current, true, martingaleStartAfterLosses).toFixed(2)}. It increases by ${MARTINGALE_MULTIPLIER}× after every ${martingaleStartAfterLosses} consecutive ${martingaleStartAfterLosses === 1 ? "loss" : "losses"} (at ${martingaleStartAfterLosses}, ${martingaleStartAfterLosses * 2}, ${martingaleStartAfterLosses * 3}, and so on), and resets after a win. This raises risk and cannot guarantee recovery.`
+                    : `Re-analyzes after a loss. If enabled, the stake rises after each full block of ${martingaleStartAfterLosses} consecutive losses; a win resets it to the base stake.`}
                   {stopOnWin ? ' "Stop after first win" stops the bot after a win.' : ""}
                 </p>
                 <div className={`flex items-center justify-between gap-3 border-t pt-2 ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
                   <label htmlFor="martingale-start-after" className="text-xs text-zinc-500">
-                    Start after consecutive losses
+                    Losses per stake increase
                   </label>
                   <Select
                     value={String(martingaleStartAfterLosses)}

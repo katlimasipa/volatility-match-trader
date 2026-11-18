@@ -315,7 +315,7 @@ export function predictNextDigit(digits: number[]): DigitPrediction | null {
     edgeDetected,
   };
 }
-/** Base stake is multiplied by 1.5 for each settled loss after the configured loss threshold. */
+/** Multiply the base stake by 1.5 for every full block of configured consecutive losses. */
 export function calculateMartingaleStake(
   baseStake: number,
   consecutiveLosses: number,
@@ -329,7 +329,7 @@ export function calculateMartingaleStake(
   const losses = Number.isFinite(consecutiveLosses)
     ? Math.max(0, Math.floor(consecutiveLosses))
     : 0;
-  const steps = enabled ? Math.max(0, losses - threshold + 1) : 0;
+  const steps = enabled ? Math.floor(losses / threshold) : 0;
   const amount = baseStake * Math.pow(MARTINGALE_MULTIPLIER, steps);
   return Number.isFinite(amount) ? Math.round((amount + Number.EPSILON) * 100) / 100 : 0;
 }

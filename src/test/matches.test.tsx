@@ -168,10 +168,20 @@ describe("Volatility 100 Matches strategy", () => {
     }
   });
 
-  it("applies 1.5× martingale progression only when enabled", () => {
+  it("raises the stake after each full block of consecutive losses", () => {
     expect(calculateMartingaleStake(1, 0, true)).toBe(1);
-    expect(calculateMartingaleStake(1, 1, true)).toBe(1.5);
-    expect(calculateMartingaleStake(1, 2, true)).toBe(2.25);
+    expect(calculateMartingaleStake(1, 4, true, 5)).toBe(1);
+    expect(calculateMartingaleStake(1, 5, true, 5)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 9, true, 5)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 10, true, 5)).toBe(2.25);
+    expect(calculateMartingaleStake(1, 15, true, 5)).toBe(3.38);
+    expect(calculateMartingaleStake(1, 2, true, 3)).toBe(1);
+    expect(calculateMartingaleStake(1, 3, true, 3)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 6, true, 3)).toBe(2.25);
+    expect(calculateMartingaleStake(1, 9, true, 3)).toBe(3.38);
+    expect(calculateMartingaleStake(1, 9, true, 10)).toBe(1);
+    expect(calculateMartingaleStake(1, 10, true, 10)).toBe(1.5);
+    expect(calculateMartingaleStake(1, 20, true, 10)).toBe(2.25);
     expect(calculateMartingaleStake(1, 3, false)).toBe(1);
     expect(calculateMartingaleStake(0.35, 1, true)).toBe(0.53);
   });
