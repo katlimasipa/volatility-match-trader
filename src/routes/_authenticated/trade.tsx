@@ -4413,9 +4413,11 @@ function TradeTerminal() {
                       <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
                         Most appearing digits · {currentMarket.shortName}
                       </span>
-                      <span className="text-[9px] text-zinc-500">LATEST {WINDOW}</span>
+                      <span className="shrink-0 text-[9px] text-zinc-500">
+                        LATEST {WINDOW.toLocaleString()}
+                      </span>
                     </div>
-                    <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-10">
+                    <div className="grid gap-1.5 [grid-template-columns:repeat(auto-fit,minmax(3.75rem,1fr))]">
                       {fixedDigitFrequencies.map((item, index) => (
                         <div
                           key={item.digit}
@@ -4441,7 +4443,9 @@ function TradeTerminal() {
                               style={{ width: `${item.percentage}%` }}
                             />
                           </div>
-                          <div className="mt-0.5 text-[8px] text-zinc-500">{item.count} ticks</div>
+                          <div className="mt-0.5 whitespace-nowrap text-[8px] text-zinc-500">
+                            {item.count.toLocaleString()} ticks
+                          </div>
                         </div>
                       ))}
                     </div>
