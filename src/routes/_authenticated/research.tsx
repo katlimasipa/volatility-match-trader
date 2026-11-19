@@ -1557,7 +1557,7 @@ function DigitResearchLab() {
                   ThDpst Matches
                 </span>
                 <span className="text-xs text-slate-400">/</span>
-                <span className="text-sm font-semibold text-slate-700">Digit Intelligence Lab</span>
+                <span className="text-sm font-semibold text-slate-700">Digit Pulse Lab</span>
               </div>
               <p className="text-xs text-slate-500">
                 Research, live observation, and explicitly enabled gated trading
@@ -1598,7 +1598,7 @@ function DigitResearchLab() {
               <FlaskConical className="h-3.5 w-3.5" /> Research workspace
             </p>
             <h1 className="text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">
-              Digit Intelligence Lab
+              Digit Pulse Lab
             </h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">
               Analyse each standard volatility index independently. Research outputs are candidates,

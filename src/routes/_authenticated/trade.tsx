@@ -311,7 +311,7 @@ const DEFAULT_DIGIT_INTELLIGENCE_CONFIG: DigitIntelligenceConfig = {
   minimumConfidence: 65,
   minimumSequenceSamples: 3,
   target: "auto",
-  execution: "signal_only",
+  execution: "automated",
 };
 
 function loadDigitIntelligenceConfig(): DigitIntelligenceConfig {
@@ -337,7 +337,7 @@ function loadDigitIntelligenceConfig(): DigitIntelligenceConfig {
         ? Math.max(2, Math.min(100, Math.floor(sequenceSamples)))
         : DEFAULT_DIGIT_INTELLIGENCE_CONFIG.minimumSequenceSamples,
       target: target as DigitTargetSelection,
-      execution: saved.execution === "automated" ? "automated" : "signal_only",
+      execution: saved.execution === "signal_only" ? "signal_only" : "automated",
     };
   } catch {
     return DEFAULT_DIGIT_INTELLIGENCE_CONFIG;
@@ -882,6 +882,7 @@ function TradeTerminal() {
     return "R_100";
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
+  const strategyPanelRef = useRef<HTMLElement | null>(null);
   const [digitIntelligenceConfig, setDigitIntelligenceConfig] = useState<DigitIntelligenceConfig>(
     loadDigitIntelligenceConfig,
   );
@@ -1162,7 +1163,7 @@ function TradeTerminal() {
       cancelPendingX2XSignal("X2X strategy disabled by user.");
     }
     if (strategyMode === "digit_intelligence" && nextStrategy !== "digit_intelligence") {
-      cancelPendingDigitIntelligenceSignal("Digit Intelligence strategy disabled by user.");
+      cancelPendingDigitIntelligenceSignal("Digit Pulse strategy disabled by user.");
     }
     setStrategyMode(nextStrategy);
     saveX2XScannerState(createX2XScannerState());
@@ -1179,9 +1180,16 @@ function TradeTerminal() {
         : nextStrategy === "entry_match"
           ? `Entry Match selected on ${currentMarket.displayName}. Each trade will use a fresh live tick digit as its Matches prediction.`
           : nextStrategy === "digit_intelligence"
-            ? `Digit Intelligence selected on ${currentMarket.displayName}. The frequency, streak, and sequence analysis will use only this market's ticks.`
+            ? `Digit Pulse selected on ${currentMarket.displayName}. The frequency, streak, and sequence analysis will use only this market's ticks.`
           : "Matches strategy selected.",
     );
+  }
+
+  function openDigitPulseStrategy() {
+    handleSelectStrategy("digit_intelligence");
+    window.requestAnimationFrame(() => {
+      strategyPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
   }
 
   // Execution state
@@ -1806,7 +1814,7 @@ function TradeTerminal() {
           const windowSize = stateRef.current.digitIntelligenceConfig.window;
           const model = analyzeDigitIntelligence(dList.slice(-windowSize), stateRef.current.digitIntelligenceConfig);
           setNote(
-            `${Math.min(dList.length, windowSize)} ${marketInfo.displayName} ticks loaded for Digit Intelligence (${windowSize}-tick window). ${model.reason}`,
+            `${Math.min(dList.length, windowSize)} ${marketInfo.displayName} ticks loaded for Digit Pulse (${windowSize}-tick window). ${model.reason}`,
           );
         } else {
           const a = analyze(
@@ -2515,14 +2523,14 @@ function TradeTerminal() {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
         setBotState("LOSS RE-ANALYSIS");
-        setNote(`Digit Intelligence loss protection: ${lossCooldownTicks.current} live ticks remaining.`);
+        setNote(`Digit Pulse loss protection: ${lossCooldownTicks.current} live ticks remaining.`);
         return;
       }
 
       const config = s.digitIntelligenceConfig;
       if (config.execution === "automated" && !tradingRef.current?.isReady()) {
         setBotState("WAITING ENTRY");
-        setNote("Digit Intelligence found no trade yet; automated execution is waiting for the authorized Deriv connection.");
+        setNote("Digit Pulse found no trade yet; automated execution is waiting for the authorized Deriv connection.");
         return;
       }
 
@@ -2532,7 +2540,7 @@ function TradeTerminal() {
       const forecast = analyzeDigitIntelligence(forecastHistory, config);
       if (!forecast.signalReady || forecast.targetDigit === null || forecast.confidence === null || !forecast.activeSequence) {
         setBotState(forecast.ready ? "ANALYZING" : "BUFFERING");
-        setNote(`Digit Intelligence on ${currentMarket.displayName}: ${forecast.reason}`);
+        setNote(`Digit Pulse on ${currentMarket.displayName}: ${forecast.reason}`);
         return;
       }
 
@@ -2555,19 +2563,19 @@ function TradeTerminal() {
 
       if (config.execution === "signal_only") {
         setBotState("WAITING ENTRY");
-        setNote(`Digit Intelligence signal recorded on ${currentMarket.displayName}: ${signalDescription}. This evidence score is not a win probability; no contract was purchased.`);
+        setNote(`Digit Pulse signal recorded on ${currentMarket.displayName}: ${signalDescription}. This evidence score is not a win probability; no contract was purchased.`);
         return;
       }
 
       const session = tradingRef.current;
       if (!session?.isReady()) {
         setBotState("WAITING ENTRY");
-        setNote("Digit Intelligence signal recorded; waiting for the Deriv trading connection before placing the contract.");
+        setNote("Digit Pulse signal recorded; waiting for the Deriv trading connection before placing the contract.");
         return;
       }
       if (session.isBuyInFlight()) {
         setBotState("IN TRADE");
-        setNote("A Digit Intelligence signal was recorded. Waiting for the current contract to settle before another trade.");
+        setNote("A Digit Pulse signal was recorded. Waiting for the current contract to settle before another trade.");
         return;
       }
 
@@ -2598,7 +2606,7 @@ function TradeTerminal() {
       pending.current = trade;
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
-      setNote(`Digit Intelligence trade #${targetRun} on ${currentMarket.displayName}: buying Matches ${forecast.targetDigit}. ${signalDescription}.`);
+      setNote(`Digit Pulse trade #${targetRun} on ${currentMarket.displayName}: buying Matches ${forecast.targetDigit}. ${signalDescription}.`);
       placeLiveMatch(trade);
       return;
     }
@@ -2710,7 +2718,7 @@ function TradeTerminal() {
           : strategyMode === "entry_match"
             ? "Cannot start Entry Match until the market feed has delivered its first tick."
             : strategyMode === "digit_intelligence"
-              ? `Cannot start Digit Intelligence until ${startTickRequirement} ticks are buffered for its selected analysis window.`
+              ? `Cannot start Digit Pulse until ${startTickRequirement} ticks are buffered for its selected analysis window.`
             : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
@@ -2760,8 +2768,8 @@ function TradeTerminal() {
               : `Entry Match active on ${activeAccount?.account_id ?? "Deriv"}. Waiting for a fresh ${currentMarket.displayName} tick for trade #${runCount + 1}...`
             : strategyMode === "digit_intelligence"
               ? signalOnlyMode
-                ? `Digit Intelligence signal-only scan active on ${currentMarket.displayName}; no Deriv orders will be placed.`
-                : `Digit Intelligence automated trading active on ${activeAccount?.account_id}. Scanning ${currentMarket.displayName} for qualified signals.`
+                ? `Digit Pulse signal-only scan active on ${currentMarket.displayName}; no Deriv orders will be placed.`
+                : `Digit Pulse automated trading active on ${activeAccount?.account_id}. Scanning ${currentMarket.displayName} for qualified signals.`
             : `Bot active on ${activeAccount?.account_id ?? "Deriv"}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount?.account_id ?? "Deriv"}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
@@ -3034,7 +3042,7 @@ function TradeTerminal() {
     }
     if (strategyMode === "digit_intelligence") {
       if (digits.length < WINDOW) {
-        setNote(`Digit Intelligence walk-forward check needs ${WINDOW} ${currentMarket.displayName} ticks (${digits.length}/${WINDOW} loaded).`);
+        setNote(`Digit Pulse walk-forward check needs ${WINDOW} ${currentMarket.displayName} ticks (${digits.length}/${WINDOW} loaded).`);
         return;
       }
       const replay = backtestDigitIntelligence(digits.slice(-WINDOW), digitIntelligenceConfig);
@@ -3052,7 +3060,7 @@ function TradeTerminal() {
       return;
     }
     if (strategyMode !== "matches") {
-      setNote("The walk-forward replay is available for Matches, X2X Sniper, and Digit Intelligence.");
+      setNote("The walk-forward replay is available for Matches, X2X Sniper, and Digit Pulse.");
       return;
     }
     if (digits.length < WINDOW) {
@@ -3127,7 +3135,7 @@ function TradeTerminal() {
           ? "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal."
           : strategyMode === "entry_match"
             ? "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick."
-            : "TEST 1 is only available for Matches. Digit Intelligence trades only after a qualified live signal.",
+            : "TEST 1 is only available for Matches. Digit Pulse trades only after a qualified live signal.",
       );
       return;
     }
@@ -3216,6 +3224,10 @@ function TradeTerminal() {
   const digitIntelligenceAccuracy = settledDigitIntelligenceSignals.length > 0
     ? Math.round((correctDigitIntelligenceSignals / settledDigitIntelligenceSignals.length) * 100)
     : 0;
+  const canSaveCurrentSession =
+    trades.length > 0 ||
+    x2xSignals.length > 0 ||
+    (strategyMode === "digit_intelligence" && digitIntelligenceSignals.length > 0);
   const latestPendingDigitIntelligenceSignal = digitIntelligenceSignals.find(
     (signal) => signal.status === "pending",
   );
@@ -3280,6 +3292,23 @@ function TradeTerminal() {
             <span className="hidden md:inline font-normal text-zinc-500 text-xs">
               // {currentMarket.displayName}
             </span>
+            <button
+              type="button"
+              onClick={openDigitPulseStrategy}
+              disabled={running}
+              title="Choose Digit Pulse and jump to its settings"
+              className={`rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-wider transition-colors disabled:opacity-40 sm:text-[10px] ${
+                strategyMode === "digit_intelligence"
+                  ? isDark
+                    ? "border-emerald-800 bg-emerald-950/40 text-emerald-300"
+                    : "border-emerald-300 bg-emerald-50 text-emerald-800"
+                  : isDark
+                    ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
+                    : "border-slate-300 bg-slate-50 text-slate-600 hover:border-slate-400 hover:text-slate-900"
+              }`}
+            >
+              Digit Pulse
+            </button>
             <a
               href="/research"
               className={`rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-wider transition-colors sm:text-[10px] ${
@@ -3288,7 +3317,7 @@ function TradeTerminal() {
                   : "border-slate-300 bg-slate-50 text-slate-600 hover:border-slate-400 hover:text-slate-900"
               }`}
             >
-              Digit Lab
+              PULSE LAB
             </a>
           </div>
 
@@ -3486,6 +3515,19 @@ function TradeTerminal() {
             <div
               className={`flex items-center gap-1.5 pl-2 border-l ${isDark ? "border-zinc-800" : "border-slate-200"}`}
             >
+              <button
+                type="button"
+                onClick={saveCurrentSession}
+                disabled={running || !canSaveCurrentSession}
+                title={running ? "Stop the bot before saving this session" : "Save session to history"}
+                className={`rounded border px-2.5 py-2 text-xs font-semibold uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  isDark
+                    ? "border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white"
+                    : "border-slate-300 bg-white text-slate-700 hover:text-slate-900"
+                }`}
+              >
+                SAVE SESSION
+              </button>
               {running ? (
                 <button
                   onClick={() => stopBot("User stopped bot.")}
@@ -3835,6 +3877,7 @@ function TradeTerminal() {
 
             {/* STRATEGY (Strict Matches Strategy) */}
             <section
+              ref={strategyPanelRef}
               className={`rounded-xl border p-4 space-y-4 shadow-sm ${
                 isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"
               }`}
@@ -3872,7 +3915,7 @@ function TradeTerminal() {
                             ? "X2X Sniper"
                             : mode === "entry_match"
                               ? "Entry Match"
-                              : "Digit Intelligence"}
+                              : "Digit Pulse"}
                       </button>
                     );
                   })}
@@ -5546,7 +5589,7 @@ function TradeTerminal() {
                   <button
                     type="button"
                     onClick={saveCurrentSession}
-                    disabled={running || (trades.length === 0 && x2xSignals.length === 0 && (strategyMode !== "digit_intelligence" || digitIntelligenceSignals.length === 0))}
+                    disabled={running || !canSaveCurrentSession}
                     title={
                       running
                         ? "Stop the bot before saving and clearing this session"
@@ -5739,7 +5782,7 @@ function TradeTerminal() {
                                 : saved.strategyMode === "entry_match"
                                   ? "Entry Match / "
                                   : saved.strategyMode === "digit_intelligence"
-                                    ? "Digit Intelligence / "
+                                    ? "Digit Pulse / "
                                     : saved.strategyMode === "step_match"
                                       ? "Retired StepMatch / "
                                   : ""}
@@ -6012,7 +6055,7 @@ function TradeTerminal() {
                         {expandedHistoryId === saved.id && Boolean(saved.digitIntelligenceSignals?.length) && (
                           <div className="mt-4 space-y-2">
                             <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                              Digit Intelligence Forecasts
+                              Digit Pulse Forecasts
                             </h4>
                             {saved.digitIntelligenceSignals?.map((signal) => (
                               <div
@@ -6196,7 +6239,7 @@ function TradeTerminal() {
                       : strategyMode === "entry_match"
                         ? "Entry Match"
                         : strategyMode === "digit_intelligence"
-                          ? "Digit Intelligence"
+                          ? "Digit Pulse"
                           : "Matches"}
                   </div>
                 </div>
@@ -6427,16 +6470,16 @@ function TradeTerminal() {
 
           <button
             type="button"
-            onClick={triggerManualTestTrade}
-            disabled={strategyMode !== "matches" || digits.length < WINDOW || pending.current !== null}
-            title="Run 1 test trade"
+            onClick={saveCurrentSession}
+            disabled={running || !canSaveCurrentSession}
+            title={running ? "Stop the bot before saving this session" : "Save session to history"}
             className={`h-12 px-4 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors disabled:opacity-40 ${
               isDark
                 ? "border-zinc-700 bg-zinc-900 text-zinc-300"
                 : "border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
-            TEST 1
+            SAVE
           </button>
         </div>
       </div>
