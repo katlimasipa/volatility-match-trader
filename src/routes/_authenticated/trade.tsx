@@ -3280,6 +3280,16 @@ function TradeTerminal() {
             <span className="hidden md:inline font-normal text-zinc-500 text-xs">
               // {currentMarket.displayName}
             </span>
+            <a
+              href="/research"
+              className={`rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-wider transition-colors sm:text-[10px] ${
+                isDark
+                  ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
+                  : "border-slate-300 bg-slate-50 text-slate-600 hover:border-slate-400 hover:text-slate-900"
+              }`}
+            >
+              Digit Lab
+            </a>
           </div>
 
           {/* Desktop Bot Telemetry Pill (lg screens only) */}

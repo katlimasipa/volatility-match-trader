@@ -134,6 +134,41 @@ describe("DIGITMATCH proposal payload", () => {
     },
   );
 
+  it("does not buy a proposal when its final live risk gate rejects it", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        if (payload["proposal"] === 1) {
+          return { proposal: { id: "proposal-id", ask_price: 1, payout: 8 } };
+        }
+        return { buy: { contract_id: 123 } };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "otp",
+    });
+    const beforePurchase = vi.fn(() => false);
+
+    await expect(
+      session.buyDigitMatch({
+        stake: 1,
+        barrierDigit: 4,
+        currency: "USD",
+        symbol: "R_100",
+        beforePurchase,
+      }),
+    ).rejects.toThrow("pre-purchase risk gate");
+
+    expect(beforePurchase).toHaveBeenCalledWith({ ask: 1, payout: 8, symbol: "R_100" });
+    expect(sent.some((payload) => "buy" in payload)).toBe(false);
+    session.dispose();
+  });
+
   it("proposes the selected standard Volatility 10 symbol when using Auth 2.0", async () => {
     const sent: Record<string, unknown>[] = [];
     const fakeWs = {

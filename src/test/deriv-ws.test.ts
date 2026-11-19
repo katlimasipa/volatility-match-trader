@@ -111,4 +111,21 @@ describe("DerivWS connection resilience", () => {
     expect(resub["subscribe"]).toBe(1);
     ws.dispose();
   });
+
+  it("does not repeat one-off tick history requests after a reconnect", async () => {
+    vi.useFakeTimers();
+    const ws = new DerivWS("wss://mock.test", undefined, { autoReconnect: true });
+    currentSocket().simulateOpen();
+    const pending = ws.send({ ticks_history: "R_100", end: "latest", count: 5000 });
+    const first = currentSocket().lastSent();
+    currentSocket().simulateMessage({ history: { prices: [1], times: [1] }, req_id: first["req_id"] });
+    await pending;
+
+    currentSocket().close();
+    await vi.advanceTimersByTimeAsync(3000);
+    currentSocket().simulateOpen();
+
+    expect(currentSocket().sent).toHaveLength(0);
+    ws.dispose();
+  });
 });

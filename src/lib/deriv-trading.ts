@@ -36,6 +36,12 @@ export interface BuyMatchParams {
   symbol?: string;
   /** Optional invariant metadata for Entry Match trades. */
   entryMatchOrder?: EntryMatchOrder;
+  /** Optional risk gate evaluated against the actual proposal before Deriv receives a buy request. */
+  beforePurchase?: (proposal: {
+    ask: number;
+    payout: number;
+    symbol: string;
+  }) => boolean | Promise<boolean>;
 }
 
 type BalanceListener = (loginid: string, balance: number, currency: string) => void;
@@ -748,6 +754,10 @@ export class DerivTradingSession {
       }
 
       const ask = Number(proposal.ask_price ?? amount);
+      const payout = Number(proposal.payout ?? 0);
+      if (params.beforePurchase && !(await params.beforePurchase({ ask, payout, symbol: preferred }))) {
+        throw new Error('The live trade was stopped by the pre-purchase risk gate.');
+      }
       const buyRes = await this.ws.send<{
         buy?: {
           contract_id?: number;

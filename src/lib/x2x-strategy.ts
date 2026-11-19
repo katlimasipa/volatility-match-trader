@@ -1,3 +1,5 @@
+import { finalQuoteDigits } from "@/lib/decimal-quote";
+
 export interface X2XQuoteDigit {
   digit: number;
   /** The quote's final two displayed digits at its market precision (for example, "07"). */
@@ -6,7 +8,6 @@ export interface X2XQuoteDigit {
   tickId?: string | undefined;
   timestamp?: string | undefined;
 }
-
 export interface X2XScannerSignal {
   id: string;
   phase: "awaiting-ldp" | "awaiting-op";
@@ -133,7 +134,6 @@ export function createX2XScannerState(): X2XScannerState {
     signal: null,
   };
 }
-
 export function cancelX2XScanner(state: X2XScannerState): {
   state: X2XScannerState;
   cancelledSignal: X2XScannerSignal | null;
@@ -210,8 +210,8 @@ export function calculateX2XOpTrigger(referencePair: string): string | null {
 }
 
 /** Format a quote with its market precision and preserve its final two digits. */
-export function lastTwoQuoteDigits(quote: number, decimals = 2): string {
-  return quote.toFixed(decimals).slice(-2);
+export function lastTwoQuoteDigits(quote: number | string, decimals = 2): string {
+  return finalQuoteDigits(quote, decimals, 2) ?? "";
 }
 
 /**

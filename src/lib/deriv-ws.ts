@@ -223,22 +223,21 @@ export class DerivWS {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
     return new Promise<void>((resolve, reject) => {
-      let waiter: { resolve: () => void; reject: (err: Error) => void };
-      const timer = setTimeout(() => {
-        this.openWaiters = this.openWaiters.filter((current) => current !== waiter);
-        reject(new Error(`WebSocket connection timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      waiter = {
+      const timer: { id?: ReturnType<typeof setTimeout> } = {};
+      const waiter = {
         resolve: () => {
-          clearTimeout(timer);
+          if (timer.id) clearTimeout(timer.id);
           resolve();
         },
-        reject: (err) => {
-          clearTimeout(timer);
+        reject: (err: Error) => {
+          if (timer.id) clearTimeout(timer.id);
           reject(err);
         },
       };
+      timer.id = setTimeout(() => {
+        this.openWaiters = this.openWaiters.filter((current) => current !== waiter);
+        reject(new Error(`WebSocket connection timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
       this.openWaiters.push(waiter);
 
       if (
@@ -310,8 +309,9 @@ export class DerivWS {
       }
     }
 
-    // If it's a persistent subscription request, track it for auto-resubscription on reconnect
-    if (payload['subscribe'] === 1 || payload['ticks_history']) {
+    // Recreate only explicit subscriptions after reconnect. One-off history reads
+    // must not silently turn into repeating requests on every connection reset.
+    if (payload['subscribe'] === 1) {
       const key = String(
         payload['ticks_history'] ||
           payload['ticks'] ||

@@ -14,6 +14,7 @@ import {
   marketTradeSymbols,
   calculateMartingaleStake,
 } from "@/lib/matches";
+import { decimalQuote, digitFromQuote, finalQuoteDigits } from "@/lib/decimal-quote";
 import { captureEntryMatchOrder } from "@/lib/entry-match-strategy";
 import {
   advanceX2XScanner,
@@ -86,6 +87,18 @@ describe("Entry Match strategy", () => {
 });
 
 describe("Volatility 100 Matches strategy", () => {
+  it("preserves Deriv quote precision using decimal-safe formatting", () => {
+    expect(decimalQuote("1234.27", 2)).toBe("1234.27");
+    expect(decimalQuote(1234.2, 2)).toBe("1234.20");
+    expect(decimalQuote("1234.265", 2)).toBe("1234.27");
+    expect(digitFromQuote("1234.27", 2)).toBe(7);
+    expect(Number.isNaN(lastDigit("not-a-quote", 2))).toBe(true);
+    expect(digitFromQuote(1234.2, 2)).toBe(0);
+    expect(finalQuoteDigits("1234.07", 2, 2)).toBe("07");
+    expect(finalQuoteDigits("not-a-quote", 2, 2)).toBeNull();
+    expect(finalQuoteDigits("206.5547", 4, 2)).toBe("47");
+  });
+
   it("targets Volatility 100 with classic and Auth 2.0 symbols", () => {
     expect(CLASSIC_SYMBOL).toBe("R_100");
     expect(OPTIONS_SYMBOL).toBe("R_100");

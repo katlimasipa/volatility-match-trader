@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/route'
+import { Route as AuthenticatedResearchRouteImport } from './routes/_authenticated/research'
 import { Route as AuthenticatedTradeRouteImport } from './routes/_authenticated/trade'
 import { Route as DerivCallbackRouteImport } from './routes/deriv.callback'
 
@@ -22,6 +23,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AuthenticatedResearchRoute = AuthenticatedResearchRouteImport.update({
+  id: '/research',
+  path: '/research',
+  getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedTradeRoute = AuthenticatedTradeRouteImport.update({
   id: '/trade',
@@ -36,11 +42,13 @@ const DerivCallbackRoute = DerivCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/research': typeof AuthenticatedResearchRoute
   '/trade': typeof AuthenticatedTradeRoute
   '/deriv/callback': typeof DerivCallbackRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/research': typeof AuthenticatedResearchRoute
   '/trade': typeof AuthenticatedTradeRoute
   '/deriv/callback': typeof DerivCallbackRoute
 }
@@ -48,18 +56,20 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
+  '/_authenticated/research': typeof AuthenticatedResearchRoute
   '/_authenticated/trade': typeof AuthenticatedTradeRoute
   '/deriv/callback': typeof DerivCallbackRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/trade' | '/deriv/callback'
+  fullPaths: '/' | '/research' | '/trade' | '/deriv/callback'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/trade' | '/deriv/callback'
+  to: '/' | '/research' | '/trade' | '/deriv/callback'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
+    | '/_authenticated/research'
     | '/_authenticated/trade'
     | '/deriv/callback'
   fileRoutesById: FileRoutesById
@@ -86,6 +96,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authenticated/research': {
+      id: '/_authenticated/research'
+      path: '/research'
+      fullPath: '/research'
+      preLoaderRoute: typeof AuthenticatedResearchRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/trade': {
       id: '/_authenticated/trade'
       path: '/trade'
@@ -104,10 +121,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedResearchRoute: typeof AuthenticatedResearchRoute
   AuthenticatedTradeRoute: typeof AuthenticatedTradeRoute
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedResearchRoute: AuthenticatedResearchRoute,
   AuthenticatedTradeRoute: AuthenticatedTradeRoute,
 }
 

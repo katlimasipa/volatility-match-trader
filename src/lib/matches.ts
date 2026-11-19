@@ -1,4 +1,5 @@
 // Matches strategy analysis for Deriv standard and 1-second Volatility indices.
+import { digitFromQuote } from "@/lib/decimal-quote";
 
 export type MarketSymbol =
   | "R_100"
@@ -337,9 +338,8 @@ export function calculateMartingaleStake(
 /**
  * Extract the last digit from a quote using the selected market's pip precision.
  */
-export function lastDigit(quote: number, decimals = PIP_DECIMALS): number {
-  const s = quote.toFixed(decimals);
-  return Number(s[s.length - 1]);
+export function lastDigit(quote: number | string, decimals = PIP_DECIMALS): number {
+  return digitFromQuote(quote, decimals) ?? Number.NaN;
 }
 
 export {
