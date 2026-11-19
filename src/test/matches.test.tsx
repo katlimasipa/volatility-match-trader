@@ -140,8 +140,6 @@ describe("Volatility 100 Matches strategy", () => {
       "1HZ75V",
       "1HZ90V",
       "1HZ100V",
-      "1HZ150V",
-      "1HZ250V",
     ]);
     expect(MARKET_GROUPS.map((group) => group.label)).toEqual(["STANDARD", "1 SECOND"]);
     expect(MARKET_GROUPS[0]?.markets.every((market) => !market.id.startsWith("1HZ"))).toBe(true);

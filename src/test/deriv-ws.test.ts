@@ -118,7 +118,10 @@ describe("DerivWS connection resilience", () => {
     currentSocket().simulateOpen();
     const pending = ws.send({ ticks_history: "R_100", end: "latest", count: 5000 });
     const first = currentSocket().lastSent();
-    currentSocket().simulateMessage({ history: { prices: [1], times: [1] }, req_id: first["req_id"] });
+    currentSocket().simulateMessage({
+      history: { prices: [1], times: [1] },
+      req_id: first["req_id"],
+    });
     await pending;
 
     currentSocket().close();
@@ -126,6 +129,28 @@ describe("DerivWS connection resilience", () => {
     currentSocket().simulateOpen();
 
     expect(currentSocket().sent).toHaveLength(0);
+    ws.dispose();
+  });
+
+  it("does not retain one-shot streaming proposals for reconnect", async () => {
+    const ws = new DerivWS("wss://mock.test", undefined, { autoReconnect: true });
+    currentSocket().simulateOpen();
+
+    const pending = ws.send({ proposal: 1, subscribe: 1, underlying_symbol: "R_100" }, 5000, {
+      trackSubscription: false,
+    });
+    const request = currentSocket().lastSent();
+    currentSocket().simulateMessage({
+      proposal: { id: "proposal-1" },
+      subscription: { id: "proposal-1" },
+      req_id: request["req_id"],
+    });
+    await pending;
+
+    expect(
+      (ws as unknown as { activeSubscriptions: Map<string, Record<string, unknown>> })
+        .activeSubscriptions.size,
+    ).toBe(0);
     ws.dispose();
   });
 });

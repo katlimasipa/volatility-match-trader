@@ -89,14 +89,25 @@ describe("DIGITMATCH proposal payload", () => {
     "uses the %s symbol field and buys the returned proposal",
     async (mode) => {
       const sent: Record<string, unknown>[] = [];
+      const sendOptions: Array<Record<string, unknown> | undefined> = [];
       const fakeWs = {
-        send: vi.fn(async (payload: Record<string, unknown>) => {
-          sent.push(payload);
-          if (payload["proposal"] === 1) {
-            return { proposal: { id: "proposal-id", ask_price: 1 } };
-          }
-          return { buy: {} };
-        }),
+        send: vi.fn(
+          async (
+            payload: Record<string, unknown>,
+            _timeout?: number,
+            options?: Record<string, unknown>,
+          ) => {
+            sent.push(payload);
+            sendOptions.push(options);
+            if (payload["proposal"] === 1) {
+              return {
+                proposal: { id: "proposal-id", ask_price: 1 },
+                ...(mode === "otp" ? { subscription: { id: "proposal-id" } } : {}),
+              };
+            }
+            return { buy: {} };
+          },
+        ),
         dispose: vi.fn(),
       } as unknown as DerivWS;
       const session = new DerivTradingSession();
@@ -123,12 +134,16 @@ describe("DIGITMATCH proposal payload", () => {
       });
       if (mode === "otp") {
         expect(proposal).toHaveProperty("underlying_symbol", "R_100");
+        expect(proposal).toHaveProperty("subscribe", 1);
         expect(proposal).not.toHaveProperty("symbol");
+        expect(sendOptions[0]).toEqual({ trackSubscription: false });
       } else {
         expect(proposal).toHaveProperty("symbol", "R_100");
+        expect(proposal).not.toHaveProperty("subscribe");
         expect(proposal).not.toHaveProperty("underlying_symbol");
       }
       expect(sent[1]).toEqual({ buy: "proposal-id", price: 1 });
+      if (mode === "otp") expect(sent[2]).toEqual({ forget: "proposal-id" });
 
       session.dispose();
     },
@@ -140,7 +155,10 @@ describe("DIGITMATCH proposal payload", () => {
       send: vi.fn(async (payload: Record<string, unknown>) => {
         sent.push(payload);
         if (payload["proposal"] === 1) {
-          return { proposal: { id: "proposal-id", ask_price: 1, payout: 8 } };
+          return {
+            proposal: { id: "proposal-id", ask_price: 1, payout: 8 },
+            subscription: { id: "proposal-id" },
+          };
         }
         return { buy: { contract_id: 123 } };
       }),
@@ -166,6 +184,50 @@ describe("DIGITMATCH proposal payload", () => {
 
     expect(beforePurchase).toHaveBeenCalledWith({ ask: 1, payout: 8, symbol: "R_100" });
     expect(sent.some((payload) => "buy" in payload)).toBe(false);
+    expect(sent.some((payload) => payload["forget"] === "proposal-id")).toBe(true);
+    session.dispose();
+  });
+
+  it.each(MARKET_LIST)("confirms Deriv currently offers Digit Match on $id", async (market) => {
+    const sent: Record<string, unknown>[] = [];
+    const fakeWs = {
+      send: vi.fn(async (payload: Record<string, unknown>) => {
+        sent.push(payload);
+        return { contracts_for: { available: [{ contract_type: "DIGITMATCH" }] } };
+      }),
+      dispose: vi.fn(),
+    } as unknown as DerivWS;
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: fakeWs,
+      ready: true,
+      mode: "otp",
+    });
+
+    await expect(session.hasDigitMatchOffering(market.id)).resolves.toBe(true);
+    expect(sent).toEqual([{ contracts_for: market.optionsSymbol }]);
+    session.dispose();
+  });
+
+  it("blocks markets that are no longer in Deriv's current tradable symbol list", async () => {
+    const send = vi.fn();
+    const session = new DerivTradingSession();
+    Object.assign(session as unknown as Record<string, unknown>, {
+      ws: { send, dispose: vi.fn() },
+      ready: true,
+      mode: "otp",
+    });
+
+    await expect(
+      session.buyDigitMatch({
+        stake: 1,
+        barrierDigit: 4,
+        currency: "USD",
+        symbol: "1HZ150V",
+      }),
+    ).rejects.toThrow("does not currently offer Digit Match");
+    await expect(session.hasDigitMatchOffering("1HZ250V")).resolves.toBe(false);
+    expect(send).not.toHaveBeenCalled();
     session.dispose();
   });
 

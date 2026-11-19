@@ -17,6 +17,11 @@ interface DerivWSOptions {
   onClose?: () => void;
 }
 
+interface DerivSendOptions {
+  /** Do not restore short-lived subscriptions such as a single purchase proposal after reconnect. */
+  trackSubscription?: boolean;
+}
+
 export const DERIV_PUBLIC_WS_URL = getDerivWsUrl();
 /** Classic Binary WS requires a numeric app_id — Auth 2.0 client ids are strings. */
 export const DERIV_FALLBACK_WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=1089`;
@@ -287,7 +292,8 @@ export class DerivWS {
 
   public async send<T = Record<string, unknown>>(
     payload: Record<string, unknown>,
-    timeoutMs = 20000
+    timeoutMs = 20000,
+    options: DerivSendOptions = {},
   ): Promise<T> {
     if (this.isDisposed) {
       throw new Error('WebSocket is disposed');
@@ -311,7 +317,7 @@ export class DerivWS {
 
     // Recreate only explicit subscriptions after reconnect. One-off history reads
     // must not silently turn into repeating requests on every connection reset.
-    if (payload['subscribe'] === 1) {
+    if (payload['subscribe'] === 1 && options.trackSubscription !== false) {
       const key = String(
         payload['ticks_history'] ||
           payload['ticks'] ||

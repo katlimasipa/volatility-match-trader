@@ -16,7 +16,7 @@ import {
 } from './deriv-auth';
 import { getDerivClientId } from './deriv-config';
 import type { EntryMatchOrder } from './entry-match-strategy';
-import { getMarketConfig, marketTradeSymbols } from './matches';
+import { getMarketConfig, MARKET_LIST, marketTradeSymbols } from './matches';
 
 export interface ContractResult {
   contractId: number;
@@ -649,9 +649,30 @@ export class DerivTradingSession {
       duration_unit: 't',
       barrier,
       ...(this.mode === 'otp'
-        ? { underlying_symbol: underlying }
+        ? { underlying_symbol: underlying, subscribe: 1 }
         : { symbol: underlying }),
     };
+  }
+
+  /** Check Deriv's current market catalogue before attempting a Digit Match proposal. */
+  async hasDigitMatchOffering(symbol?: string): Promise<boolean> {
+    const requestedSymbol = symbol || 'R_100';
+    const market = getMarketConfig(requestedSymbol);
+    if (!MARKET_LIST.some((item) => item.id === requestedSymbol)) return false;
+    if (!this.ws || !this.ready) throw new Error('Trading session is not ready. Connect Deriv first.');
+
+    try {
+      const response = await this.ws.send<{
+        contracts_for?: { available?: Array<{ contract_type?: string }> };
+      }>({ contracts_for: market.optionsSymbol });
+      return (response.contracts_for?.available ?? []).some(
+        (contract) => contract.contract_type === 'DIGITMATCH',
+      );
+    } catch (error) {
+      if (/invalid.?symbol|offeringsinvalidsymbol|no contract available/i.test(errorMessage(error)))
+        return false;
+      throw error;
+    }
   }
 
   /**
@@ -681,7 +702,13 @@ export class DerivTradingSession {
    * Place a 1-tick DIGITMATCH contract on the selected standard or 1-second market.
    */
   async buyDigitMatch(params: BuyMatchParams): Promise<ContractResult> {
-    const requestedMarket = getMarketConfig(params.symbol);
+    const requestedSymbol = params.symbol || 'R_100';
+    const requestedMarket = getMarketConfig(requestedSymbol);
+    if (!MARKET_LIST.some((market) => market.id === requestedSymbol)) {
+      throw new Error(
+        `Deriv does not currently offer Digit Match for ${requestedSymbol}. Choose an active market.`,
+      );
+    }
     if (
       params.entryMatchOrder &&
       (params.entryMatchOrder.matchesPrediction !== params.entryMatchOrder.entryDigit ||
@@ -714,6 +741,14 @@ export class DerivTradingSession {
     const market = requestedMarket;
     const { preferred, fallback } = marketTradeSymbols(market, this.mode);
     const symbols = preferred === fallback ? [preferred] : [preferred, fallback];
+    let proposalSubscriptionId: string | null = null;
+    let proposalSymbol = preferred;
+    const forgetProposalSubscription = async () => {
+      const subscriptionId = proposalSubscriptionId;
+      proposalSubscriptionId = null;
+      if (!subscriptionId || !this.ws || !this.ready) return;
+      await this.ws.send({ forget: subscriptionId }).catch(() => {});
+    };
 
     try {
       let proposalRes: Record<string, unknown> | null = null;
@@ -721,10 +756,20 @@ export class DerivTradingSession {
 
       for (const underlying of symbols) {
         try {
-          const res = await this.ws.send(this.proposalPayload(amount, currency, barrier, underlying));
+          const res = await this.ws.send(
+            this.proposalPayload(amount, currency, barrier, underlying),
+            20000,
+            { trackSubscription: this.mode !== 'otp' },
+          );
           const proposal = res['proposal'] as { id?: string } | undefined;
           if (proposal?.id) {
             proposalRes = res;
+            proposalSymbol = underlying;
+            if (this.mode === 'otp') {
+              const subscription = res['subscription'] as { id?: string } | undefined;
+              // Deriv normally returns the streaming proposal id in both places.
+              proposalSubscriptionId = subscription?.id || proposal.id;
+            }
             break;
           }
           lastErr = new Error(
@@ -755,7 +800,10 @@ export class DerivTradingSession {
 
       const ask = Number(proposal.ask_price ?? amount);
       const payout = Number(proposal.payout ?? 0);
-      if (params.beforePurchase && !(await params.beforePurchase({ ask, payout, symbol: preferred }))) {
+      if (
+        params.beforePurchase &&
+        !(await params.beforePurchase({ ask, payout, symbol: proposalSymbol }))
+      ) {
         throw new Error('The live trade was stopped by the pre-purchase risk gate.');
       }
       const buyRes = await this.ws.send<{
@@ -781,6 +829,8 @@ export class DerivTradingSession {
         }
         throw fail;
       }
+
+      await forgetProposalSubscription();
 
       const loginid = this.accountId;
       const buyPrice = Number(buy.buy_price ?? ask);
@@ -826,6 +876,7 @@ export class DerivTradingSession {
       }
       throw err;
     } finally {
+      await forgetProposalSubscription();
       this.buyInFlight = false;
     }
   }

@@ -168,15 +168,13 @@ export const MARKET_GROUPS: { label: string; markets: MarketConfig[] }[] = [
       MARKETS["1HZ75V"],
       MARKETS["1HZ90V"],
       MARKETS["1HZ100V"],
-      MARKETS["1HZ150V"],
-      MARKETS["1HZ250V"],
     ],
   },
 ];
 
 export const MARKET_LIST: MarketConfig[] = MARKET_GROUPS.flatMap((group) => group.markets);
 export function getMarketConfig(symbol?: string): MarketConfig {
-  return MARKET_LIST.find((market) => market.id === symbol) ?? MARKETS.R_100;
+  return (symbol ? MARKETS[symbol as MarketSymbol] : undefined) ?? MARKETS.R_100;
 }
 
 /** Preferred Deriv symbol for the active connection, plus a fallback for the other API. */

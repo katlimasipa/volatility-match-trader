@@ -1291,6 +1291,13 @@ function DigitResearchLab() {
       if (!connected || !session.isReady())
         throw new Error("Could not establish the authorized Deriv trading connection.");
       if (liveSessionRef.current !== session) return;
+      const hasDigitMatch = await session.hasDigitMatchOffering(market);
+      if (liveSessionRef.current !== session) return;
+      if (!hasDigitMatch) {
+        throw new Error(
+          `Deriv does not currently offer a Digit Match contract for ${market}. Choose another active market.`,
+        );
+      }
       const currentTick = ticksRef.current[market]?.at(-1);
       if (
         statusRef.current !== "live" ||
@@ -1802,8 +1809,9 @@ function DigitResearchLab() {
               </div>
               <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500">
                 Live orders are off by default. Select a validated model, explicitly enable it for
-                this market, and review the fixed stake and stop limits. Every order must pass the
-                untouched holdout and a fresh Deriv proposal risk check.
+                this market, and press Start Live after reviewing the fixed stake and stop limits.
+                Permission can be selected before validation; orders remain locked until the
+                untouched holdout passes and Deriv confirms Digit Match is available.
               </p>
             </div>
             <span
@@ -1835,21 +1843,22 @@ function DigitResearchLab() {
                 </label>
                 <div className="flex min-h-14 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
                   <label
-                    className={`flex items-start gap-2.5 ${liveEligible && mode !== "live" ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}
+                    className={`flex items-start gap-2.5 ${mode === "live" || liveConnection === "connecting" ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}
                   >
                     <input
                       type="checkbox"
                       className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-slate-800 focus:ring-slate-500"
                       checked={livePermissionEnabled}
-                      disabled={!liveEligible || mode === "live" || liveConnection === "connecting"}
+                      disabled={mode === "live" || liveConnection === "connecting"}
                       onChange={(event) => setLivePermission(liveStrategy, event.target.checked)}
                     />
                     <span>
                       <span className="block text-xs font-semibold text-slate-800">
-                        Allow this strategy to trade
+                        Allow auto-trading for this strategy
                       </span>
                       <span className="mt-0.5 block text-[10px] leading-relaxed text-slate-500">
-                        Permission is saved separately for each market and strategy.
+                        Saved per market and strategy. A passing holdout is still required before
+                        Start Live becomes available.
                       </span>
                     </span>
                   </label>
