@@ -234,6 +234,7 @@ interface SavedSession {
   strategyMode?: StrategyMode | "step_match";
   spreadComparison?: SpreadComparison;
   martingaleStartAfterLosses?: number;
+  fixedDigit?: number;
   entryMatchParity?: EntryMatchParity;
   entryMatchSpreadEnabled?: boolean;
   entryMatchSpreadComparison?: SpreadComparison;
@@ -260,6 +261,7 @@ const ENTRY_MATCH_SPREAD_THRESHOLD_STORAGE_KEY = "thdpst_entry_match_spread_thre
 const ENTRY_MATCH_WAIT_TICKS_STORAGE_KEY = "thdpst_entry_match_wait_ticks_v1";
 const MARTINGALE_START_AFTER_STORAGE_KEY = "thdpst_martingale_start_after_losses_v1";
 const DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY = "thdpst_digit_intelligence_config_v1";
+const FIXED_DIGIT_STORAGE_KEY = "thdpst_fixed_digit_v1";
 const DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX = "thdpst_digit_intelligence_signals_v1_";
 const MAX_DIGIT_INTELLIGENCE_SIGNALS = 200;
 const MAX_ZERO_REPEAT_TICKS = 50;
@@ -291,14 +293,24 @@ function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
   };
 }
 
-type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence";
+type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence" | "fixed_digit";
 type EntryMatchParity = "any" | "odd" | "even";
+
+function loadFixedDigit(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const saved = Number(localStorage.getItem(FIXED_DIGIT_STORAGE_KEY));
+    return Number.isInteger(saved) && saved >= 0 && saved <= 9 ? saved : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function loadStrategyMode(): StrategyMode {
   if (typeof window === "undefined") return "matches";
   try {
     const saved = localStorage.getItem(STRATEGY_MODE_STORAGE_KEY);
-    return saved === "x2x" || saved === "entry_match" || saved === "digit_intelligence"
+    return saved === "x2x" || saved === "entry_match" || saved === "digit_intelligence" || saved === "fixed_digit"
       ? saved
       : "matches";
   } catch {
@@ -591,7 +603,10 @@ function isSavedSession(value: unknown): value is SavedSession {
       saved.strategyMode === "x2x" ||
       saved.strategyMode === "entry_match" ||
       saved.strategyMode === "digit_intelligence" ||
+      saved.strategyMode === "fixed_digit" ||
       saved.strategyMode === "step_match") &&
+    (saved.fixedDigit === undefined ||
+      (Number.isInteger(saved.fixedDigit) && saved.fixedDigit >= 0 && saved.fixedDigit <= 9)) &&
     (saved.spreadComparison === undefined ||
       saved.spreadComparison === "exact" ||
       saved.spreadComparison === "at_most") &&
@@ -882,6 +897,7 @@ function TradeTerminal() {
     return "R_100";
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
+  const [fixedDigit, setFixedDigit] = useState<number>(loadFixedDigit);
   const strategyPanelRef = useRef<HTMLElement | null>(null);
   const [digitIntelligenceConfig, setDigitIntelligenceConfig] = useState<DigitIntelligenceConfig>(
     loadDigitIntelligenceConfig,
@@ -912,7 +928,7 @@ function TradeTerminal() {
   const [predictionStats, setPredictionStats] = useState<PredictionStats>(emptyPredictionStats);
   const [status, setStatus] = useState<"connecting" | "live" | "offline">("connecting");
 
-  // Strategy & Bot configuration (Strictly Matches strategy parameters)
+  // Strategy & bot configuration
   const [maxDiff, setMaxDiff] = useState<number>(MAX_DIFF);
   const [maxDiffInput, setMaxDiffInput] = useState<string>(String(MAX_DIFF));
   const [spreadComparison, setSpreadComparison] = useState<SpreadComparison>(loadSpreadComparison);
@@ -982,6 +998,16 @@ function TradeTerminal() {
       localStorage.setItem(DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY, JSON.stringify(next));
     } catch {
       // The selected options remain active in this page if storage is unavailable.
+    }
+  }
+
+  function updateFixedDigit(digit: number) {
+    if (!Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    setFixedDigit(digit);
+    try {
+      localStorage.setItem(FIXED_DIGIT_STORAGE_KEY, String(digit));
+    } catch {
+      // The selection remains active in this tab if storage is unavailable.
     }
   }
 
@@ -1181,6 +1207,8 @@ function TradeTerminal() {
           ? `Entry Match selected on ${currentMarket.displayName}. Each trade will use a fresh live tick digit as its Matches prediction.`
           : nextStrategy === "digit_intelligence"
             ? `Digit Pulse selected on ${currentMarket.displayName}. The frequency, streak, and sequence analysis will use only this market's ticks.`
+            : nextStrategy === "fixed_digit"
+              ? `Fixed Digit selected on ${currentMarket.displayName}. The bot will keep matching digit ${fixedDigit} until Take Profit or Stop Loss is reached.`
           : "Matches strategy selected.",
     );
   }
@@ -1391,6 +1419,7 @@ function TradeTerminal() {
     zeroRepeatTicks,
     marketSymbol,
     strategyMode,
+    fixedDigit,
   });
   stateRef.current = {
     running,
@@ -1419,6 +1448,7 @@ function TradeTerminal() {
     zeroRepeatTicks,
     marketSymbol,
     strategyMode,
+    fixedDigit,
   };
 
   function saveX2XScannerState(next: X2XScannerState) {
@@ -1816,6 +1846,13 @@ function TradeTerminal() {
           setNote(
             `${Math.min(dList.length, windowSize)} ${marketInfo.displayName} ticks loaded for Digit Pulse (${windowSize}-tick window). ${model.reason}`,
           );
+        } else if (stateRef.current.strategyMode === "fixed_digit") {
+          const sample = dList.slice(-WINDOW);
+          const count = sample.filter((digit) => digit === stateRef.current.fixedDigit).length;
+          const percentage = sample.length > 0 ? (count / sample.length) * 100 : 0;
+          setNote(
+            `${sample.length} ticks loaded for Fixed Digit on ${marketInfo.displayName}. Target ${stateRef.current.fixedDigit} appeared ${percentage.toFixed(1)}% of the latest ${sample.length} ticks.`,
+          );
         } else {
           const a = analyze(
             dList,
@@ -2131,13 +2168,13 @@ function TradeTerminal() {
       return stopBot(`Stop Loss reached (-$${Math.abs(totalPnl).toFixed(2)}). Bot stopped.`);
     }
 
-    if (won && s.stopOnWin) {
+    if (won && s.stopOnWin && s.strategyMode !== "fixed_digit") {
       return stopBot(
         `First win landed (+$${totalPnl.toFixed(2)}) — bot stopped after 1 win.`,
       );
     }
 
-    if (!won && s.reAnalyzeOnLoss) {
+    if (!won && s.reAnalyzeOnLoss && s.strategyMode !== "fixed_digit") {
       lossCooldownTicks.current = 5;
       setBotState("LOSS RE-ANALYSIS");
       setNote(
@@ -2519,6 +2556,51 @@ function TradeTerminal() {
       return;
     }
 
+    if (s.strategyMode === "fixed_digit") {
+      const session = tradingRef.current;
+      if (!session?.isReady()) {
+        setBotState("WAITING ENTRY");
+        setNote("Fixed Digit is waiting for the authorized Deriv trading connection.");
+        return;
+      }
+      if (session.isBuyInFlight()) {
+        setBotState("IN TRADE");
+        setNote("Fixed Digit is waiting for the current one-tick contract to settle.");
+        return;
+      }
+
+      const targetRun = s.runCount + 1;
+      const nextStake = calculateMartingaleStake(
+        s.stake,
+        lossStreakRef.current,
+        s.martingaleEnabled,
+        s.martingaleStartAfterLosses,
+      );
+      const availableBalance = activeAccount ? Number(activeAccount.balance) : Number.POSITIVE_INFINITY;
+      if (nextStake > availableBalance) {
+        stopBot(
+          `Bot paused: the next stake ($${nextStake.toFixed(2)}) exceeds the available balance ($${availableBalance.toFixed(2)}). Lower the base stake or turn off 1.5× martingale.`,
+        );
+        return;
+      }
+
+      const trade: PendingTrade = {
+        runIndex: targetRun,
+        entry: currentD,
+        target: s.fixedDigit,
+        stake: nextStake,
+        live: true,
+      };
+      pending.current = trade;
+      pendingSetAt.current = Date.now();
+      setBotState("IN TRADE");
+      setNote(
+        `Fixed Digit trade #${targetRun}: buying one-tick Matches ${s.fixedDigit} on ${currentMarket.displayName} at $${nextStake.toFixed(2)}.`,
+      );
+      placeLiveMatch(trade);
+      return;
+    }
+
     if (s.strategyMode === "digit_intelligence") {
       if (lossCooldownTicks.current > 0) {
         lossCooldownTicks.current -= 1;
@@ -2698,6 +2780,10 @@ function TradeTerminal() {
 
   function startBot() {
     initAudioContext();
+    if (strategyMode === "fixed_digit" && tp <= 0) {
+      setNote("Set a Take Profit above $0 before starting Fixed Digit; it runs until Take Profit or Stop Loss is reached.");
+      return;
+    }
     const currentSessionPnl = trades.reduce((total, trade) => total + trade.pnl, 0);
     if (tp > 0 && currentSessionPnl >= tp) {
       setNote(
@@ -2719,7 +2805,9 @@ function TradeTerminal() {
             ? "Cannot start Entry Match until the market feed has delivered its first tick."
             : strategyMode === "digit_intelligence"
               ? `Cannot start Digit Pulse until ${startTickRequirement} ticks are buffered for its selected analysis window.`
-            : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
+              : strategyMode === "fixed_digit"
+                ? `Cannot start Fixed Digit until the first live tick is available on ${currentMarket.displayName}.`
+                : `Cannot start bot: Buffering market ticks (${digits.length}/${WINDOW}) on ${currentMarket.displayName}. Exactly 1,000 ticks must be analyzed before entering a trade.`,
       );
       return;
     }
@@ -2770,6 +2858,8 @@ function TradeTerminal() {
               ? signalOnlyMode
                 ? `Digit Pulse signal-only scan active on ${currentMarket.displayName}; no Deriv orders will be placed.`
                 : `Digit Pulse automated trading active on ${activeAccount?.account_id}. Scanning ${currentMarket.displayName} for qualified signals.`
+              : strategyMode === "fixed_digit"
+                ? `Fixed Digit active on ${activeAccount?.account_id ?? "Deriv"}. Repeatedly matching ${fixedDigit} until Take Profit or Stop Loss.`
             : `Bot active on ${activeAccount?.account_id ?? "Deriv"}. Live DIGITMATCH buys on ${currentMarket.displayName} — trade #${runCount + 1}...`
         : `Bot started on ${activeAccount?.account_id ?? "Deriv"}. Market scanning is active and will place no trade until the authorized Deriv trading connection is ready.`,
     );
@@ -2832,6 +2922,7 @@ function TradeTerminal() {
       martingaleEnabled,
       martingaleStartAfterLosses,
       strategyMode,
+      ...(strategyMode === "fixed_digit" ? { fixedDigit } : {}),
       spreadComparison: strategyMode === "entry_match" ? entryMatchSpreadComparison : spreadComparison,
       ...(strategyMode === "entry_match"
         ? {
@@ -3000,6 +3091,8 @@ function TradeTerminal() {
           ? `X2X Sniper resumed on ${activeAccount?.account_id || "Deriv"}. Scanning ${currentMarket.displayName} tick digits...`
           : strategyMode === "entry_match"
             ? `Entry Match resumed on ${activeAccount?.account_id || "Deriv"}. Waiting for a fresh ${currentMarket.displayName} tick for each trade...`
+            : strategyMode === "fixed_digit"
+              ? `Fixed Digit resumed on ${currentMarket.displayName}. Repeatedly matching ${fixedDigit} until Take Profit or Stop Loss.`
             : `Bot resumed on ${activeAccount?.account_id || "Deriv"}. Live DIGITMATCH on ${currentMarket.displayName}...`,
       );
     }
@@ -3012,6 +3105,7 @@ function TradeTerminal() {
     currentMarket.displayName,
     startTickRequirement,
     strategyMode,
+    fixedDigit,
   ]);
 
   function runBacktest1000Ticks() {
@@ -3060,7 +3154,7 @@ function TradeTerminal() {
       return;
     }
     if (strategyMode !== "matches") {
-      setNote("The walk-forward replay is available for Matches, X2X Sniper, and Digit Pulse.");
+      setNote("Walk-forward replay is available for Matches, X2X Sniper, and Digit Pulse. Fixed Digit reports live frequency and trades its selected target directly.");
       return;
     }
     if (digits.length < WINDOW) {
@@ -3135,7 +3229,9 @@ function TradeTerminal() {
           ? "TEST 1 is only available for Matches. X2X trades require a live pattern and OP signal."
           : strategyMode === "entry_match"
             ? "TEST 1 is only available for Matches. Entry Match uses the next fresh live tick."
-            : "TEST 1 is only available for Matches. Digit Pulse trades only after a qualified live signal.",
+            : strategyMode === "fixed_digit"
+              ? "TEST 1 is only available for Matches. Fixed Digit uses your selected target when Start Bot is active."
+              : "TEST 1 is only available for Matches. Digit Pulse trades only after a qualified live signal.",
       );
       return;
     }
@@ -3224,6 +3320,18 @@ function TradeTerminal() {
   const digitIntelligenceAccuracy = settledDigitIntelligenceSignals.length > 0
     ? Math.round((correctDigitIntelligenceSignals / settledDigitIntelligenceSignals.length) * 100)
     : 0;
+  const fixedDigitFrequencySample = digits.slice(-WINDOW);
+  const fixedDigitFrequencies = Array.from({ length: 10 }, (_, digit) => {
+    const count = fixedDigitFrequencySample.filter((item) => item === digit).length;
+    return {
+      digit,
+      count,
+      percentage: fixedDigitFrequencySample.length > 0
+        ? (count / fixedDigitFrequencySample.length) * 100
+        : 0,
+    };
+  }).sort((a, b) => b.count - a.count || a.digit - b.digit);
+  const selectedFixedDigitFrequency = fixedDigitFrequencies.find((item) => item.digit === fixedDigit);
   const canSaveCurrentSession =
     trades.length > 0 ||
     x2xSignals.length > 0 ||
@@ -3686,6 +3794,8 @@ function TradeTerminal() {
                   ? "ENTRY:"
                   : strategyMode === "digit_intelligence"
                     ? "PREDICT:"
+                    : strategyMode === "fixed_digit"
+                      ? "FIXED:"
                     : "SPREAD:"}
             </span>
             <span
@@ -3706,6 +3816,8 @@ function TradeTerminal() {
                       ? digitIntelligenceAnalysis.signalReady
                         ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
                         : isDark ? "text-zinc-400" : "text-slate-600"
+                    : strategyMode === "fixed_digit"
+                      ? isDark ? "text-emerald-400 font-bold" : "text-emerald-600 font-bold"
                     : analysis.ok
                     ? isDark
                       ? "text-emerald-400 font-bold"
@@ -3723,6 +3835,8 @@ function TradeTerminal() {
                     ? digitIntelligenceAnalysis.targetDigit === null
                       ? "--"
                       : `${digitIntelligenceAnalysis.targetDigit} · ${digitIntelligenceAnalysis.confidence ?? 0}/100`
+                    : strategyMode === "fixed_digit"
+                      ? `${fixedDigit} · ${selectedFixedDigitFrequency?.percentage.toFixed(1) ?? "0.0"}%`
                   : `${analysis.diff.toFixed(2)}%`}
             </span>
           </div>
@@ -3875,7 +3989,7 @@ function TradeTerminal() {
               )}
             </section>
 
-            {/* STRATEGY (Strict Matches Strategy) */}
+            {/* Trading strategy choices and configuration */}
             <section
               ref={strategyPanelRef}
               className={`rounded-xl border p-4 space-y-4 shadow-sm ${
@@ -3893,7 +4007,7 @@ function TradeTerminal() {
                     isDark ? "border-zinc-800 bg-black" : "border-slate-200 bg-slate-100"
                   }`}
                 >
-                  {(["matches", "x2x", "entry_match", "digit_intelligence"] as const).map((mode) => {
+                  {(["matches", "x2x", "entry_match", "digit_intelligence", "fixed_digit"] as const).map((mode) => {
                     const selected = strategyMode === mode;
                     return (
                       <button
@@ -3915,7 +4029,9 @@ function TradeTerminal() {
                             ? "X2X Sniper"
                             : mode === "entry_match"
                               ? "Entry Match"
-                              : "Digit Pulse"}
+                              : mode === "digit_intelligence"
+                                ? "Digit Pulse"
+                                : "Fixed Digit"}
                       </button>
                     );
                   })}
@@ -3931,7 +4047,9 @@ function TradeTerminal() {
                       : strategyMode === "entry_match"
                         ? "ENTRY MATCH · DIGITMATCH · 1 TICK"
                         : strategyMode === "digit_intelligence"
-                          ? "DIGIT INTELLIGENCE · DIGITMATCH · 1 TICK"
+                          ? "DIGIT PULSE · DIGITMATCH · 1 TICK"
+                          : strategyMode === "fixed_digit"
+                            ? "FIXED DIGIT · DIGITMATCH · 1 TICK"
                           : "Matches · DIGITMATCH"}
                   </span>
                 </div>
@@ -3980,6 +4098,8 @@ function TradeTerminal() {
                       ? `On ${currentMarket.displayName}: each new trade captures one fresh live tick. Its last digit becomes both ENTRY_DIGIT and the DIGITMATCH prediction. Optional parity and spread filters can limit eligible entries.`
                       : strategyMode === "digit_intelligence"
                         ? `On ${currentMarket.displayName}: combine digit frequency, observed absence streaks, and sufficiently sampled sequence followers. Signals target the next digit and are scored against the next unseen tick.`
+                        : strategyMode === "fixed_digit"
+                          ? `On ${currentMarket.displayName}: repeatedly buy one-tick Digit Matches for digit ${fixedDigit}. Each settled contract is followed by another trade until Take Profit or Stop Loss is reached.`
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
               </div>
@@ -4255,13 +4375,93 @@ function TradeTerminal() {
                 </>
               )}
 
+              {strategyMode === "fixed_digit" && (
+                <div
+                  className={`rounded-lg border p-3 space-y-3 ${
+                    isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <label htmlFor="fixed-match-digit" className="text-xs font-semibold text-zinc-500">
+                      Digit to match
+                    </label>
+                    <span className="text-[10px] text-zinc-500">REPEATS UNTIL TP / SL</span>
+                  </div>
+                  <Select
+                    value={String(fixedDigit)}
+                    disabled={running}
+                    onValueChange={(value) => updateFixedDigit(Number(value))}
+                  >
+                    <SelectTrigger id="fixed-match-digit" className={`${dropdownTriggerClass} w-full`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent position="popper" className={`${dropdownContentClass} min-w-[var(--radix-select-trigger-width)]`}>
+                      {Array.from({ length: 10 }, (_, digit) => (
+                        <SelectItem key={digit} value={String(digit)} className={dropdownItemClass}>
+                          Digit {digit}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] leading-tight text-zinc-500">
+                    Fixed prediction {fixedDigit} · currently {selectedFixedDigitFrequency?.percentage.toFixed(1) ?? "0.0"}% of the latest {fixedDigitFrequencySample.length}/{WINDOW} ticks.
+                    The bot keeps entering this target after wins and losses until a session limit stops it.
+                  </p>
+
+                  <div className={`rounded border p-2.5 ${isDark ? "border-zinc-900 bg-zinc-950" : "border-slate-200 bg-white"}`}>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                        Most appearing digits · {currentMarket.shortName}
+                      </span>
+                      <span className="text-[9px] text-zinc-500">LATEST {WINDOW}</span>
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-10">
+                      {fixedDigitFrequencies.map((item, index) => (
+                        <div
+                          key={item.digit}
+                          className={`rounded border px-1.5 py-1.5 text-center num ${
+                            item.digit === fixedDigit
+                              ? isDark
+                                ? "border-emerald-800 bg-emerald-950/40 text-emerald-300"
+                                : "border-emerald-300 bg-emerald-50 text-emerald-800"
+                              : isDark
+                                ? "border-zinc-800 bg-black text-zinc-300"
+                                : "border-slate-200 bg-slate-50 text-slate-700"
+                          }`}
+                          title={`Rank ${index + 1}: digit ${item.digit} appeared ${item.count} times in ${fixedDigitFrequencySample.length} ticks (${item.percentage.toFixed(1)}%)`}
+                        >
+                          <div className="flex items-center justify-between text-[8px] text-zinc-500">
+                            <span>#{index + 1}</span>
+                            <span>{item.digit}</span>
+                          </div>
+                          <div className="mt-1 text-[11px] font-bold">{item.percentage.toFixed(1)}%</div>
+                          <div className="mt-1 h-1 overflow-hidden rounded bg-zinc-800/30">
+                            <div
+                              className={`h-full rounded ${item.digit === fixedDigit ? "bg-emerald-500" : "bg-zinc-400/70"}`}
+                              style={{ width: `${item.percentage}%` }}
+                            />
+                          </div>
+                          <div className="mt-0.5 text-[8px] text-zinc-500">{item.count} ticks</div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-[9px] leading-tight text-zinc-500">
+                      Historical frequency only; it is not the chance of winning the next contract.
+                    </p>
+                  </div>
+                  <p className="text-[10px] leading-tight text-amber-600 dark:text-amber-400">
+                    Set Take Profit above $0 before starting. Stop Loss can stop the session earlier if reached.
+                  </p>
+                </div>
+              )}
+
               {strategyMode === "digit_intelligence" && (
                 <div
                   className={`rounded-lg border p-3 space-y-3 ${
                     isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
                   }`}
                 >
-                  <div className="text-xs font-semibold text-zinc-500">DIGIT INTELLIGENCE SETTINGS</div>
+                  <div className="text-xs font-semibold text-zinc-500">DIGIT PULSE SETTINGS</div>
                   <div className="grid grid-cols-2 gap-2">
                     <label className="space-y-1 text-[10px] text-zinc-500">
                       History window
@@ -4681,6 +4881,12 @@ function TradeTerminal() {
                     ACTIVE
                   </span>
                 </div>
+                {strategyMode === "fixed_digit" ? (
+                  <p className="text-[11px] leading-tight text-zinc-500">
+                    Fixed Digit continues after every win or loss. It skips loss re-analysis and stop-after-win so the session runs until Take Profit or Stop Loss.
+                  </p>
+                ) : (
+                  <>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -4707,6 +4913,8 @@ function TradeTerminal() {
                     Stop after first win
                   </span>
                 </label>
+                  </>
+                )}
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -5021,7 +5229,16 @@ function TradeTerminal() {
                       : "—"}
                   </span>
                   <div className="space-y-0.5 text-xs">
-                    {strategyMode === "entry_match" ? (
+                    {strategyMode === "fixed_digit" ? (
+                      <>
+                        <div className="text-zinc-500">
+                          FIXED MATCH: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{fixedDigit}</span>
+                        </div>
+                        <div className="text-zinc-500">
+                          HISTORICAL FREQUENCY: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{selectedFixedDigitFrequency?.percentage.toFixed(1) ?? "0.0"}%</span>
+                        </div>
+                      </>
+                    ) : strategyMode === "entry_match" ? (
                       <>
                         <div className="text-zinc-500">
                           ENTRY DIGIT: <span className={`font-bold num ${isDark ? "text-white" : "text-slate-900"}`}>{entryMatchDisplayedDigit ?? "—"}</span>
@@ -5385,7 +5602,7 @@ function TradeTerminal() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <div className="text-[11px] font-bold uppercase tracking-wider text-zinc-500">
-                      DIGIT INTELLIGENCE
+                      DIGIT PULSE
                     </div>
                     <div className={`mt-1 text-xs font-semibold ${isDark ? "text-zinc-200" : "text-slate-800"}`}>
                       {currentMarket.displayName} · {marketSymbol} · {digitIntelligenceConfig.window}-tick window
@@ -5781,11 +5998,13 @@ function TradeTerminal() {
                                 ? "X2X Sniper / "
                                 : saved.strategyMode === "entry_match"
                                   ? "Entry Match / "
-                                  : saved.strategyMode === "digit_intelligence"
-                                    ? "Digit Pulse / "
-                                    : saved.strategyMode === "step_match"
-                                      ? "Retired StepMatch / "
-                                  : ""}
+                                  : saved.strategyMode === "fixed_digit"
+                                    ? `Fixed Digit ${saved.fixedDigit ?? 0} / `
+                                    : saved.strategyMode === "digit_intelligence"
+                                      ? "Digit Pulse / "
+                                      : saved.strategyMode === "step_match"
+                                        ? "Retired StepMatch / "
+                                        : ""}
                               {MARKETS[saved.marketSymbol].displayName}
                             </div>
                             <div className="mt-1 text-[11px] text-zinc-500">
@@ -5887,9 +6106,11 @@ function TradeTerminal() {
                               ? `Fresh tick digit prediction · Wait ${saved.entryMatchWaitTicks ?? 1} ${saved.entryMatchWaitTicks === 1 || saved.entryMatchWaitTicks === undefined ? "tick" : "ticks"} · ${saved.entryMatchParity === "odd" ? "Odd only" : saved.entryMatchParity === "even" ? "Even only" : "Any digit"} · Spread gate ${saved.entryMatchSpreadEnabled ? `${saved.entryMatchSpreadComparison === "at_most" ? "equal/under" : "exact"} ${saved.entryMatchSpreadThreshold ?? saved.spreadThreshold}%` : "OFF"}`
                               : saved.strategyMode === "digit_intelligence"
                                 ? `${saved.digitIntelligenceConfig?.window ?? 100}-tick window · ${saved.digitIntelligenceConfig?.target === "auto" || saved.digitIntelligenceConfig?.target === undefined ? "automatic target" : `target digit ${saved.digitIntelligenceConfig.target}`} · confidence ≥ ${saved.digitIntelligenceConfig?.minimumConfidence ?? 65}/100 · sequence samples ≥ ${saved.digitIntelligenceConfig?.minimumSequenceSamples ?? 3} · ${saved.digitIntelligenceConfig?.execution === "automated" ? "automated" : "signal only"}`
-                                : saved.strategyMode === "step_match"
-                                  ? "Retired strategy · saved trades kept for history"
-                              : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
+                                : saved.strategyMode === "fixed_digit"
+                                  ? `Fixed prediction ${saved.fixedDigit ?? 0} · frequency display from latest ${WINDOW} ticks`
+                                  : saved.strategyMode === "step_match"
+                                    ? "Retired strategy · saved trades kept for history"
+                                    : `${saved.spreadComparison === "at_most" ? "Spread equal/under target" : "Exact spread target"} ${saved.spreadThreshold}%`}
                           {" "}· Base stake{" "}
                           {saved.baseStake.toFixed(2)} USD · Martingale{" "}
                           {saved.martingaleEnabled
@@ -6207,6 +6428,8 @@ function TradeTerminal() {
                         ? "Entry Ticks"
                         : strategyMode === "digit_intelligence"
                           ? `${digitIntelligenceConfig.window} Ticks`
+                          : strategyMode === "fixed_digit"
+                            ? "Frequency Ticks"
                           : "1,000 Ticks"}
                   </div>
                   <div
@@ -6220,6 +6443,8 @@ function TradeTerminal() {
                           ? digits.length >= digitIntelligenceConfig.window
                             ? "READY"
                             : `${digits.length}/${digitIntelligenceConfig.window}`
+                          : strategyMode === "fixed_digit"
+                            ? currentDigit === undefined ? "WAITING FOR TICK" : "LIVE"
                           : digits.length >= WINDOW
                             ? "VERIFIED"
                             : `${digits.length}/${WINDOW}`}
@@ -6240,6 +6465,8 @@ function TradeTerminal() {
                         ? "Entry Match"
                         : strategyMode === "digit_intelligence"
                           ? "Digit Pulse"
+                          : strategyMode === "fixed_digit"
+                            ? "Fixed Digit"
                           : "Matches"}
                   </div>
                 </div>
@@ -6257,6 +6484,8 @@ function TradeTerminal() {
                         ? "ENTRY_DIGIT"
                         : strategyMode === "digit_intelligence"
                           ? "Selected Market"
+                          : strategyMode === "fixed_digit"
+                            ? "Target Digit"
                           : "Entry Digit"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6266,6 +6495,8 @@ function TradeTerminal() {
                         ? (entryMatchDisplayedDigit ?? "--")
                         : strategyMode === "digit_intelligence"
                           ? currentMarket.shortName
+                          : strategyMode === "fixed_digit"
+                            ? fixedDigit
                           : `${analysis.most} (${analysis.mostPct.toFixed(1)}%)`}
                   </div>
                 </div>
@@ -6277,6 +6508,8 @@ function TradeTerminal() {
                         ? "Matches Prediction"
                         : strategyMode === "digit_intelligence"
                           ? "Target · Evidence"
+                          : strategyMode === "fixed_digit"
+                            ? "Digit Frequency"
                           : "Match Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6288,6 +6521,8 @@ function TradeTerminal() {
                         ? (entryMatchDisplayedDigit ?? "--")
                         : strategyMode === "digit_intelligence"
                           ? `${digitIntelligenceAnalysis.targetDigit ?? "--"} · ${digitIntelligenceAnalysis.confidence ?? "--"}/100`
+                          : strategyMode === "fixed_digit"
+                            ? `${selectedFixedDigitFrequency?.percentage.toFixed(1) ?? "0.0"}% (${selectedFixedDigitFrequency?.count ?? 0}/${fixedDigitFrequencySample.length})`
                           : `${analysis.second} (${analysis.secondPct.toFixed(1)}%)`}
                   </div>
                 </div>
@@ -6299,6 +6534,8 @@ function TradeTerminal() {
                         ? "Prediction Rule"
                         : strategyMode === "digit_intelligence"
                           ? "Active Sequence"
+                          : strategyMode === "fixed_digit"
+                            ? "Session Limits"
                           : "Spread Target"}
                   </div>
                   <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
@@ -6310,6 +6547,8 @@ function TradeTerminal() {
                           ? digitIntelligenceAnalysis.activeSequence
                             ? `${digitIntelligenceAnalysis.activeSequence.pattern} · ${digitIntelligenceAnalysis.activeSequence.samples} samples`
                             : `Need ${digitIntelligenceConfig.minimumSequenceSamples} samples`
+                          : strategyMode === "fixed_digit"
+                            ? `TP $${tp.toFixed(2)} · SL $${sl.toFixed(2)}`
                           : `Δ ${spreadComparison === "exact" ? "=" : "≤"} ${maxDiff}%`}
                   </div>
                 </div>
@@ -6794,7 +7033,7 @@ function TradeTerminal() {
                 {backtest.strategyMode === "x2x"
                   ? "X2X SNIPER / 1,000 TICK REPLAY"
                   : backtest.strategyMode === "digit_intelligence"
-                    ? "DIGIT INTELLIGENCE / WALK-FORWARD CHECK"
+                    ? "DIGIT PULSE / WALK-FORWARD CHECK"
                     : "MATCHES / 1,000 TICK BACKTEST"}
               </span>
               <button
