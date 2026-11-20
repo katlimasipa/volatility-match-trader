@@ -262,6 +262,7 @@ const ENTRY_MATCH_WAIT_TICKS_STORAGE_KEY = "thdpst_entry_match_wait_ticks_v1";
 const MARTINGALE_START_AFTER_STORAGE_KEY = "thdpst_martingale_start_after_losses_v1";
 const DIGIT_INTELLIGENCE_CONFIG_STORAGE_KEY = "thdpst_digit_intelligence_config_v1";
 const FIXED_DIGIT_STORAGE_KEY = "thdpst_fixed_digit_v1";
+const FAILED_CYCLE_SETTINGS_STORAGE_KEY = "thdpst_failed_cycle_settings_v1";
 const DIGIT_INTELLIGENCE_SIGNAL_STORAGE_PREFIX = "thdpst_digit_intelligence_signals_v1_";
 const MAX_DIGIT_INTELLIGENCE_SIGNALS = 200;
 const MAX_ZERO_REPEAT_TICKS = 50;
@@ -295,6 +296,46 @@ function repeatHighlightStyle(digit: number, dark: boolean): CSSProperties {
 
 type StrategyMode = "matches" | "x2x" | "entry_match" | "digit_intelligence" | "fixed_digit";
 type EntryMatchParity = "any" | "odd" | "even";
+type FailedCycleSetting = { enabled: boolean; cycles: number };
+type FailedCycleSettings = Record<StrategyMode, FailedCycleSetting>;
+
+const STRATEGY_MODES: StrategyMode[] = [
+  "matches",
+  "x2x",
+  "entry_match",
+  "digit_intelligence",
+  "fixed_digit",
+];
+
+function createDefaultFailedCycleSettings(): FailedCycleSettings {
+  return Object.fromEntries(
+    STRATEGY_MODES.map((mode) => [mode, { enabled: false, cycles: 1 }]),
+  ) as FailedCycleSettings;
+}
+
+function loadFailedCycleSettings(): FailedCycleSettings {
+  const defaults = createDefaultFailedCycleSettings();
+  if (typeof window === "undefined") return defaults;
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(FAILED_CYCLE_SETTINGS_STORAGE_KEY) || "null",
+    );
+    if (typeof value !== "object" || value === null) return defaults;
+    const saved = value as Partial<FailedCycleSettings>;
+    for (const mode of STRATEGY_MODES) {
+      const item = saved[mode];
+      if (!item || typeof item !== "object") continue;
+      const cycles = Number(item.cycles);
+      defaults[mode] = {
+        enabled: item.enabled === true,
+        cycles: Number.isFinite(cycles) ? Math.max(1, Math.min(10, Math.floor(cycles))) : 1,
+      };
+    }
+    return defaults;
+  } catch {
+    return defaults;
+  }
+}
 
 function loadFixedDigit(): number {
   if (typeof window === "undefined") return 0;
@@ -897,6 +938,9 @@ function TradeTerminal() {
     return "R_100";
   });
   const [strategyMode, setStrategyMode] = useState<StrategyMode>(loadStrategyMode);
+  const [failedCycleSettings, setFailedCycleSettings] = useState<FailedCycleSettings>(
+    loadFailedCycleSettings,
+  );
   const [fixedDigit, setFixedDigit] = useState<number>(loadFixedDigit);
   const strategyPanelRef = useRef<HTMLElement | null>(null);
   const [digitIntelligenceConfig, setDigitIntelligenceConfig] = useState<DigitIntelligenceConfig>(
@@ -1161,6 +1205,7 @@ function TradeTerminal() {
       return;
     }
     cancelPendingDigitIntelligenceSignal("Market changed before the next outcome tick arrived.");
+    resetFailedCycleGate();
     const marketSignals = loadDigitIntelligenceSignals(m);
     digitIntelligenceSignalsRef.current = marketSignals;
     setDigitIntelligenceSignals(marketSignals);
@@ -1185,6 +1230,7 @@ function TradeTerminal() {
 
   function handleSelectStrategy(nextStrategy: StrategyMode) {
     if (running) return;
+    resetFailedCycleGate();
     if (strategyMode === "x2x" && nextStrategy !== "x2x") {
       cancelPendingX2XSignal("X2X strategy disabled by user.");
     }
@@ -1223,6 +1269,7 @@ function TradeTerminal() {
   // Execution state
   const [running, setRunning] = useState(false);
   const [runCount, setRunCount] = useState(0);
+  const [failedCycleCount, setFailedCycleCount] = useState(0);
   const [zeroRepeatCount, setZeroRepeatCount] = useState(0);
   const [zeroRepeatGateOpen, setZeroRepeatGateOpen] = useState(false);
   const [trades, setTrades] = useState<TradeRow[]>([]);
@@ -1365,6 +1412,12 @@ function TradeTerminal() {
   const predictionRef = useRef<DigitPrediction | null>(null);
   const lossCooldownTicks = useRef(0);
   const entryMatchWaitCountRef = useRef(0);
+  const failedCycleCountRef = useRef(0);
+  const pendingFailedCycleRef = useRef<{
+    strategyMode: StrategyMode;
+    targetDigit: number;
+    runIndex?: number;
+  } | null>(null);
   const zeroRepeatCountRef = useRef(0);
   const zeroRepeatGateOpenRef = useRef(false);
   const lastZeroRepeatDigitRef = useRef<number | null>(null);
@@ -1403,6 +1456,7 @@ function TradeTerminal() {
     reAnalyzeOnLoss,
     martingaleEnabled,
     martingaleStartAfterLosses,
+    failedCycleSettings,
     activeId,
     maxDiff,
     spreadComparison,
@@ -1432,6 +1486,7 @@ function TradeTerminal() {
     reAnalyzeOnLoss,
     martingaleEnabled,
     martingaleStartAfterLosses,
+    failedCycleSettings,
     activeId,
     maxDiff,
     spreadComparison,
@@ -1450,6 +1505,101 @@ function TradeTerminal() {
     strategyMode,
     fixedDigit,
   };
+
+  function setFailedCycleProgress(count: number) {
+    failedCycleCountRef.current = count;
+    setFailedCycleCount(count);
+  }
+
+  function resetFailedCycleGate() {
+    pendingFailedCycleRef.current = null;
+    setFailedCycleProgress(0);
+  }
+
+  function updateFailedCycleSetting(patch: Partial<FailedCycleSetting>) {
+    const current = failedCycleSettings[strategyMode];
+    const nextSetting = {
+      ...current,
+      ...patch,
+      cycles: Math.max(1, Math.min(10, Math.floor(patch.cycles ?? current.cycles))),
+    };
+    const next = { ...failedCycleSettings, [strategyMode]: nextSetting };
+    setFailedCycleSettings(next);
+    stateRef.current.failedCycleSettings = next;
+    if (!nextSetting.enabled) resetFailedCycleGate();
+    try {
+      localStorage.setItem(FAILED_CYCLE_SETTINGS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // The selected strategy keeps its setting for this page if storage is unavailable.
+    }
+  }
+
+  function queueFailedCycleOpportunity(mode: StrategyMode, targetDigit: number) {
+    if (!stateRef.current.failedCycleSettings[mode].enabled) return;
+    pendingFailedCycleRef.current = { strategyMode: mode, targetDigit };
+  }
+
+  function failedCycleNeedsMore(mode: StrategyMode, targetDigit: number): boolean {
+    const setting = stateRef.current.failedCycleSettings[mode];
+    if (!setting.enabled || failedCycleCountRef.current >= setting.cycles) return false;
+    queueFailedCycleOpportunity(mode, targetDigit);
+    setBotState("WAITING ENTRY");
+    setNote(
+      `${mode === "entry_match" ? "Entry Match" : mode === "x2x" ? "X2X Sniper" : mode === "digit_intelligence" ? "Digit Pulse" : mode === "fixed_digit" ? "Fixed Digit" : "Matches"} failed-cycle filter: ${failedCycleCountRef.current}/${setting.cycles} failed signal cycles. Waiting for the next eligible opportunity.`,
+    );
+    return true;
+  }
+
+  function markFailedCycleTradeStarted(mode: StrategyMode, targetDigit: number, runIndex: number) {
+    if (!stateRef.current.failedCycleSettings[mode].enabled) return;
+    setFailedCycleProgress(0);
+    pendingFailedCycleRef.current = { strategyMode: mode, targetDigit, runIndex };
+  }
+
+  function cancelFailedCycleTrade(runIndex: number) {
+    const opportunity = pendingFailedCycleRef.current;
+    if (!opportunity || opportunity.runIndex !== runIndex) return;
+    pendingFailedCycleRef.current = null;
+    setFailedCycleProgress(
+      stateRef.current.failedCycleSettings[opportunity.strategyMode].cycles,
+    );
+  }
+
+  function applyFailedCycleOutcome(mode: StrategyMode, targetDigit: number, outcomeDigit: number) {
+    const setting = stateRef.current.failedCycleSettings[mode];
+    if (!setting.enabled) {
+      setFailedCycleProgress(0);
+      return;
+    }
+    setFailedCycleProgress(
+      targetDigit === outcomeDigit
+        ? 0
+        : Math.min(setting.cycles, failedCycleCountRef.current + 1),
+    );
+  }
+
+  function applyFailedCycleWinLoss(mode: StrategyMode, won: boolean) {
+    const setting = stateRef.current.failedCycleSettings[mode];
+    setFailedCycleProgress(
+      !setting.enabled || won
+        ? 0
+        : Math.min(setting.cycles, failedCycleCountRef.current + 1),
+    );
+  }
+
+  function resolvePendingFailedCycleOpportunity(outcomeDigit: number) {
+    const opportunity = pendingFailedCycleRef.current;
+    if (!opportunity) return;
+    pendingFailedCycleRef.current = null;
+    applyFailedCycleOutcome(opportunity.strategyMode, opportunity.targetDigit, outcomeDigit);
+  }
+
+  function resolveFailedCycleTradeResult(runIndex: number, won: boolean) {
+    const opportunity = pendingFailedCycleRef.current;
+    if (!opportunity || opportunity.runIndex !== runIndex) return;
+    pendingFailedCycleRef.current = null;
+    applyFailedCycleWinLoss(opportunity.strategyMode, won);
+  }
 
   function saveX2XScannerState(next: X2XScannerState) {
     x2xScannerRef.current = next;
@@ -2069,6 +2219,7 @@ function TradeTerminal() {
     contractId?: number,
   ) {
     const s = stateRef.current;
+    resolveFailedCycleTradeResult(p.runIndex, won);
 
     if (s.strategyMode === "entry_match") {
       resetEntryMatchWaitCount();
@@ -2194,6 +2345,7 @@ function TradeTerminal() {
     const currency = activeAccount?.currency || "USD";
     if (!session?.isReady()) {
       pending.current = null;
+      cancelFailedCycleTrade(p.runIndex);
       setBotState("ANALYZING");
       setNote("Trading session connecting. Will retry on next signal...");
       if (p.signalId) {
@@ -2233,6 +2385,7 @@ function TradeTerminal() {
       .catch((err: Error) => {
         pending.current = null;
         pendingSetAt.current = 0;
+        cancelFailedCycleTrade(p.runIndex);
         const limitHit = isDerivLimitError(err);
         if (p.signalId) {
           updateX2XSignal(p.signalId, {
@@ -2280,6 +2433,8 @@ function TradeTerminal() {
       x2xEvent = step.event;
       recordX2XScannerEvent(step.event, step.state);
     }
+
+    resolvePendingFailedCycleOpportunity(currentD);
 
     // A forecast is scored on the next quote, including while its live contract settles.
     scorePendingDigitIntelligenceSignal(currentD, tickInfo.timestamp ?? new Date().toISOString());
@@ -2371,6 +2526,13 @@ function TradeTerminal() {
           setNote("Waiting for the current Deriv contract to settle...");
           return;
         }
+        if (failedCycleNeedsMore("x2x", x2xEvent.ldp)) {
+          updateX2XSignal(x2xEvent.signalId, {
+            status: "rejected",
+            reason: "Waiting for the configured number of failed signal cycles.",
+          });
+          return;
+        }
 
         const targetRun = s.runCount + 1;
         const nextStake = calculateMartingaleStake(
@@ -2401,6 +2563,7 @@ function TradeTerminal() {
           live: true,
           signalId: x2xEvent.signalId,
         };
+        markFailedCycleTradeStarted("x2x", x2xEvent.ldp, targetRun);
         updateX2XSignal(x2xEvent.signalId, {
           status: "trade_submitted",
           stake: nextStake,
@@ -2525,6 +2688,7 @@ function TradeTerminal() {
         { ...tickInfo, quote: entryQuote },
         s.marketSymbol,
       );
+      if (failedCycleNeedsMore("entry_match", order.matchesPrediction)) return;
       const targetRun = s.runCount + 1;
       const nextStake = calculateMartingaleStake(
         s.stake,
@@ -2549,6 +2713,7 @@ function TradeTerminal() {
         entryMatchOrder: order,
       };
       pending.current = trade;
+      markFailedCycleTradeStarted("entry_match", order.matchesPrediction, targetRun);
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(`Entry Match trade #${targetRun}: captured ${order.entryQuote} (tick ${order.entryTickId ?? "live"}); ENTRY_DIGIT and Matches Prediction are both ${order.entryDigit}.`);
@@ -2568,6 +2733,7 @@ function TradeTerminal() {
         setNote("Fixed Digit is waiting for the current one-tick contract to settle.");
         return;
       }
+      if (failedCycleNeedsMore("fixed_digit", s.fixedDigit)) return;
 
       const targetRun = s.runCount + 1;
       const nextStake = calculateMartingaleStake(
@@ -2592,6 +2758,7 @@ function TradeTerminal() {
         live: true,
       };
       pending.current = trade;
+      markFailedCycleTradeStarted("fixed_digit", s.fixedDigit, targetRun);
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
@@ -2644,6 +2811,7 @@ function TradeTerminal() {
       const signalDescription = `Target ${forecast.targetDigit} · evidence ${forecast.confidence}/100 · sequence ${forecast.activeSequence.pattern} (${forecast.activeSequence.samples} samples)`;
 
       if (config.execution === "signal_only") {
+        queueFailedCycleOpportunity("digit_intelligence", forecast.targetDigit);
         setBotState("WAITING ENTRY");
         setNote(`Digit Pulse signal recorded on ${currentMarket.displayName}: ${signalDescription}. This evidence score is not a win probability; no contract was purchased.`);
         return;
@@ -2660,6 +2828,7 @@ function TradeTerminal() {
         setNote("A Digit Pulse signal was recorded. Waiting for the current contract to settle before another trade.");
         return;
       }
+      if (failedCycleNeedsMore("digit_intelligence", forecast.targetDigit)) return;
 
       const targetRun = s.runCount + 1;
       const nextStake = calculateMartingaleStake(
@@ -2686,6 +2855,7 @@ function TradeTerminal() {
         digitSignalId: signalId,
       };
       pending.current = trade;
+      markFailedCycleTradeStarted("digit_intelligence", forecast.targetDigit, targetRun);
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(`Digit Pulse trade #${targetRun} on ${currentMarket.displayName}: buying Matches ${forecast.targetDigit}. ${signalDescription}.`);
@@ -2735,6 +2905,7 @@ function TradeTerminal() {
         setNote("Waiting for the current Deriv contract to settle...");
         return;
       }
+      if (failedCycleNeedsMore("matches", a.second)) return;
       const nextStake = calculateMartingaleStake(
         s.stake,
         lossStreakRef.current,
@@ -2757,6 +2928,7 @@ function TradeTerminal() {
         stake: nextStake,
         live: true,
       };
+      markFailedCycleTradeStarted("matches", a.second, targetRun);
       pendingSetAt.current = Date.now();
       setBotState("IN TRADE");
       setNote(
@@ -2826,6 +2998,7 @@ function TradeTerminal() {
     pending.current = null;
     cancelPendingX2XSignal("Bot restarted; the previous X2X signal was cancelled.");
     cancelPendingDigitIntelligenceSignal("Bot restarted; the previous forecast was cancelled.");
+    resetFailedCycleGate();
     saveX2XScannerState(createX2XScannerState());
     lossCooldownTicks.current = 0;
     lossStreakRef.current = 0;
@@ -2879,6 +3052,7 @@ function TradeTerminal() {
     }
     setRunning(false);
     stateRef.current.running = false;
+    resetFailedCycleGate();
     resetEntryMatchWaitCount();
     resetZeroRepeatGate();
     connectionLostAlertedRef.current = false;
@@ -4102,6 +4276,73 @@ function TradeTerminal() {
                           ? `On ${currentMarket.displayName}: repeatedly buy one-tick Digit Matches for digit ${fixedDigit}. Each settled contract is followed by another trade until Take Profit or Stop Loss is reached.`
                       : `Enter on the most appearing digit when the spread ${spreadComparison === "exact" ? "equals" : "is equal to or below"} ${maxDiff}% on ${currentMarket.displayName} (${marketPipDecimals} decimals).`}
                 </p>
+              </div>
+
+              <div
+                className={`rounded-lg border p-3 space-y-2 ${
+                  isDark ? "border-zinc-900 bg-black" : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className={`text-xs font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                    Failed Cycle Filter · {strategyMode === "x2x" ? "X2X Sniper" : strategyMode === "entry_match" ? "Entry Match" : strategyMode === "digit_intelligence" ? "Digit Pulse" : strategyMode === "fixed_digit" ? "Fixed Digit" : "Matches"}
+                  </span>
+                  <input
+                    type="checkbox"
+                    aria-label={`Wait for failed cycles for ${strategyMode}`}
+                    checked={failedCycleSettings[strategyMode].enabled}
+                    disabled={running}
+                    onChange={(event) => updateFailedCycleSetting({ enabled: event.target.checked })}
+                    className={`h-4 w-4 rounded focus:ring-2 disabled:opacity-50 ${
+                      isDark
+                        ? "border-zinc-700 bg-zinc-900 text-white accent-white focus:ring-zinc-500"
+                        : "border-slate-300 bg-white text-slate-900 accent-slate-900 focus:ring-slate-400"
+                    }`}
+                  />
+                </div>
+                {failedCycleSettings[strategyMode].enabled ? (
+                  <>
+                    <div className={`flex items-center justify-between gap-3 border-t pt-2 ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+                      <label htmlFor="failed-cycle-count" className="text-xs text-zinc-500">
+                        Failed signal cycles before entry
+                      </label>
+                      <Select
+                        value={String(failedCycleSettings[strategyMode].cycles)}
+                        onValueChange={(value) => updateFailedCycleSetting({ cycles: Number(value) })}
+                        disabled={running}
+                      >
+                        <SelectTrigger id="failed-cycle-count" className={`${dropdownTriggerClass} w-[110px]`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper" className={`${dropdownContentClass} min-w-[110px]`}>
+                          {Array.from({ length: 10 }, (_, index) => index + 1).map((cycles) => (
+                            <SelectItem key={cycles} value={String(cycles)} className={dropdownItemClass}>
+                              {cycles} {cycles === 1 ? "cycle" : "cycles"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <p className="text-[10px] leading-tight text-zinc-500">
+                      The bot paper-checks eligible signals for this strategy. A miss adds one failed cycle; a hit resets the count. After {failedCycleSettings[strategyMode].cycles} misses, it trades the next eligible signal. Settings are kept separately for each strategy.
+                    </p>
+                    {strategyMode === "entry_match" && (
+                      <p className="text-[10px] leading-tight text-zinc-500">
+                        Example: entry digit 5 is checked against the next tick. If that tick is not 5, it counts as a miss; with 1 selected, the next eligible entry is traded using its own fresh digit.
+                      </p>
+                    )}
+                    <div className={`flex items-center justify-between border-t pt-2 text-[10px] ${isDark ? "border-zinc-800" : "border-slate-200"}`}>
+                      <span className="text-zinc-500">Current progress</span>
+                      <span className={`font-semibold ${isDark ? "text-zinc-300" : "text-slate-800"}`}>
+                        {running ? `${failedCycleCount}/${failedCycleSettings[strategyMode].cycles} failed cycles` : `0/${failedCycleSettings[strategyMode].cycles} · starts fresh`}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[10px] leading-tight text-zinc-500">
+                    Off: this strategy trades on its regular eligible signals. Each strategy keeps its own toggle and cycle count.
+                  </p>
+                )}
               </div>
 
               {strategyMode === "entry_match" && (
@@ -6606,6 +6847,18 @@ function TradeTerminal() {
                           : zeroRepeatGateOpen
                             ? "OPEN (latched)"
                             : `${zeroRepeatCount}/${zeroRepeatTicks}`}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-zinc-500">Failed-Cycle Gate</div>
+                  <div className={`font-semibold ${isDark ? "text-white" : "text-slate-900"}`}>
+                    {!failedCycleSettings[strategyMode].enabled
+                      ? "OFF"
+                      : !running
+                        ? `0/${failedCycleSettings[strategyMode].cycles} (start)`
+                        : failedCycleCount >= failedCycleSettings[strategyMode].cycles
+                          ? `OPEN · ${failedCycleCount}/${failedCycleSettings[strategyMode].cycles}`
+                          : `${failedCycleCount}/${failedCycleSettings[strategyMode].cycles} misses`}
                   </div>
                 </div>
                 <div>
